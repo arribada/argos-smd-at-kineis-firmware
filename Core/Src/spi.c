@@ -80,13 +80,23 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     PB5     ------> SPI1_MOSI
     PA1     ------> SPI1_SCK
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_15|GPIO_PIN_1;
+    /* NSS pin - can use lower speed as it's just chip select */
+    GPIO_InitStruct.Pin = GPIO_PIN_15;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;  /* Pull-up to prevent glitches when master disconnected */
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* SCK pin - needs HIGH speed for proper clock signal integrity */
+    GPIO_InitStruct.Pin = GPIO_PIN_1;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;  /* Changed from LOW to HIGH */
+    GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* MISO/MOSI pins - HIGH speed for data transfer */
     GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
