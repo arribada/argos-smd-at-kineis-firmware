@@ -52,6 +52,9 @@ enum  atcmd_idx_t {
 	// MAC commands
 	AT_KMAC,         /**< Index for change profile */
 
+	// Prepass command
+	AT_PREPASS_EN,        /**< Enable prepass, not implemented */
+
 	ATCMD_MAX_COUNT,
 	ATCMD_UNKNOWN_COMMAND = ATCMD_MAX_COUNT
 };

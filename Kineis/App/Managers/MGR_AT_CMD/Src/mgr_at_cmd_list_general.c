@@ -94,7 +94,7 @@ bool bMGR_AT_CMD_SECKEY_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 		sec_key_str[32] = '\0';
 		MCU_AT_CONSOLE_send("+SECKEY=%s\r\n", sec_key_str);
 
-		return true;
+		return bMGR_AT_CMD_logSucceedMsg();
 	} else if (e_exec_mode == ATCMD_ACTION_MODE) {
 		while(pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\r' ||
 				pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\n')

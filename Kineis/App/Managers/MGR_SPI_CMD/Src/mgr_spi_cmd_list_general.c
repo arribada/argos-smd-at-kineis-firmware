@@ -179,7 +179,7 @@ bool bMGR_SPI_CMD_WRITEADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	HAL_StatusTypeDef ret = HAL_OK;
 	if (MCU_NVM_setAddr(&(rx->data[1])) != KNS_STATUS_OK)
 	{
-		MGR_LOG_DEBUG("Faile to write ADDR=%02x%02x%02x%02x\r\n", rx->data[1], rx->data[2],
+		MGR_LOG_DEBUG("Failed to write ADDR=%02x%02x%02x%02x\r\n", rx->data[1], rx->data[2],
 								  rx->data[3], rx->data[4]);
         return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
 	} else {

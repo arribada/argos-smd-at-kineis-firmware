@@ -34,7 +34,7 @@
 //#define FLASH_USER_START_ADDR     0x0803F800
 #define FLASH_USER_START_ADDR     0x0803B000UL
 #define FLASH_USER_END_ADDR       FLASH_END_ADDR // End address of user flash area is same at end flash address
-#define FLASH_USER_SIZE           (FLASH_USER_END_ADDR - FLASH_USER_START_ADDR)
+#define FLASH_USER_SIZE           (FLASH_USER_END_ADDR + 1UL - FLASH_USER_START_ADDR)
 #define FLASH_USER_NMB_PAGE       (FLASH_USER_SIZE / FLASH_PAGE_SIZE)
 
 //First page reserved for KNS configuration and APP configuration
