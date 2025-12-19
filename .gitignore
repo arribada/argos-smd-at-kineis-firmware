@@ -5,3 +5,6 @@ Kineis/doc/html/
 .externalToolBuilders/
 *.log/
 *.bak
+.cache/
+build_info.c
+.Trash-0
