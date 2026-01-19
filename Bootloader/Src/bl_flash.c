@@ -1,0 +1,338 @@
+/**
+ * @file    bl_flash.c
+ * @brief   Flash memory operations for bootloader
+ * @date    2025
+ */
+
+#include "bl_flash.h"
+#include "stm32wlxx_hal.h"
+#include <string.h>
+
+bool bl_flash_init(void)
+{
+    /* Nothing specific to initialize for flash */
+    return true;
+}
+
+bl_flash_status_t bl_flash_unlock(void)
+{
+    if (HAL_FLASH_Unlock() != HAL_OK) {
+        return BL_FLASH_ERROR;
+    }
+
+    /* Clear any pending flags */
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
+
+    return BL_FLASH_OK;
+}
+
+bl_flash_status_t bl_flash_lock(void)
+{
+    if (HAL_FLASH_Lock() != HAL_OK) {
+        return BL_FLASH_ERROR;
+    }
+    return BL_FLASH_OK;
+}
+
+uint32_t bl_flash_get_page(uint32_t address)
+{
+    return (address - FLASH_BASE) / FLASH_PAGE_SIZE;
+}
+
+bl_flash_status_t bl_flash_erase_page(uint32_t page_addr)
+{
+    FLASH_EraseInitTypeDef erase_init;
+    uint32_t page_error = 0;
+    HAL_StatusTypeDef status;
+
+    /* Validate address alignment */
+    if ((page_addr % FLASH_PAGE_SIZE) != 0) {
+        return BL_FLASH_ADDR_ERROR;
+    }
+
+    /* Don't allow erasing bootloader region */
+    if (bl_flash_addr_in_bootloader(page_addr)) {
+        return BL_FLASH_PROTECTED;
+    }
+
+    /* Configure erase */
+    erase_init.TypeErase = FLASH_TYPEERASE_PAGES;
+    erase_init.Page = bl_flash_get_page(page_addr);
+    erase_init.NbPages = 1;
+
+    /* Perform erase */
+    status = HAL_FLASHEx_Erase(&erase_init, &page_error);
+
+    if (status != HAL_OK || page_error != 0xFFFFFFFF) {
+        return BL_FLASH_ERROR;
+    }
+
+    return BL_FLASH_OK;
+}
+
+bl_flash_status_t bl_flash_erase_pages(uint32_t start_addr, uint32_t num_pages)
+{
+    bl_flash_status_t status;
+
+    for (uint32_t i = 0; i < num_pages; i++) {
+        uint32_t page_addr = start_addr + (i * FLASH_PAGE_SIZE);
+        status = bl_flash_erase_page(page_addr);
+        if (status != BL_FLASH_OK) {
+            return status;
+        }
+    }
+
+    return BL_FLASH_OK;
+}
+
+bl_flash_status_t bl_flash_erase_app(void)
+{
+    bl_flash_status_t status;
+
+    /* Unlock flash */
+    status = bl_flash_unlock();
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+
+    /* Calculate number of pages in application region */
+    /* App region: 0x08004000 to 0x0803AFFF (header + code) */
+    uint32_t app_start = APP_HEADER_ADDR;
+    uint32_t app_end = APP_FLASH_END;
+    uint32_t num_pages = ((app_end - app_start) / FLASH_PAGE_SIZE) + 1;
+
+    /* Erase all application pages */
+    status = bl_flash_erase_pages(app_start, num_pages);
+
+    /* Lock flash */
+    bl_flash_lock();
+
+    return status;
+}
+
+bl_flash_status_t bl_flash_write_doubleword(uint32_t address, uint64_t data)
+{
+    HAL_StatusTypeDef status;
+
+    /* Validate 64-bit alignment */
+    if ((address % 8) != 0) {
+        return BL_FLASH_ADDR_ERROR;
+    }
+
+    /* Don't allow writing to bootloader region */
+    if (bl_flash_addr_in_bootloader(address)) {
+        return BL_FLASH_PROTECTED;
+    }
+
+    /* Program double word */
+    status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, address, data);
+
+    if (status != HAL_OK) {
+        return BL_FLASH_ERROR;
+    }
+
+    /* Verify write */
+    if (*(__IO uint64_t*)address != data) {
+        return BL_FLASH_ERROR;
+    }
+
+    return BL_FLASH_OK;
+}
+
+bl_flash_status_t bl_flash_write(uint32_t address, const void* data, uint32_t length)
+{
+    bl_flash_status_t status;
+    const uint8_t* src = (const uint8_t*)data;
+    uint32_t remaining = length;
+    uint32_t current_addr = address;
+
+    /* Validate parameters */
+    if (data == NULL || length == 0) {
+        return BL_FLASH_SIZE_ERROR;
+    }
+
+    /* Validate 64-bit alignment */
+    if ((address % 8) != 0) {
+        return BL_FLASH_ADDR_ERROR;
+    }
+
+    /* Unlock flash */
+    status = bl_flash_unlock();
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+
+    /* Write data in 64-bit chunks */
+    while (remaining >= 8) {
+        uint64_t dword;
+        memcpy(&dword, src, 8);
+
+        status = bl_flash_write_doubleword(current_addr, dword);
+        if (status != BL_FLASH_OK) {
+            bl_flash_lock();
+            return status;
+        }
+
+        src += 8;
+        current_addr += 8;
+        remaining -= 8;
+    }
+
+    /* Handle remaining bytes (pad with 0xFF) */
+    if (remaining > 0) {
+        uint64_t dword = 0xFFFFFFFFFFFFFFFF;
+        memcpy(&dword, src, remaining);
+
+        status = bl_flash_write_doubleword(current_addr, dword);
+        if (status != BL_FLASH_OK) {
+            bl_flash_lock();
+            return status;
+        }
+    }
+
+    /* Lock flash */
+    bl_flash_lock();
+
+    return BL_FLASH_OK;
+}
+
+bl_flash_status_t bl_flash_read(uint32_t address, void* buffer, uint32_t length)
+{
+    if (buffer == NULL || length == 0) {
+        return BL_FLASH_SIZE_ERROR;
+    }
+
+    /* Validate address is in flash range */
+    if (address < FLASH_BASE || (address + length) > (FLASH_BASE + BL_FLASH_TOTAL_SIZE)) {
+        return BL_FLASH_ADDR_ERROR;
+    }
+
+    /* Direct memory read */
+    memcpy(buffer, (const void*)address, length);
+
+    return BL_FLASH_OK;
+}
+
+bool bl_flash_verify(uint32_t address, const void* data, uint32_t length)
+{
+    if (data == NULL || length == 0) {
+        return false;
+    }
+
+    return (memcmp((const void*)address, data, length) == 0);
+}
+
+bool bl_flash_addr_in_app(uint32_t address)
+{
+    return (address >= APP_HEADER_ADDR && address <= APP_FLASH_END);
+}
+
+bool bl_flash_addr_in_bootloader(uint32_t address)
+{
+    return (address >= BL_FLASH_BASE && address <= BL_FLASH_END);
+}
+
+bl_flash_status_t bl_flash_read_bl_state(bl_state_flash_t* state)
+{
+    if (state == NULL) {
+        return BL_FLASH_SIZE_ERROR;
+    }
+
+    return bl_flash_read(BL_STATE_FLASH_ADDR, state, sizeof(bl_state_flash_t));
+}
+
+bl_flash_status_t bl_flash_write_bl_state(const bl_state_flash_t* state)
+{
+    bl_flash_status_t status;
+
+    if (state == NULL) {
+        return BL_FLASH_SIZE_ERROR;
+    }
+
+    /* Unlock flash */
+    status = bl_flash_unlock();
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+
+    /* Erase the state page */
+    status = bl_flash_erase_page(BL_STATE_FLASH_ADDR);
+    if (status != BL_FLASH_OK) {
+        bl_flash_lock();
+        return status;
+    }
+
+    /* Write state structure */
+    const uint8_t* src = (const uint8_t*)state;
+    uint32_t addr = BL_STATE_FLASH_ADDR;
+    uint32_t remaining = sizeof(bl_state_flash_t);
+
+    while (remaining >= 8) {
+        uint64_t dword;
+        memcpy(&dword, src, 8);
+
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr, dword) != HAL_OK) {
+            bl_flash_lock();
+            return BL_FLASH_ERROR;
+        }
+
+        src += 8;
+        addr += 8;
+        remaining -= 8;
+    }
+
+    /* Lock flash */
+    bl_flash_lock();
+
+    return BL_FLASH_OK;
+}
+
+bl_flash_status_t bl_flash_set_dfu_request(bool request)
+{
+    bl_state_flash_t state;
+    bl_flash_status_t status;
+
+    /* Read current state */
+    status = bl_flash_read_bl_state(&state);
+    if (status != BL_FLASH_OK) {
+        /* Initialize new state if read failed */
+        memset(&state, 0, sizeof(state));
+        state.magic = BL_FLAG_MAGIC;
+    }
+
+    /* Check if magic is valid, initialize if not */
+    if (state.magic != BL_FLAG_MAGIC) {
+        memset(&state, 0, sizeof(state));
+        state.magic = BL_FLAG_MAGIC;
+    }
+
+    /* Update flag */
+    if (request) {
+        state.flags |= BL_FLAG_DFU_REQUEST;
+    } else {
+        state.flags &= ~BL_FLAG_DFU_REQUEST;
+    }
+
+    /* Write back */
+    return bl_flash_write_bl_state(&state);
+}
+
+bool bl_flash_is_dfu_requested(void)
+{
+    bl_state_flash_t state;
+
+    if (bl_flash_read_bl_state(&state) != BL_FLASH_OK) {
+        return false;
+    }
+
+    if (state.magic != BL_FLAG_MAGIC) {
+        return false;
+    }
+
+    return (state.flags & BL_FLAG_DFU_REQUEST) != 0;
+}
+
+bl_flash_status_t bl_flash_clear_dfu_request(void)
+{
+    return bl_flash_set_dfu_request(false);
+}
