@@ -30,6 +30,11 @@ static volatile bool cmd_ready = false;
 /* Expected bytes for current command */
 static uint16_t expected_bytes = 1;  /* Start with expecting command byte */
 
+/* State for multi-transaction commands (WRITE_REQ -> WRITE_DATA) */
+static uint32_t pending_write_addr = 0;
+static uint16_t pending_write_len = 0;
+static bool write_req_pending = false;
+
 bool bl_spi_init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -80,6 +85,9 @@ bool bl_spi_init(void)
     payload_len = 0;
     cmd_ready = false;
     expected_bytes = 1;
+    pending_write_addr = 0;
+    pending_write_len = 0;
+    write_req_pending = false;
 
     return true;
 }
@@ -197,14 +205,12 @@ bool bl_spi_process(void)
                 break;
 
             case SPI_CMD_DFU_WRITE_DATA:
-                /* First get the length from WRITE_REQ if we have it */
-                if (payload_len >= 6) {
-                    uint16_t data_len;
-                    memcpy(&data_len, payload_buffer + 4, 2);
-                    expected_bytes = data_len;
+                /* Use the length from previous WRITE_REQ */
+                if (write_req_pending && pending_write_len > 0) {
+                    expected_bytes = pending_write_len;
                     HAL_SPI_TransmitReceive_IT(&hspi, tx_buffer, rx_buffer, expected_bytes);
                 } else {
-                    cmd_ready = true;  /* Error - no length specified */
+                    cmd_ready = true;  /* Error - no WRITE_REQ received first */
                 }
                 break;
 
@@ -231,6 +237,14 @@ bool bl_spi_process(void)
             memcpy(payload_buffer + payload_len, rx_buffer, rx_count);
             payload_len += rx_count;
         }
+
+        /* Handle WRITE_REQ: store address and length for subsequent WRITE_DATA */
+        if (current_cmd == SPI_CMD_DFU_WRITE_REQ && payload_len >= 6) {
+            memcpy(&pending_write_addr, payload_buffer, 4);
+            memcpy(&pending_write_len, payload_buffer + 4, 2);
+            write_req_pending = true;
+        }
+
         cmd_ready = true;
     }
 
@@ -244,6 +258,17 @@ uint8_t bl_spi_get_command(void)
 
 uint16_t bl_spi_get_payload(uint8_t* buffer, uint16_t max_len)
 {
+    /* For WRITE_DATA command, prepend the stored address from WRITE_REQ */
+    if (current_cmd == SPI_CMD_DFU_WRITE_DATA && write_req_pending) {
+        if (max_len < 4 + payload_len) {
+            return 0;  /* Buffer too small */
+        }
+        /* Copy address first, then data */
+        memcpy(buffer, &pending_write_addr, 4);
+        memcpy(buffer + 4, payload_buffer, payload_len);
+        return 4 + payload_len;
+    }
+
     uint16_t len = (payload_len < max_len) ? payload_len : max_len;
     memcpy(buffer, payload_buffer, len);
     return len;
@@ -260,6 +285,13 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
         tx_len = copy_len + 1;
     } else {
         tx_len = 1;
+    }
+
+    /* Clear write pending state after WRITE_DATA is processed */
+    if (current_cmd == SPI_CMD_DFU_WRITE_DATA) {
+        write_req_pending = false;
+        pending_write_addr = 0;
+        pending_write_len = 0;
     }
 
     /* Reset command state */

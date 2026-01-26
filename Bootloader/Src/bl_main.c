@@ -205,18 +205,31 @@ static void bl_state_dfu_uart(void)
                 dfu_cmd = DFU_CMD_ERASE;
             } else if (strncmp(cmd_buffer, "AT+DFU=VERIFY", 13) == 0) {
                 dfu_cmd = DFU_CMD_VERIFY;
-                /* Parse CRC from command */
+                /* Parse CRC from command: AT+DFU=VERIFY,<crc32_hex> */
                 const char* crc_str = cmd_buffer + 14;
                 if (*crc_str == ',') crc_str++;
-                uint32_t crc = strtoul(crc_str, NULL, 16);
+                char* endptr;
+                uint32_t crc = strtoul(crc_str, &endptr, 16);
+                if (endptr == crc_str) {
+                    /* Parse error - no CRC provided */
+                    bl_uart_send_response(DFU_RSP_CRC_ERROR, NULL, 0);
+                    return;
+                }
                 memcpy(payload, &crc, 4);
                 payload_len = 4;
             } else if (strncmp(cmd_buffer, "AT+DFU=WRITE", 12) == 0) {
                 dfu_cmd = DFU_CMD_WRITE;
-                /* Parse address and hex data */
+                /* Parse address and hex data: AT+DFU=WRITE,<addr>,<hex_data> */
                 const char* params = cmd_buffer + 13;
                 if (*params == ',') params++;
-                uint32_t addr = strtoul(params, (char**)&params, 16);
+                char* endptr;
+                uint32_t addr = strtoul(params, &endptr, 16);
+                if (endptr == params) {
+                    /* Parse error - no address */
+                    bl_uart_send_response(DFU_RSP_ADDR_ERROR, NULL, 0);
+                    return;
+                }
+                params = endptr;
                 if (*params == ',') params++;
 
                 memcpy(payload, &addr, 4);
@@ -224,9 +237,21 @@ static void bl_state_dfu_uart(void)
 
                 /* Convert hex string to binary */
                 while (*params && payload_len < BL_CHUNK_SIZE) {
+                    /* Validate hex characters */
+                    if (!((params[0] >= '0' && params[0] <= '9') ||
+                          (params[0] >= 'A' && params[0] <= 'F') ||
+                          (params[0] >= 'a' && params[0] <= 'f'))) {
+                        break;  /* Stop at first non-hex character */
+                    }
+                    if (!params[1]) break;  /* Need pairs */
                     char hex[3] = {params[0], params[1], 0};
                     payload[payload_len++] = (uint8_t)strtoul(hex, NULL, 16);
                     params += 2;
+                }
+                /* Check if we got any data */
+                if (payload_len <= 4) {
+                    bl_uart_send_response(DFU_RSP_SIZE_ERROR, NULL, 0);
+                    return;
                 }
             } else if (strncmp(cmd_buffer, "AT+DFU=JUMP", 11) == 0) {
                 dfu_cmd = DFU_CMD_JUMP;
@@ -234,6 +259,31 @@ static void bl_state_dfu_uart(void)
                 dfu_cmd = DFU_CMD_RESET;
             } else if (strncmp(cmd_buffer, "AT+DFU=STATUS", 13) == 0) {
                 dfu_cmd = DFU_CMD_GET_STATUS;
+            } else if (strncmp(cmd_buffer, "AT+DFU=ABORT", 12) == 0) {
+                dfu_cmd = DFU_CMD_ABORT;
+            } else if (strncmp(cmd_buffer, "AT+DFU=READ", 11) == 0) {
+                dfu_cmd = DFU_CMD_READ;
+                /* Parse address and length: AT+DFU=READ,<addr>,<len> */
+                const char* params = cmd_buffer + 12;
+                if (*params == ',') params++;
+                char* endptr;
+                uint32_t addr = strtoul(params, &endptr, 16);
+                if (endptr == params) {
+                    /* Parse error - no address */
+                    bl_uart_send_response(DFU_RSP_ADDR_ERROR, NULL, 0);
+                    return;
+                }
+                params = endptr;
+                if (*params == ',') params++;
+                uint16_t len = (uint16_t)strtoul(params, &endptr, 10);
+                if (endptr == params || len == 0) {
+                    /* Parse error - no length */
+                    bl_uart_send_response(DFU_RSP_SIZE_ERROR, NULL, 0);
+                    return;
+                }
+                memcpy(payload, &addr, 4);
+                memcpy(payload + 4, &len, 2);
+                payload_len = 6;
             }
 
             /* Process command */
@@ -279,7 +329,13 @@ static void bl_state_dfu_spi(void)
                 case SPI_CMD_DFU_PING:      dfu_cmd = DFU_CMD_PING; break;
                 case SPI_CMD_DFU_GET_INFO:  dfu_cmd = DFU_CMD_GET_INFO; break;
                 case SPI_CMD_DFU_ERASE:     dfu_cmd = DFU_CMD_ERASE; break;
+                case SPI_CMD_DFU_WRITE_REQ:
+                    /* WRITE_REQ just stores address/length for next WRITE_DATA */
+                    /* Send OK response, no DFU processing needed */
+                    bl_spi_send_response(DFU_RSP_OK, NULL, 0);
+                    return;
                 case SPI_CMD_DFU_WRITE_DATA:dfu_cmd = DFU_CMD_WRITE; break;
+                case SPI_CMD_DFU_READ_REQ:  dfu_cmd = DFU_CMD_READ; break;
                 case SPI_CMD_DFU_VERIFY:    dfu_cmd = DFU_CMD_VERIFY; break;
                 case SPI_CMD_DFU_RESET:     dfu_cmd = DFU_CMD_RESET; break;
                 case SPI_CMD_DFU_JUMP:      dfu_cmd = DFU_CMD_JUMP; break;

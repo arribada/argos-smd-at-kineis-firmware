@@ -21,8 +21,15 @@
 bool bMGR_SPI_CMD_logFailedMsg(enum ERROR_RETURN_T eErrorType, SPI_Buffer *tx)
 {
 	MGR_LOG_DEBUG("+ERROR=%i\r\n", eErrorType);
-	tx->data[0] = 0;
-	tx->next_req = 1;
+	/* Send error code to SPI master:
+	 * Byte 0: MAC_ERROR (0x09) to indicate error
+	 * Byte 1: High byte of error code
+	 * Byte 2: Low byte of error code
+	 */
+	tx->data[0] = MAC_ERROR;
+	tx->data[1] = (uint8_t)((eErrorType >> 8) & 0xFF);
+	tx->data[2] = (uint8_t)(eErrorType & 0xFF);
+	tx->next_req = 3;
 	MCU_SPI_DRIVER_writeread();
 	return false;
 }

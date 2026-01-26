@@ -250,15 +250,17 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
         /* Error response */
         const char* err_str;
         switch (status) {
-            case DFU_RSP_CRC_ERROR:    err_str = "CRC_ERROR"; break;
-            case DFU_RSP_ADDR_ERROR:   err_str = "ADDR_ERROR"; break;
-            case DFU_RSP_SIZE_ERROR:   err_str = "SIZE_ERROR"; break;
-            case DFU_RSP_FLASH_ERROR:  err_str = "FLASH_ERROR"; break;
-            case DFU_RSP_BUSY:         err_str = "BUSY"; break;
-            case DFU_RSP_INVALID_CMD:  err_str = "INVALID_CMD"; break;
-            case DFU_RSP_TIMEOUT:      err_str = "TIMEOUT"; break;
-            case DFU_RSP_NOT_READY:    err_str = "NOT_READY"; break;
-            default:                   err_str = "ERROR"; break;
+            case DFU_RSP_CRC_ERROR:      err_str = "CRC_ERROR"; break;
+            case DFU_RSP_ADDR_ERROR:     err_str = "ADDR_ERROR"; break;
+            case DFU_RSP_SIZE_ERROR:     err_str = "SIZE_ERROR"; break;
+            case DFU_RSP_FLASH_ERROR:    err_str = "FLASH_ERROR"; break;
+            case DFU_RSP_BUSY:           err_str = "BUSY"; break;
+            case DFU_RSP_INVALID_CMD:    err_str = "INVALID_CMD"; break;
+            case DFU_RSP_TIMEOUT:        err_str = "TIMEOUT"; break;
+            case DFU_RSP_NOT_READY:      err_str = "NOT_READY"; break;
+            case DFU_RSP_INVALID_HEADER: err_str = "INVALID_HEADER"; break;
+            case DFU_RSP_VERIFY_ERROR:   err_str = "VERIFY_ERROR"; break;
+            default:                     err_str = "ERROR"; break;
         }
         len = snprintf(response, sizeof(response), "+DFU=ERR,%s\r\n", err_str);
     }

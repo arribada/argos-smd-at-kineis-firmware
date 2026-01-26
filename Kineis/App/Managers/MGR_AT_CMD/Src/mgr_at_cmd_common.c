@@ -146,6 +146,8 @@ bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *a
 	}
 	break;
 	default:
+		/* Unknown response type - notify user */
+		MCU_AT_CONSOLE_send("+ERROR=%i\r\n", (int)ERROR_UNKNOWN);
 		break;
 	}
 	return false;

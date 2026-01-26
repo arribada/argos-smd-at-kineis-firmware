@@ -193,7 +193,7 @@ bool bMGR_AT_CMD_ID_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 			
 			nbBits = u16MGR_AT_CMD_convertAsciiToInt32(pu8_cmdParamString + 6, &dev_id);
 
-			if ((nbBits > 32) && (nbBits < 1))
+			if ((nbBits > 32) || (nbBits < 1))
 			{
 				MGR_LOG_DEBUG("[ERROR] Invalid ID length conversion\r\n");
 				return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
@@ -319,13 +319,12 @@ bool bMGR_AT_CMD_LPM_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
 				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
 			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
-			bMGR_AT_CMD_logSucceedMsg();
+			return bMGR_AT_CMD_logSucceedMsg();
 		}
-		if (scanParamRes != 1)
-			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 	}
 
-	return false;
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
 bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
@@ -354,6 +353,7 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 				return bMGR_AT_CMD_logSucceedMsg();
 			} else {
 				MGR_LOG_DEBUG("Failed to update MC=%u\r\n", mc);
+				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) KNS_STATUS_FLASH_ERR);
 			}
 		}
 	}

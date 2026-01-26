@@ -147,7 +147,9 @@ typedef enum {
     DFU_RSP_BUSY            = 0x06,
     DFU_RSP_INVALID_CMD     = 0x07,
     DFU_RSP_TIMEOUT         = 0x08,
-    DFU_RSP_NOT_READY       = 0x09
+    DFU_RSP_NOT_READY       = 0x09,
+    DFU_RSP_INVALID_HEADER  = 0x0A,
+    DFU_RSP_VERIFY_ERROR    = 0x0B
 } dfu_response_t;
 
 /*******************************************************************************

@@ -276,7 +276,10 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
     }
 
     if (current_index < wl_size) {
-        return write_flash_word(wl_start + current_index * 8, 0);
+        if (write_flash_word(wl_start + current_index * 8, 0) != HAL_OK) {
+            return KNS_STATUS_FLASH_ERR;
+        }
+        return KNS_STATUS_OK;
     } else {
         // Full, reset area and increment overflow
         uint64_t of = *(uint64_t*)of_addr;

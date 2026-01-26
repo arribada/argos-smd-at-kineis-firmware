@@ -230,7 +230,7 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
 
     /* Verify write */
     if (!bl_flash_verify(address, aligned_data, aligned_len)) {
-        return DFU_RSP_FLASH_ERROR;
+        return DFU_RSP_VERIFY_ERROR;
     }
 
     /* Update context */
@@ -346,7 +346,7 @@ dfu_response_t bl_dfu_cmd_set_header(const uint8_t* data, uint16_t data_len)
     const app_header_t* header = (const app_header_t*)data;
 
     if (!bl_header_magic_valid(header)) {
-        return DFU_RSP_ERROR;
+        return DFU_RSP_INVALID_HEADER;
     }
 
     /* Check if header page needs erasing (if not already done) */
@@ -374,7 +374,7 @@ dfu_response_t bl_dfu_cmd_set_header(const uint8_t* data, uint16_t data_len)
 
     /* Verify */
     if (!bl_flash_verify(APP_HEADER_ADDR, data, data_len)) {
-        return DFU_RSP_FLASH_ERROR;
+        return DFU_RSP_VERIFY_ERROR;
     }
 
     dfu_ctx.header_written = true;

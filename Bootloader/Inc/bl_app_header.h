@@ -15,7 +15,7 @@
 /*******************************************************************************
  * APPLICATION HEADER STRUCTURE
  *
- * This structure is placed at APP_HEADER_ADDR (0x08004000) and contains
+ * This structure is placed at APP_HEADER_ADDR (0x08008000) and contains
  * metadata about the application firmware for validation by the bootloader.
  *
  * Total size: 256 bytes (64-bit aligned)
@@ -30,7 +30,7 @@ typedef struct __attribute__((packed)) {
     uint32_t reserved1;          /**< Reserved for future use */
 
     /* Flash layout block (16 bytes) */
-    uint32_t app_start_addr;     /**< Start address of application code (0x08004100) */
+    uint32_t app_start_addr;     /**< Start address of application code (0x08008100) */
     uint32_t app_size;           /**< Size of application in bytes */
     uint32_t app_entry_point;    /**< Entry point address (Reset_Handler) */
     uint32_t vector_table_addr;  /**< Vector table address */
