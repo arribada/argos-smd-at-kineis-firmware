@@ -81,14 +81,23 @@ static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
 	bool ret = true;
 
 	MGR_LOG_DEBUG("%s:: Process %u \r\n",__func__, cmd);
-	if ((cmd > 0) && cmd < SPICMD_MAX_COUNT)
+	if ((cmd > 0) && (cmd < SPICMD_MAX_COUNT))
 	{
-		ret = cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc(&rxBuf, &txBuf);
-
+		/* Check if handler function is valid before calling */
+		if (cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc != NULL)
+		{
+			ret = cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc(&rxBuf, &txBuf);
+		} else {
+			MGR_LOG_DEBUG("%s:: NULL handler for cmd %u\r\n", __func__, cmd);
+			rxBuf.next_req = 1;
+			bMGR_SPI_DRIVER_read();
+			ret = false;
+		}
 	} else {
 		MGR_LOG_DEBUG("NONE/Unknown command %u\r\n", cmd);
 		rxBuf.next_req = 1;
 		bMGR_SPI_DRIVER_read();
+		ret = false;
 	}
 	return (ret);
 }
@@ -141,37 +150,32 @@ void MGR_SPI_CMD_state_handler() {
 			}
            break;
        case SPICMD_WAITING_RX:
-    	   //add timeout if req is >1, don't block the driver.
-    	   if(rxBuf.next_req > 1)
+    	   /* Timeout for all RX operations to prevent blocking */
+    	   if (startTickTimeout == 0)
     	   {
-				MGR_LOG_DEBUG("SPI_CMD_WAITING_RX\r\n");
-    		   if (startTickTimeout == 0)
-    		   {
-    			   startTickTimeout = HAL_GetTick();
-    		   }
-
-    		   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
-			   {
-				   MGR_LOG_DEBUG("%s::SPICMD_WAITING_RX::Read timeout occurred!\r\n", __func__);
-				   spiState = SPICMD_ERROR;
-			   }
+    		   startTickTimeout = HAL_GetTick();
     	   }
+
+    	   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
+		   {
+			   MGR_LOG_DEBUG("%s::SPICMD_WAITING_RX::Read timeout (req=%u)!\r\n", __func__, rxBuf.next_req);
+			   spi_stats.timeout_count++;
+			   spiState = SPICMD_ERROR;
+		   }
            break;
        case SPICMD_WAITING_TX:
-    	   if(txBuf.next_req > 1)
+    	   /* Timeout for all TX operations to prevent blocking */
+    	   if (startTickTimeout == 0)
     	   {
-			MGR_LOG_DEBUG("SPI_CMD_WAITING_TX\r\n");
-    		   if (startTickTimeout == 0)
-    		   {
-    			   startTickTimeout = HAL_GetTick();
-    		   }
-
-    		   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
-			   {
-				   MGR_LOG_DEBUG("%s::SPICMD_WAITING_TX::Write timeout occurred!\r\n", __func__);
-				   spiState = SPICMD_ERROR;
-			   }
+    		   startTickTimeout = HAL_GetTick();
     	   }
+
+    	   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
+		   {
+			   MGR_LOG_DEBUG("%s::SPICMD_WAITING_TX::Write timeout (req=%u)!\r\n", __func__, txBuf.next_req);
+			   spi_stats.timeout_count++;
+			   spiState = SPICMD_ERROR;
+		   }
            break;
        case SPICMD_ERROR:
 		    MGR_LOG_DEBUG("%s:: SPI error, resetting...\r\n", __func__);

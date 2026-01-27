@@ -127,8 +127,12 @@ static const uint8_t device_sn[DEVICE_SN_LENGTH] = { 'S', 'M', 'D', '_', '1', '1
 //}
 enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
 {
-	*mc_ptr = message_counter;
+	if (!mc_ptr)
+		return KNS_STATUS_ERROR;
 
+	uint64_t full_counter = MCU_FLASH_read_msg_counter();
+	*mc_ptr = (uint16_t)(full_counter & 0xFFFF);
+	message_counter = *mc_ptr;
 	return KNS_STATUS_OK;
 }
 
@@ -136,8 +140,7 @@ enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
 {
 	message_counter = mcTmp;
 
-	return KNS_STATUS_OK;
-
+	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
 }
 
 

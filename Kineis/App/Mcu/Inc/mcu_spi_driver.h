@@ -53,6 +53,24 @@ extern "C" {
 #define RXBUF_SIZE 256
 #endif
 
+/* Thread safety macros for ISR/main context synchronization */
+#define SPI_ENTER_CRITICAL() __disable_irq()
+#define SPI_EXIT_CRITICAL()  __enable_irq()
+
+/**
+ * @brief Structure for SPI driver statistics and diagnostics.
+ */
+typedef struct {
+    uint32_t rx_count;        /**< Total successful RX transactions */
+    uint32_t tx_count;        /**< Total successful TX transactions */
+    uint32_t error_count;     /**< Total error occurrences */
+    uint32_t timeout_count;   /**< Total timeout occurrences */
+    uint32_t reset_count;     /**< Total driver resets */
+    uint32_t last_error;      /**< Last HAL error code */
+} SPI_Stats_t;
+
+extern SPI_Stats_t spi_stats; /**< Global SPI statistics */
+
 /**
  * @brief Structure representing an SPI data buffer.
  */

@@ -38,6 +38,8 @@ static uint8_t spiRxBuf[RXBUF_SIZE];
 SPI_Buffer rxBuf = { .data = spiRxBuf, .size = RXBUF_SIZE, .next_req = 1};
 SPI_Buffer txBuf = { .data = spiTxBuf, .size = TXBUF_SIZE, .next_req = 0};
 
+/* SPI statistics for diagnostics */
+SPI_Stats_t spi_stats = {0};
 
 static int8_t (*rxSpiEvtCb)(SPI_Buffer *rx, SPI_Buffer *tx) = NULL;
 
@@ -50,14 +52,15 @@ uint32_t startTickTimeout = 0;
 void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
         MGR_LOG_DEBUG("RX completed\r\n");
+        spi_stats.rx_count++;
         if (rxSpiEvtCb != NULL)
         {
-        	//rxBuf.size = 1;
         	rxSpiEvtCb(&rxBuf, &txBuf);
 			startTickTimeout = 0;
         } else {
 			MGR_LOG_DEBUG("%s:: rxSpiEvtCb not defined\r\n", __func__);
             spiState = SPICMD_ERROR;
+            spi_stats.error_count++;
         }
     } else {
 		MGR_LOG_DEBUG("%s::ERROR SPI interrupt from other SPI instance\r\n", __func__);
@@ -82,7 +85,7 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
         MGR_LOG_DEBUG("TX completed\r\n");
 		startTickTimeout = 0;
-		startTickTimeout = 0;
+		spi_stats.tx_count++;
     } else {
 		MGR_LOG_DEBUG("%s::ERROR SPI interrupt from other SPI instance\r\n", __func__);
     	kns_assert(0);
@@ -92,12 +95,24 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
 HAL_StatusTypeDef MCU_SPI_DRIVER_writeread()
 {
 	HAL_StatusTypeDef ret = HAL_OK;
+
+	/* Bounds checking */
+	if (txBuf.next_req > TXBUF_SIZE || txBuf.next_req > RXBUF_SIZE) {
+		MGR_LOG_DEBUG("%s:: Buffer overflow prevented (req=%u, max=%u)\r\n",
+					  __func__, txBuf.next_req, TXBUF_SIZE);
+		spiState = SPICMD_ERROR;
+		spi_stats.error_count++;
+		return HAL_ERROR;
+	}
+
 	// waiting Read request
 	ret = HAL_SPI_TransmitReceive_IT(hspi_handle, txBuf.data, rxBuf.data, txBuf.next_req);
 	if (ret == HAL_OK){
 		spiState = SPICMD_WAITING_TX;
 	} else {
 		spiState = SPICMD_ERROR;
+		spi_stats.error_count++;
+		spi_stats.last_error = hspi_handle->ErrorCode;
 	}
 	return ret;
 }
@@ -108,11 +123,23 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read()
 		MGR_LOG_DEBUG("%s:: Waiting RX is %u should be greater than 0\r\n",__func__, rxBuf.next_req);
 		rxBuf.next_req = 1; // next request forced to 1
 	}
+
+	/* Bounds checking */
+	if (rxBuf.next_req > RXBUF_SIZE) {
+		MGR_LOG_DEBUG("%s:: Buffer overflow prevented (req=%u, max=%u)\r\n",
+					  __func__, rxBuf.next_req, RXBUF_SIZE);
+		spiState = SPICMD_ERROR;
+		spi_stats.error_count++;
+		return HAL_ERROR;
+	}
+
 	HAL_StatusTypeDef ret = HAL_SPI_Receive_IT(hspi_handle, rxBuf.data, rxBuf.next_req);
 	if (ret == HAL_OK) {
 		spiState = SPICMD_WAITING_RX;
 	} else {
 		spiState = SPICMD_ERROR;
+		spi_stats.error_count++;
+		spi_stats.last_error = hspi_handle->ErrorCode;
 	}
 	return ret;
 }
@@ -161,6 +188,7 @@ bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi)
 {
 	// Set SPI OK and TX WAITING flags
 	MGR_LOG_DEBUG("%s:: called\r\n", __func__);
+	spi_stats.reset_count++;
 
 	if (hspi != NULL && hspi_handle == NULL) // Handle is not set yet
 	{
@@ -219,7 +247,7 @@ bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi)
 	if (ret != HAL_OK)
 	{
 		MGR_LOG_DEBUG("Failed to deinitialize SPI.\r\n");
-		return ret;
+		return false;
 	}
 
 	// Step 6: Reinitialize the SPI peripheral with default configuration
@@ -227,7 +255,7 @@ bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi)
 	if (ret != HAL_OK)
 	{
 		MGR_LOG_DEBUG("Failed to reinitialize SPI.\r\n");
-		return ret;
+		return false;
 	}
     __HAL_SPI_ENABLE(hspi_handle);
 

@@ -255,6 +255,10 @@ uint64_t read_wear_counter(uint32_t start_addr, uint32_t wl_size_words, uint32_t
         valid_index = i + 1;
     }
     uint64_t overflow = *(uint64_t*)overflow_addr;
+    /* Handle erased flash (0xFFFFFFFFFFFFFFFF) as 0 */
+    if (overflow == 0xFFFFFFFFFFFFFFFFULL) {
+        overflow = 0;
+    }
     return overflow * wl_size_words + valid_index;
 }
 
@@ -267,7 +271,7 @@ uint64_t read_wear_counter(uint32_t start_addr, uint32_t wl_size_words, uint32_t
  */
 enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32_t of_addr)
 {
-    uint32_t current_index = 0;
+    uint32_t current_index = wl_size; /* Default to full (no erased slot found) */
     for (uint32_t i = 0; i < wl_size; ++i) {
         if (read_flash_word(wl_start + i * 8) == 0xFFFFFFFFFFFFFFFFULL) {
             current_index = i;
@@ -283,10 +287,13 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
     } else {
         // Full, reset area and increment overflow
         uint64_t of = *(uint64_t*)of_addr;
+        /* Handle erased flash as 0 */
+        if (of == 0xFFFFFFFFFFFFFFFFULL) {
+            of = 0;
+        }
         ++of;
         if(MCU_FLASH_write(of_addr, &of, sizeof(of)) != KNS_STATUS_OK) {
-        //if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, of_addr, of) != HAL_OK) {
-            HAL_FLASH_Lock();
+            /* MCU_FLASH_write already locks flash on error */
             return KNS_STATUS_FLASH_ERR;
         }
 
@@ -321,8 +328,7 @@ enum KNS_status_t reset_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32
 
     uint64_t of = 0;
     if(MCU_FLASH_write(of_addr, &of, sizeof(of)) != KNS_STATUS_OK) {
-    //if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, of_addr, of) != HAL_OK) {
-        HAL_FLASH_Lock();
+        /* MCU_FLASH_write already locks flash on error */
         return KNS_STATUS_FLASH_ERR;
     }
     HAL_FLASH_Unlock();
@@ -355,8 +361,7 @@ enum KNS_status_t set_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32_t
 
     uint32_t error;
     if(MCU_FLASH_write(of_addr, &of, sizeof(of)) != KNS_STATUS_OK) {
-    //if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, of_addr, of) != HAL_OK) {
-        HAL_FLASH_Lock();
+        /* MCU_FLASH_write already locks flash on error */
         return KNS_STATUS_FLASH_ERR;
     }
 
