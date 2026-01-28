@@ -365,6 +365,20 @@ bool bMGR_SPI_CMD_WRITETCXOREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
  */
 bool bMGR_SPI_CMD_READTCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
 
+/**
+ * @brief Enter DFU (Device Firmware Update) bootloader mode.
+ *
+ * This function processes the SPI command to enter the bootloader for firmware update.
+ * It sets the DFU request flag in the bootloader state flash and triggers a system reset.
+ * After reset, the bootloader will detect the DFU flag and enter DFU mode.
+ *
+ * @param rx Pointer to the SPI receive buffer containing the command.
+ * @param tx Pointer to the SPI transmit buffer where the acknowledgment will be sent.
+ *
+ * @return true if the command is correctly received and processed (device will reset).
+ */
+bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
 #endif /* __MGR_SPI_CMD_LIST_GENERAL_H */
 
 /** @} */

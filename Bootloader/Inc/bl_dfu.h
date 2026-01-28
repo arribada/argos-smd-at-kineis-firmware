@@ -20,7 +20,9 @@ typedef struct {
     uint32_t write_addr;        /**< Current write address */
     uint32_t expected_crc;      /**< Expected CRC32 from host */
     uint32_t calculated_crc;    /**< Calculated CRC32 */
+    bool     session_active;    /**< DFU session is active (ERASE was called) */
     bool     erase_done;        /**< Flash has been erased */
+    bool     verify_passed;     /**< CRC verification passed */
     bool     header_written;    /**< Header has been written */
     dfu_response_t last_error;  /**< Last error code */
 } dfu_context_t;
@@ -130,5 +132,17 @@ const dfu_context_t* bl_dfu_get_context(void);
  * @return true if complete and verified
  */
 bool bl_dfu_is_complete(void);
+
+/**
+ * @brief Check if jump to application is allowed
+ * @return true if CRC verification passed and session is complete
+ */
+bool bl_dfu_can_jump(void);
+
+/**
+ * @brief Check if a DFU session is active
+ * @return true if ERASE was called and session not aborted
+ */
+bool bl_dfu_session_active(void);
 
 #endif /* BL_DFU_H */

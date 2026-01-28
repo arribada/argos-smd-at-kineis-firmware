@@ -25,6 +25,8 @@ void bl_dfu_reset(void)
     memset(&dfu_ctx, 0, sizeof(dfu_ctx));
     dfu_ctx.write_addr = APP_HEADER_ADDR;
     dfu_ctx.last_error = DFU_RSP_OK;
+    dfu_ctx.session_active = false;
+    dfu_ctx.verify_passed = false;
 }
 
 dfu_response_t bl_dfu_process_cmd(dfu_cmd_t cmd, const uint8_t* data,
@@ -172,6 +174,8 @@ dfu_response_t bl_dfu_cmd_erase(void)
     /* Reset DFU context for new transfer */
     bl_dfu_reset();
     dfu_ctx.erase_done = true;
+    dfu_ctx.session_active = true;  /* Session starts with ERASE */
+    dfu_ctx.verify_passed = false;  /* Reset verification status */
 
     /* Reset CRC calculation */
     bl_crc_reset();
@@ -186,8 +190,8 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
     const uint8_t* payload;
     uint16_t payload_len;
 
-    /* Check if erase was done */
-    if (!dfu_ctx.erase_done) {
+    /* Check if session is active (ERASE was called) */
+    if (!dfu_ctx.session_active || !dfu_ctx.erase_done) {
         return DFU_RSP_NOT_READY;
     }
 
@@ -278,6 +282,11 @@ dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
 {
     uint32_t expected_crc;
 
+    /* Check if session is active */
+    if (!dfu_ctx.session_active) {
+        return DFU_RSP_NOT_READY;
+    }
+
     if (data_len < 4) {
         return DFU_RSP_SIZE_ERROR;
     }
@@ -290,9 +299,12 @@ dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
 
     /* Compare CRCs */
     if (dfu_ctx.calculated_crc != dfu_ctx.expected_crc) {
+        dfu_ctx.verify_passed = false;  /* Explicitly mark as failed */
         return DFU_RSP_CRC_ERROR;
     }
 
+    /* CRC verified successfully */
+    dfu_ctx.verify_passed = true;
     return DFU_RSP_OK;
 }
 
@@ -398,10 +410,29 @@ const dfu_context_t* bl_dfu_get_context(void)
 bool bl_dfu_is_complete(void)
 {
     /* Transfer is complete if:
+     * - Session is active
      * - Erase was done
-     * - CRC was verified successfully
+     * - CRC was verified successfully (verify_passed flag)
      */
-    return dfu_ctx.erase_done &&
-           (dfu_ctx.calculated_crc == dfu_ctx.expected_crc) &&
-           (dfu_ctx.expected_crc != 0);
+    return dfu_ctx.session_active &&
+           dfu_ctx.erase_done &&
+           dfu_ctx.verify_passed;
+}
+
+bool bl_dfu_can_jump(void)
+{
+    /* Jump is allowed only if:
+     * - CRC verification passed
+     * - Session was properly completed
+     */
+    if (!dfu_ctx.verify_passed) {
+        return false;  /* CRC not verified or verification failed */
+    }
+
+    return bl_dfu_is_complete();
+}
+
+bool bl_dfu_session_active(void)
+{
+    return dfu_ctx.session_active;
 }

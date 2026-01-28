@@ -5,3 +5,4 @@ Kineis/doc/html/
 .externalToolBuilders/
 *.log/
 *.bak
+.claude/*

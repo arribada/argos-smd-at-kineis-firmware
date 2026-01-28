@@ -80,10 +80,11 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     PB5     ------> SPI1_MOSI
     PA1     ------> SPI1_SCK
     */
+    /* NSS (PA15) and SCK (PA1) pins */
     GPIO_InitStruct.Pin = GPIO_PIN_15|GPIO_PIN_1;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;  /* No pull - let master control NSS */
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 

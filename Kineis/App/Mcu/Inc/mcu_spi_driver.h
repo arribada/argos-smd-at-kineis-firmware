@@ -77,7 +77,7 @@ extern SPI_Stats_t spi_stats; /**< Global SPI statistics */
 typedef struct {
     uint8_t *data;      /**< Pointer to the data buffer */
     uint16_t size;      /**< Current size of valid data in the buffer */
-    uint8_t next_req;   /**< Number of elements expected to be read/sent next */
+    uint16_t next_req;  /**< Number of elements expected to be read/sent next */
 } SPI_Buffer;
 
 extern SPI_Buffer rxBuf;   /**< Global SPI reception buffer */
@@ -97,8 +97,8 @@ typedef enum {
     SPICMD_ERROR              /**< Error state */
 } SpiState;
 
-extern SpiState spiState;         /**< Current state of the SPI console */
-extern uint32_t startTickTimeout; /**< Timeout tick value for SPI operations */
+extern volatile SpiState spiState;         /**< Current state of the SPI console */
+extern volatile uint32_t startTickTimeout; /**< Timeout tick value for SPI operations */
 
 /* Functions prototypes ------------------------------------------------------*/
 
@@ -175,6 +175,25 @@ void MCU_SPI_DRIVER_send_dataBuf(uint8_t *pu8_inDataBuff, uint16_t u16_dataLenBi
  * @return true if the SPI interface is successfully reset, false otherwise.
  */
 bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi);
+
+/**
+ * @brief Check if SPI transaction has ended by detecting idle state.
+ *
+ * This function detects when a SPI transaction has completed by monitoring
+ * the BSY flag. When the master finishes clocking, SPI becomes idle.
+ *
+ * @param[out] bytes_received Pointer to store the number of bytes received.
+ * @return true if transaction ended and data is available, false otherwise.
+ */
+bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received);
+
+/**
+ * @brief Abort current SPI transfer and return to idle state.
+ *
+ * This should be called when a transaction has ended to properly terminate
+ * the HAL transfer before processing data.
+ */
+void MCU_SPI_DRIVER_abort_transfer(void);
 
 #ifdef __cplusplus
 }

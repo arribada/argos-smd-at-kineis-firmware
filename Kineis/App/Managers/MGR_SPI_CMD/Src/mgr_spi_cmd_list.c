@@ -68,6 +68,29 @@ const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {
 	{ CMD_READ_TCXO_WU, CMD_NONE,         		    bMGR_SPI_CMD_READTCXO_cmd},
 	{ CMD_WRITE_TCXOWU_REQ, CMD_WRITE_TCXOWU, 	    bMGR_SPI_CMD_WRITETCXOREQ_cmd},
 	{ CMD_WRITE_TCXOWU, CMD_NONE,     				bMGR_SPI_CMD_WRITETCXO_cmd},
+	/* Reserved commands 0x2B - 0x3E (gap for future use and alignment with bootloader DFU range) */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2B */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2C */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2D */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2E */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2F */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x30 - SPI_CMD_DFU_PING in bootloader */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x31 - SPI_CMD_DFU_GET_INFO */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x32 - SPI_CMD_DFU_ERASE */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x33 - SPI_CMD_DFU_WRITE_REQ */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x34 - SPI_CMD_DFU_WRITE_DATA */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x35 - SPI_CMD_DFU_READ_REQ */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x36 - SPI_CMD_DFU_READ_DATA */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x37 - SPI_CMD_DFU_VERIFY */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x38 - SPI_CMD_DFU_RESET */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x39 - SPI_CMD_DFU_JUMP */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x3A - SPI_CMD_DFU_GET_STATUS */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x3B - SPI_CMD_DFU_ABORT */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x3C - SPI_CMD_DFU_SET_HEADER */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x3D */
+	{ CMD_NONE, CMD_NONE, NULL},  /* 0x3E */
+	/* DFU Enter command - triggers reboot to bootloader */
+	{ CMD_DFU_ENTER, CMD_NONE, bMGR_SPI_CMD_DFU_ENTER_cmd},  /* 0x3F */
 };
 
 /**

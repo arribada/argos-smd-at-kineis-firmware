@@ -29,14 +29,16 @@
 #include "mgr_spi_cmd_common.h"
 #include "mgr_spi_cmd_list_general.h"
 #include "mgr_spi_cmd_list.h"
+#include "mgr_spi_protocol.h"
 #include "kns_cfg.h"
 #include "mcu_misc.h"
 /* Defines --------------------------------------------------------------------------------------*/
-
+/** @brief Reception buffer size for Protocol A+ frames */
+#define SPI_RX_FRAME_SIZE  SPI_FRAME_MAX_SIZE
 
 /* Structure Declaration ------------------------------------------------------------------------*/
 /* Private variables ----------------------------------------------------------------------------*/
-SpiState spiState = SPICMD_INIT;
+volatile SpiState spiState = SPICMD_INIT;
 MACStatus macStatus = MAC_OK;
 CmdValue cmdInProgress = CMD_NONE;
 
@@ -57,13 +59,55 @@ static int8_t MGR_SPI_CMD_parseStreamCb(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	if (rx->size > 0)
 	{
-		cmdInProgress = rx->data[0];
+		/* Feed byte to protocol parser */
+		bool frame_ready = MGR_SPI_PROTOCOL_rx_byte(rx->data[0]);
 
-		// Store SPI state before to handle cmd in TX in case we want to read current spi state
-		if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)){
-			tx->data[0] = spiState;
+		if (frame_ready) {
+			if (MGR_SPI_PROTOCOL_is_legacy()) {
+				/* Legacy protocol: direct command byte */
+				cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
+
+				/* Store SPI state for status commands */
+				if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
+					tx->data[0] = spiState;
+				}
+				spiState = SPICMD_PROCESS_CMD;
+			} else {
+				/* A+ protocol: frame received */
+				SpiRequestFrame *req = MGR_SPI_PROTOCOL_get_request();
+
+				if (!req->crc_valid) {
+					/* CRC error - send error response */
+					MGR_LOG_DEBUG("%s:: CRC error, sending NACK\r\n", __func__);
+					tx->next_req = MGR_SPI_PROTOCOL_build_error_response(
+						tx->data, req->sequence, SPI_PROT_STATUS_CRC_ERROR);
+					bMGR_SPI_DRIVER_writeread();
+					MGR_SPI_PROTOCOL_reset();
+					return CMD_NONE;
+				}
+
+				/* Valid frame - extract command */
+				cmdInProgress = req->command;
+
+				/* Store SPI state for status commands */
+				if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
+					tx->data[0] = spiState;
+				}
+				spiState = SPICMD_PROCESS_CMD;
+			}
+		} else {
+			/* Need more bytes for A+ protocol */
+			if (spi_protocol_ctx.state == SPI_PROT_ERROR) {
+				MGR_LOG_DEBUG("%s:: Protocol error\r\n", __func__);
+				MGR_SPI_PROTOCOL_reset();
+				spiState = SPICMD_IDLE;
+				return CMD_NONE;
+			}
+			/* Continue receiving - request next byte */
+			rx->next_req = 1;
+			bMGR_SPI_DRIVER_read();
+			return CMD_NONE;
 		}
-		spiState = SPICMD_PROCESS_CMD;
 	}
 	else {
 		MGR_LOG_DEBUG("%s: RX size less than 0\r\n",__func__);
@@ -106,7 +150,10 @@ static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
 
 bool MGR_SPI_CMD_start(void *context)
 {
-	//spi handler stored and receive interrupt one byte running
+	/* Initialize protocol layer */
+	MGR_SPI_PROTOCOL_init();
+
+	/* spi handler stored and receive interrupt one byte running */
 	bool ret = MCU_SPI_DRIVER_register(context, MGR_SPI_CMD_parseStreamCb);
 	if (!ret) {
 		spiState = SPICMD_ERROR;
@@ -130,37 +177,127 @@ void MGR_SPI_CMD_state_handler() {
            break;
        case SPICMD_IDLE:
     	   MGR_LOG_DEBUG("SPI_CMD_IDLE\r\n");
-    	   // start RX IT for waiting command:
-		   rxBuf.next_req = 1;
+    	   /* Reset protocol parser for next frame */
+    	   MGR_SPI_PROTOCOL_reset();
+    	   /* Start RX IT for waiting command - request max frame size to handle variable-length frames */
+		   rxBuf.next_req = SPI_RX_FRAME_SIZE;
 		   cmdInProgress = CMD_NONE;
 		   HAL_StatusTypeDef res = bMGR_SPI_DRIVER_read();
 		   if (res != HAL_OK)
 		   {
 			    MGR_LOG_DEBUG("%s:: Failed to start RX IT, resetting...\r\n", __func__);
-				spiState = SPICMD_ERROR;	
+				spiState = SPICMD_ERROR;
 		   }
            break;
        case SPICMD_PROCESS_CMD:
-    	    MGR_LOG_DEBUG("SPI_CMD_PROCESSCMD\r\n");
+    	    MGR_LOG_DEBUG("SPI_CMD_PROCESSCMD: cmd=0x%02X, protocol=%s\r\n",
+    	    			  cmdInProgress,
+    	    			  MGR_SPI_PROTOCOL_is_legacy() ? "Legacy" : "A+");
 			ret = MGR_SPI_CMD_process_cmd(cmdInProgress);
 			if (!ret)
 			{
 				MGR_LOG_DEBUG("%s:: failed to process cmd %u\r\n", __func__, cmdInProgress);
 				spiState = SPICMD_IDLE;
+			} else {
+				MGR_LOG_DEBUG("%s:: cmd processed, state=%u, tx.next_req=%u\r\n",
+							  __func__, spiState, txBuf.next_req);
 			}
            break;
        case SPICMD_WAITING_RX:
-    	   /* Timeout for all RX operations to prevent blocking */
-    	   if (startTickTimeout == 0)
     	   {
-    		   startTickTimeout = HAL_GetTick();
-    	   }
+			   /* Check for transaction end (SPI became idle after being busy) */
+			   uint16_t bytes_received = 0;
+			   if (MCU_SPI_DRIVER_check_transaction_end(&bytes_received))
+			   {
+				   MGR_LOG_DEBUG("%s:: WAITING_RX: Transaction ended, %u bytes\r\n", __func__, bytes_received);
 
-    	   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
-		   {
-			   MGR_LOG_DEBUG("%s::SPICMD_WAITING_RX::Read timeout (req=%u)!\r\n", __func__, rxBuf.next_req);
-			   spi_stats.timeout_count++;
-			   spiState = SPICMD_ERROR;
+				   /* Debug: Print received bytes (first 16 or less) */
+				   {
+					   uint16_t debug_len = (bytes_received > 16) ? 16 : bytes_received;
+					   MGR_LOG_DEBUG("RX bytes: ");
+					   for (uint16_t i = 0; i < debug_len; i++) {
+						   MGR_LOG_DEBUG("%02X ", rxBuf.data[i]);
+					   }
+					   MGR_LOG_DEBUG("\r\n");
+				   }
+
+				   /* Transaction ended - abort HAL transfer and process data */
+				   MCU_SPI_DRIVER_abort_transfer();
+
+				   if (bytes_received > 0) {
+					   /* Update rxBuf size with actual bytes received */
+					   rxBuf.size = bytes_received;
+
+					   /* Process the complete received frame */
+					   MGR_LOG_DEBUG("%s:: Processing %u bytes\r\n", __func__, bytes_received);
+					   bool frame_ready = MGR_SPI_PROTOCOL_process_buffer(rxBuf.data, bytes_received);
+
+					   if (frame_ready) {
+						   if (MGR_SPI_PROTOCOL_is_legacy()) {
+							   /* Legacy protocol: direct command byte */
+							   cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
+							   MGR_LOG_DEBUG("%s:: Legacy cmd=0x%02X\r\n", __func__, cmdInProgress);
+
+							   /* Store SPI state for status commands */
+							   if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
+								   txBuf.data[0] = spiState;
+							   }
+							   spiState = SPICMD_PROCESS_CMD;
+						   } else {
+							   /* A+ protocol: frame received */
+							   SpiRequestFrame *req = MGR_SPI_PROTOCOL_get_request();
+
+							   if (!req->crc_valid) {
+								   /* CRC error - send error response */
+								   MGR_LOG_DEBUG("%s:: CRC error, sending NACK\r\n", __func__);
+								   txBuf.next_req = MGR_SPI_PROTOCOL_build_error_response(
+									   txBuf.data, req->sequence, SPI_PROT_STATUS_CRC_ERROR);
+								   bMGR_SPI_DRIVER_writeread();
+								   MGR_SPI_PROTOCOL_reset();
+								   spiState = SPICMD_IDLE;
+							   } else {
+								   /* Valid frame - extract command */
+								   cmdInProgress = req->command;
+								   MGR_LOG_DEBUG("%s:: A+ cmd=0x%02X seq=%u\r\n", __func__,
+												 cmdInProgress, req->sequence);
+
+								   /* Store SPI state for status commands */
+								   if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
+									   txBuf.data[0] = spiState;
+								   }
+								   spiState = SPICMD_PROCESS_CMD;
+							   }
+						   }
+					   } else {
+						   /* Incomplete frame or error */
+						   if (spi_protocol_ctx.state == SPI_PROT_ERROR) {
+							   MGR_LOG_DEBUG("%s:: Protocol error\r\n", __func__);
+							   MGR_SPI_PROTOCOL_reset();
+						   }
+						   spiState = SPICMD_IDLE;
+					   }
+				   } else {
+					   /* No bytes received - go back to idle */
+					   spiState = SPICMD_IDLE;
+				   }
+
+				   startTickTimeout = 0;
+			   }
+			   else
+			   {
+				   /* Still waiting - check for timeout */
+				   if (startTickTimeout == 0)
+				   {
+					   startTickTimeout = HAL_GetTick();
+				   }
+
+				   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
+				   {
+					   MGR_LOG_DEBUG("%s::SPICMD_WAITING_RX::Read timeout (req=%u)!\r\n", __func__, rxBuf.next_req);
+					   spi_stats.timeout_count++;
+					   spiState = SPICMD_ERROR;
+				   }
+			   }
 		   }
            break;
        case SPICMD_WAITING_TX:

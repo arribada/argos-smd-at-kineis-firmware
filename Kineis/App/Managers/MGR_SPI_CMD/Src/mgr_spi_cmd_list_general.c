@@ -29,6 +29,12 @@
 #include "lpm.h"
 #include "mcu_nvm.h"
 #include "mcu_misc.h"
+#include "stm32wlxx_hal.h"
+
+/* Bootloader state flash address and flags (from bl_config.h) */
+#define BL_STATE_FLASH_ADDR     0x0803B800UL
+#define BL_FLAG_MAGIC           0x424C464CUL    /* "BLFL" */
+#define BL_FLAG_DFU_REQUEST     0x00000001UL
 
 
 /* Functions -----------------------------------------------------------------*/
@@ -596,4 +602,47 @@ bool bMGR_SPI_CMD_WRITETCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	} else {
 		return false;
 	}
+}
+
+bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	MGR_LOG_DEBUG("Entering DFU bootloader mode...\r\n");
+
+	/* Send acknowledgment before reset */
+	tx->data[0] = 1;  /* OK response */
+	tx->next_req = 1;
+	bMGR_SPI_DRIVER_writeread();
+
+	/* Small delay to ensure SPI response is sent */
+	HAL_Delay(10);
+
+	/* Set DFU request flag in bootloader state flash */
+	/* Structure: magic (4 bytes) + flags (4 bytes) */
+	uint64_t dfu_state = ((uint64_t)BL_FLAG_DFU_REQUEST << 32) | BL_FLAG_MAGIC;
+
+	/* Unlock flash for writing */
+	HAL_FLASH_Unlock();
+
+	/* Erase the bootloader state page first */
+	FLASH_EraseInitTypeDef erase_init;
+	uint32_t page_error = 0;
+
+	erase_init.TypeErase = FLASH_TYPEERASE_PAGES;
+	erase_init.Page = (BL_STATE_FLASH_ADDR - 0x08000000UL) / 0x800UL;  /* Calculate page number */
+	erase_init.NbPages = 1;
+
+	if (HAL_FLASHEx_Erase(&erase_init, &page_error) == HAL_OK) {
+		/* Write DFU request flag (must write 64-bit doubleword) */
+		HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BL_STATE_FLASH_ADDR, dfu_state);
+	}
+
+	HAL_FLASH_Lock();
+
+	MGR_LOG_DEBUG("DFU flag set, resetting to bootloader...\r\n");
+
+	/* Trigger system reset */
+	NVIC_SystemReset();
+
+	/* Should never reach here */
+	return true;
 }

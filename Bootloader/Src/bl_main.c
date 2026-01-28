@@ -288,6 +288,14 @@ static void bl_state_dfu_uart(void)
 
             /* Process command */
             if (dfu_cmd != DFU_CMD_MAX) {
+                /* Special handling for JUMP - must verify CRC first */
+                if (dfu_cmd == DFU_CMD_JUMP) {
+                    if (!bl_dfu_can_jump()) {
+                        bl_uart_send_response(DFU_RSP_NOT_READY, NULL, 0);
+                        return;
+                    }
+                }
+
                 status = bl_dfu_process_cmd(dfu_cmd, payload, payload_len,
                                            response, &response_len);
                 bl_uart_send_response(status, response, response_len);
@@ -348,6 +356,14 @@ static void bl_state_dfu_spi(void)
 
         /* Process command */
         if (dfu_cmd != DFU_CMD_MAX) {
+            /* Special handling for JUMP - must verify CRC first */
+            if (dfu_cmd == DFU_CMD_JUMP) {
+                if (!bl_dfu_can_jump()) {
+                    bl_spi_send_response(DFU_RSP_NOT_READY, NULL, 0);
+                    return;
+                }
+            }
+
             status = bl_dfu_process_cmd(dfu_cmd, payload, payload_len,
                                        response, &response_len);
             bl_spi_send_response(status, response, response_len);
