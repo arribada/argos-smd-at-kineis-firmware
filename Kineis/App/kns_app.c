@@ -362,6 +362,7 @@ void KNS_APP_gui_init(void *context)
 	/** Initialize AT command manager */
 
 #if defined(USE_SPI_DRIVER)
+	/* UART is initialized at 115200 baud by default in SPI mode (see usart.c) */
 	MGR_SPI_CMD_start(context);
 #else
 	MGR_AT_CMD_start(context);

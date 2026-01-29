@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "mgr_spi_protocol.h"
+#include "mgr_spi_cmd.h"
 #include "mgr_spi_cmd_list.h"
 #include "mgr_log.h"
 
@@ -42,7 +43,7 @@ void MGR_SPI_PROTOCOL_init(void)
     spi_protocol_ctx.mode = SPI_PROTOCOL_UNKNOWN;
     spi_protocol_ctx.state = SPI_PROT_IDLE;
     header_index = 0;
-    MGR_LOG_DEBUG("%s:: Protocol initialized\r\n", __func__);
+    SPI_LOG_VERBOSE("%s:: Protocol initialized\r\n", __func__);
 }
 
 uint8_t MGR_SPI_PROTOCOL_crc8(const uint8_t *data, uint16_t length)
@@ -80,7 +81,7 @@ static void protocol_parse_header(void)
     spi_protocol_ctx.request.command = header_buf[SPI_FRAME_CMD_OFFSET];
     spi_protocol_ctx.request.data_len = header_buf[SPI_FRAME_LEN_OFFSET];
 
-    MGR_LOG_DEBUG("%s:: Header: SEQ=%u CMD=0x%02X LEN=%u\r\n",
+    SPI_LOG_VERBOSE("%s:: Header: SEQ=%u CMD=0x%02X LEN=%u\r\n",
                   __func__,
                   spi_protocol_ctx.request.sequence,
                   spi_protocol_ctx.request.command,
@@ -99,14 +100,14 @@ bool MGR_SPI_PROTOCOL_rx_byte(uint8_t byte)
                 spi_protocol_ctx.mode = SPI_PROTOCOL_A_PLUS;
                 spi_protocol_ctx.state = SPI_PROT_RX_HEADER;
                 header_buf[header_index++] = byte;
-                MGR_LOG_DEBUG("%s:: A+ protocol detected\r\n", __func__);
+                SPI_LOG_VERBOSE("%s:: A+ protocol detected\r\n", __func__);
             } else if (is_valid_legacy_command(byte)) {
                 /* Legacy protocol detected */
                 spi_protocol_ctx.mode = SPI_PROTOCOL_LEGACY;
                 spi_protocol_ctx.request.command = byte;
                 spi_protocol_ctx.state = SPI_PROT_FRAME_READY;
                 spi_protocol_ctx.frame_count++;
-                MGR_LOG_DEBUG("%s:: Legacy cmd=0x%02X\r\n", __func__, byte);
+                SPI_LOG_VERBOSE("%s:: Legacy cmd=0x%02X\r\n", __func__, byte);
                 return true;
             } else {
                 /* Invalid first byte */
@@ -151,14 +152,15 @@ bool MGR_SPI_PROTOCOL_rx_byte(uint8_t byte)
             {
                 spi_protocol_ctx.request.received_crc = byte;
 
-                /* Compute CRC over SEQ + CMD + LEN + DATA */
-                uint16_t crc_len = 3 + spi_protocol_ctx.request.data_len;
-                uint8_t crc_buf[SPI_FRAME_MAX_DATA + 3];
-                crc_buf[0] = spi_protocol_ctx.request.sequence;
-                crc_buf[1] = spi_protocol_ctx.request.command;
-                crc_buf[2] = spi_protocol_ctx.request.data_len;
+                /* Compute CRC over MAGIC + SEQ + CMD + LEN + DATA (include magic byte) */
+                uint16_t crc_len = 4 + spi_protocol_ctx.request.data_len;
+                uint8_t crc_buf[SPI_FRAME_MAX_DATA + 4];
+                crc_buf[0] = SPI_MAGIC_REQUEST;
+                crc_buf[1] = spi_protocol_ctx.request.sequence;
+                crc_buf[2] = spi_protocol_ctx.request.command;
+                crc_buf[3] = spi_protocol_ctx.request.data_len;
                 if (spi_protocol_ctx.request.data_len > 0) {
-                    memcpy(&crc_buf[3], spi_protocol_ctx.request.data,
+                    memcpy(&crc_buf[4], spi_protocol_ctx.request.data,
                            spi_protocol_ctx.request.data_len);
                 }
 
@@ -228,11 +230,11 @@ uint16_t MGR_SPI_PROTOCOL_build_response(uint8_t *tx_buf, uint8_t sequence,
         index += data_len;
     }
 
-    /* Compute and append CRC (over SEQ + STATUS + LEN + DATA) */
-    uint8_t crc = MGR_SPI_PROTOCOL_crc8(&tx_buf[1], 3 + data_len);
+    /* Compute and append CRC (over MAGIC + SEQ + STATUS + LEN + DATA) */
+    uint8_t crc = MGR_SPI_PROTOCOL_crc8(&tx_buf[0], 4 + data_len);
     tx_buf[index++] = crc;
 
-    MGR_LOG_DEBUG("%s:: Response: SEQ=%u STATUS=%u LEN=%u CRC=0x%02X\r\n",
+    SPI_LOG_VERBOSE("%s:: Response: SEQ=%u STATUS=%u LEN=%u CRC=0x%02X\r\n",
                   __func__, sequence, status, data_len, crc);
 
     return index;
@@ -251,7 +253,7 @@ void MGR_SPI_PROTOCOL_reset(void)
     header_index = 0;
     spi_protocol_ctx.rx_index = 0;
     /* Preserve statistics */
-    MGR_LOG_DEBUG("%s:: Protocol reset\r\n", __func__);
+    SPI_LOG_VERBOSE("%s:: Protocol reset\r\n", __func__);
 }
 
 int MGR_SPI_PROTOCOL_get_stats(char *buf, uint16_t buf_size)
@@ -283,7 +285,7 @@ bool MGR_SPI_PROTOCOL_process_buffer(const uint8_t *data, uint16_t length)
 
     uint8_t first_byte = data[0];
 
-    MGR_LOG_DEBUG("%s:: Processing %u bytes, first=0x%02X\r\n", __func__, length, first_byte);
+    SPI_LOG_VERBOSE("%s:: Processing %u bytes, first=0x%02X\r\n", __func__, length, first_byte);
 
     if (first_byte == SPI_MAGIC_REQUEST) {
         /* A+ protocol frame */
@@ -302,8 +304,7 @@ bool MGR_SPI_PROTOCOL_process_buffer(const uint8_t *data, uint16_t length)
         spi_protocol_ctx.request.command = data[SPI_FRAME_CMD_OFFSET];
         spi_protocol_ctx.request.data_len = data[SPI_FRAME_LEN_OFFSET];
 
-        MGR_LOG_DEBUG("%s:: A+ Header: SEQ=%u CMD=0x%02X LEN=%u\r\n",
-                      __func__,
+        SPI_LOG_VERBOSE("A+ S=%u C=0x%02X L=%u\r\n",
                       spi_protocol_ctx.request.sequence,
                       spi_protocol_ctx.request.command,
                       spi_protocol_ctx.request.data_len);
@@ -336,26 +337,28 @@ bool MGR_SPI_PROTOCOL_process_buffer(const uint8_t *data, uint16_t length)
         uint16_t crc_offset = SPI_FRAME_HEADER_SIZE + spi_protocol_ctx.request.data_len;
         spi_protocol_ctx.request.received_crc = data[crc_offset];
 
-        /* Compute CRC over SEQ + CMD + LEN + DATA (skip magic byte) */
-        uint16_t crc_len = 3 + spi_protocol_ctx.request.data_len;
+        /* Compute CRC over MAGIC + SEQ + CMD + LEN + DATA (include magic byte) */
+        uint16_t crc_len = 4 + spi_protocol_ctx.request.data_len;
         spi_protocol_ctx.request.computed_crc = MGR_SPI_PROTOCOL_crc8(
-            &data[SPI_FRAME_SEQ_OFFSET], crc_len);
+            &data[SPI_FRAME_MAGIC_OFFSET], crc_len);
 
         spi_protocol_ctx.request.crc_valid =
             (spi_protocol_ctx.request.received_crc == spi_protocol_ctx.request.computed_crc);
 
+        /* Debug: show CRC calculation details */
+        SPI_LOG_VERBOSE("CRC: rxd=0x%02X calc=0x%02X bytes=[%02X %02X %02X %02X]\r\n",
+                      spi_protocol_ctx.request.received_crc,
+                      spi_protocol_ctx.request.computed_crc,
+                      data[0], data[1], data[2], data[3]);
+
         if (!spi_protocol_ctx.request.crc_valid) {
-            MGR_LOG_DEBUG("%s:: CRC error: rx=0x%02X calc=0x%02X\r\n",
-                          __func__,
-                          spi_protocol_ctx.request.received_crc,
-                          spi_protocol_ctx.request.computed_crc);
             spi_protocol_ctx.crc_error_count++;
         }
 
         spi_protocol_ctx.state = SPI_PROT_FRAME_READY;
         spi_protocol_ctx.frame_count++;
 
-        MGR_LOG_DEBUG("%s:: A+ frame complete, CRC %s\r\n",
+        SPI_LOG_VERBOSE("%s:: A+ frame complete, CRC %s\r\n",
                       __func__, spi_protocol_ctx.request.crc_valid ? "OK" : "ERROR");
         return true;
 
@@ -368,7 +371,7 @@ bool MGR_SPI_PROTOCOL_process_buffer(const uint8_t *data, uint16_t length)
         spi_protocol_ctx.state = SPI_PROT_FRAME_READY;
         spi_protocol_ctx.frame_count++;
 
-        MGR_LOG_DEBUG("%s:: Legacy cmd=0x%02X\r\n", __func__, first_byte);
+        SPI_LOG_VERBOSE("%s:: Legacy cmd=0x%02X\r\n", __func__, first_byte);
         return true;
 
     } else {

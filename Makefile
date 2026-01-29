@@ -365,7 +365,7 @@ endif
 # compile gcc flags
 ASFLAGS += $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
 
-CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
@@ -384,7 +384,7 @@ LDSCRIPT = STM32WL55XX_FLASH_CM4.ld
 # libraries
 LIBS = -lc -lm -lnosys
 LIBDIR =
-LDFLAGS = $(MCU) -pipe -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
+LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
 ifneq ($(DEBUG), 1)
 LDFLAGS += -s
 endif

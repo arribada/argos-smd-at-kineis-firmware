@@ -56,22 +56,16 @@
 
 #ifdef DEBUG
 
-/* log with RTC timestamp before */
-#define MGR_LOG_DEBUG(...)		do {\
-						MGR_LOG_RtcDateTime();\
-						vMGR_LOG_printf(" ");\
-						vMGR_LOG_printf(__VA_ARGS__);\
-					} while (0)
-/* direct logging */
+/* log with RTC timestamp - single atomic call to prevent interleaving */
+#define MGR_LOG_DEBUG(...)		vMGR_LOG_printf_ts(__VA_ARGS__)
+
+/* direct logging without timestamp */
 #define MGR_LOG_DEBUG_RAW(...)		vMGR_LOG_printf(__VA_ARGS__)
 
 #ifdef VERBOSE
-/* log with RTC timestamp before */
-#define MGR_LOG_VERBOSE(...)		do {\
-						MGR_LOG_RtcDateTime();\
-						vMGR_LOG_printf(" ");\
-						vMGR_LOG_printf(__VA_ARGS__);\
-					} while (0)
+/* log with RTC timestamp - single atomic call to prevent interleaving */
+#define MGR_LOG_VERBOSE(...)		vMGR_LOG_printf_ts(__VA_ARGS__)
+
 /* direct logging without timestamp */
 #define MGR_LOG_VERBOSE_RAW(...)	vMGR_LOG_printf(__VA_ARGS__)
 #else  // else VERBOSE
@@ -95,17 +89,59 @@
  * @brief Write formatted string into a buffer with variable number of
  * parameters with a specified maximum number of chars to write.
  *
+ * This function is NON-BLOCKING - it adds the message to a ring buffer.
+ * Call MGR_LOG_flush() from main loop to actually send the data via UART.
+ *
  * @param[in] format: format of the string (same syntax as printf)
  *
  * @return none
  */
 
 #ifdef USE_LOCAL_PRINTF
+#include <stdbool.h>
+#include <stdint.h>
+
 void vMGR_LOG_printf(const char *format, ...);
+void vMGR_LOG_printf_ts(const char *format, ...);
+
+
+/**
+ * @brief Flush log ring buffer to UART (call from main loop)
+ *
+ * This function sends buffered log data via UART.
+ * It sends a limited number of bytes per call to avoid blocking too long.
+ * Should be called regularly from the main loop.
+ *
+ * @return Number of bytes sent
+ */
+uint16_t MGR_LOG_flush(void);
+
+/**
+ * @brief Flush all pending log data (blocking until empty)
+ *
+ * Use this before entering low power mode or at shutdown.
+ */
+void MGR_LOG_flush_all(void);
+
+/**
+ * @brief Get log overflow count for diagnostics
+ * @return Number of characters dropped due to buffer overflow
+ */
+uint32_t MGR_LOG_get_overflow_count(void);
+
+/**
+ * @brief Check if log buffer has pending data
+ * @return true if there is data to flush
+ */
+bool MGR_LOG_has_pending(void);
 
 #else // not USE_LOCAL_PRINTF
 
 #define vMGR_LOG_printf			printf
+#define MGR_LOG_flush()			(0)
+#define MGR_LOG_flush_all()		do {} while(0)
+#define MGR_LOG_get_overflow_count()	(0)
+#define MGR_LOG_has_pending()		(false)
 
 #endif // end USE_LOCAL_PRINTF
 

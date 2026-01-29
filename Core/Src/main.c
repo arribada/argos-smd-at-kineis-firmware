@@ -355,6 +355,13 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_LPUART1_UART_Init();
+
+  /* Direct UART test - blocking transmission to verify UART is working */
+  {
+    uint8_t test_msg[] = "\r\n==== UART TEST OK ====\r\n";
+    HAL_UART_Transmit(&hlpuart1, test_msg, sizeof(test_msg)-1, 1000);
+  }
+
   MX_SUBGHZ_Init();
   MX_TIM16_Init();
   MX_RTC_Init();
@@ -460,7 +467,7 @@ int main(void)
 #elif defined (USE_GUI_APP)
 
 #if defined(USE_SPI_DRIVER)
-  MGR_LOG_DEBUG("Running SPI version");
+  MGR_LOG_DEBUG("Running SPI version\r\n");
   KNS_APP_gui_init(&hspi1);
 #else
   KNS_APP_gui_init(&hlpuart1);

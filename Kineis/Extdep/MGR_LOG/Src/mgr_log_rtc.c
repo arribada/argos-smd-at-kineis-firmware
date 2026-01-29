@@ -40,9 +40,8 @@ void MGR_LOG_RtcDateTime(void)
 	RTC_DateTypeDef sdatestructureget;
 	RTC_TimeTypeDef stimestructureget;
 
-	/* Buffer used for displaying Time */
-	uint8_t aShowTime[15] = {0};
-	uint8_t aShowDate[15] = {0};
+	/* Single buffer for the entire timestamp - avoids interleaving issues */
+	char timestamp[32];
 
 	HAL_RTC_WaitForSynchro(&hrtc);
 	/* Get the RTC current Time */
@@ -50,23 +49,17 @@ void MGR_LOG_RtcDateTime(void)
 	/* Get the RTC current Date */
 	HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BIN);
 
-	/* Display date Format : mm-dd-yy */
-	sprintf((char *)aShowDate,
-			"%04d/%02d/%02d",
+	/* Format complete timestamp in single buffer: "YYYY/MM/DD HH:MM:SS" */
+	sprintf(timestamp, "%04d/%02d/%02d %02d:%02d:%02d",
 			2000 + sdatestructureget.Year,
 			sdatestructureget.Month,
-			sdatestructureget.Date);
-
-	/* Display time Format : hh:mm:ss */
-	sprintf((char *)aShowTime,
-			"%02d:%02d:%02d",
+			sdatestructureget.Date,
 			stimestructureget.Hours,
 			stimestructureget.Minutes,
 			stimestructureget.Seconds);
 
-	vMGR_LOG_printf((char *)aShowDate);
-	vMGR_LOG_printf(" ");
-	vMGR_LOG_printf((char *)aShowTime);
+	/* Single atomic call to add timestamp to ring buffer */
+	vMGR_LOG_printf("%s", timestamp);
 }
 
 /**

@@ -39,7 +39,29 @@ extern "C" {
 #include "mgr_spi_cmd_list.h"
 
 /* Defines -------------------------------------------------------------------*/
-#define CMD_IT_TIMEOUT 1000      /**< Timeout in milliseconds for SPI command processing interrupts */
+/** @brief Timeout in milliseconds for SPI command processing interrupts.
+ *  In debug mode, use longer timeout to accommodate logging overhead.
+ *  With non-blocking logging (Option 2), this is less critical but still useful. */
+#ifdef DEBUG
+#define CMD_IT_TIMEOUT 5000      /**< Debug mode: 5 seconds timeout */
+#else
+#define CMD_IT_TIMEOUT 1000      /**< Release mode: 1 second timeout */
+#endif
+
+/** @brief SPI critical path logging control
+ *  Define SPI_VERBOSE_LOG to enable verbose logging in SPI critical path.
+ *  DISABLED by default because logging adds ~10-15ms per line which breaks
+ *  timing for the two-transaction protocol (master waits only 10ms).
+ *  Uncomment to enable for debugging SPI protocol issues.
+ *  Note: Important state changes are always logged via MGR_LOG_DEBUG.
+ */
+/* #define SPI_VERBOSE_LOG 1 */
+
+#ifdef SPI_VERBOSE_LOG
+#define SPI_LOG_VERBOSE(fmt, ...) MGR_LOG_DEBUG(fmt, ##__VA_ARGS__)
+#else
+#define SPI_LOG_VERBOSE(fmt, ...) ((void)0)
+#endif
 
 /* Extern Variables ----------------------------------------------------------*/
 extern CmdValue cmdInProgress;   /**< Current SPI command in progress */

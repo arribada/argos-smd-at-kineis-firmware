@@ -40,7 +40,11 @@ void MX_LPUART1_UART_Init(void)
 
   /* USER CODE END LPUART1_Init 1 */
   hlpuart1.Instance = LPUART1;
-  hlpuart1.Init.BaudRate = 9600;
+#if defined(USE_SPI_DRIVER)
+  hlpuart1.Init.BaudRate = 115200;  /* SPI mode: faster debug logs */
+#else
+  hlpuart1.Init.BaudRate = 9600;    /* UART mode: low power */
+#endif
   hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
   hlpuart1.Init.StopBits = UART_STOPBITS_1;
   hlpuart1.Init.Parity = UART_PARITY_NONE;
@@ -88,7 +92,13 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
   /** Initializes the peripherals clocks
   */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_LPUART1;
+#if defined(USE_SPI_DRIVER)
+    /* SPI mode: use HSI clock (16 MHz) for 115200 baud debug logs */
+    PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_HSI;
+#else
+    /* UART mode: use LSE clock (32.768 kHz) for low power 9600 baud */
     PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_LSE;
+#endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();

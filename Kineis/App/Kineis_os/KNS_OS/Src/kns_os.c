@@ -16,6 +16,7 @@
 #include <stddef.h>
 
 #include "kns_os.h"
+#include "mgr_log.h"  /* For MGR_LOG_flush() */
 
 #pragma GCC visibility push(default)
 
@@ -50,6 +51,11 @@ void KNS_OS_main(void)
 			if (taskPool[idx] != NULL)
 				taskPool[idx]();
 		}
+
+		/* Flush debug log buffer (non-blocking, sends up to 128 bytes per call) */
+#ifdef DEBUG
+		MGR_LOG_flush();
+#endif
 	}
 }
 

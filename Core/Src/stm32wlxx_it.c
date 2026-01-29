@@ -76,6 +76,8 @@ extern UART_HandleTypeDef hlpuart1;
 extern RTC_HandleTypeDef hrtc;
 #if defined(USE_SPI_DRIVER)
 extern SPI_HandleTypeDef hspi1;
+extern DMA_HandleTypeDef hdma_spi1_rx;
+extern DMA_HandleTypeDef hdma_spi1_tx;
 #endif
 extern SUBGHZ_HandleTypeDef hsubghz;
 extern TIM_HandleTypeDef htim16;
@@ -255,13 +257,32 @@ void TIM16_IRQHandler(void)
 }
 
 #if defined(USE_SPI_DRIVER)
+/* Debug counter for SPI interrupts */
+volatile uint32_t spi_irq_count = 0;
+
+/**
+  * @brief This function handles DMA1 Channel 1 Interrupt (SPI1 RX).
+  */
+void DMA1_Channel1_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_spi1_rx);
+}
+
+/**
+  * @brief This function handles DMA1 Channel 2 Interrupt (SPI1 TX).
+  */
+void DMA1_Channel2_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_spi1_tx);
+}
+
 /**
   * @brief This function handles SPI1 Interrupt.
   */
 void SPI1_IRQHandler(void)
 {
   /* USER CODE BEGIN SPI1_IRQn 0 */
-
+  spi_irq_count++;
   /* USER CODE END SPI1_IRQn 0 */
   HAL_SPI_IRQHandler(&hspi1);
   /* USER CODE BEGIN SPI1_IRQn 1 */

@@ -13,6 +13,7 @@
 
 /* Includes -------------------------------------------------------------------------------------*/
 #include <string.h>
+#include <stdio.h>
 
 #include "kns_types.h"
 #include "mgr_spi_cmd.h"
@@ -120,11 +121,15 @@ static int8_t MGR_SPI_CMD_parseStreamCb(SPI_Buffer *rx, SPI_Buffer *tx)
 
 
 
+/* Timestamp for timing diagnostics */
+static uint32_t cmd_process_start_tick = 0;
+
 static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
 {
 	bool ret = true;
+	cmd_process_start_tick = HAL_GetTick();
 
-	MGR_LOG_DEBUG("%s:: Process %u \r\n",__func__, cmd);
+	SPI_LOG_VERBOSE("%s:: Process cmd=%u at tick=%lu\r\n", __func__, cmd, (unsigned long)cmd_process_start_tick);
 	if ((cmd > 0) && (cmd < SPICMD_MAX_COUNT))
 	{
 		/* Check if handler function is valid before calling */
@@ -176,7 +181,7 @@ void MGR_SPI_CMD_state_handler() {
 		   }
            break;
        case SPICMD_IDLE:
-    	   MGR_LOG_DEBUG("SPI_CMD_IDLE\r\n");
+    	   /* Note: Verbose logging disabled to reduce log spam */
     	   /* Reset protocol parser for next frame */
     	   MGR_SPI_PROTOCOL_reset();
     	   /* Start RX IT for waiting command - request max frame size to handle variable-length frames */
@@ -190,7 +195,7 @@ void MGR_SPI_CMD_state_handler() {
 		   }
            break;
        case SPICMD_PROCESS_CMD:
-    	    MGR_LOG_DEBUG("SPI_CMD_PROCESSCMD: cmd=0x%02X, protocol=%s\r\n",
+    	    SPI_LOG_VERBOSE("SPI_CMD_PROCESSCMD: cmd=0x%02X, protocol=%s\r\n",
     	    			  cmdInProgress,
     	    			  MGR_SPI_PROTOCOL_is_legacy() ? "Legacy" : "A+");
 			ret = MGR_SPI_CMD_process_cmd(cmdInProgress);
@@ -199,7 +204,7 @@ void MGR_SPI_CMD_state_handler() {
 				MGR_LOG_DEBUG("%s:: failed to process cmd %u\r\n", __func__, cmdInProgress);
 				spiState = SPICMD_IDLE;
 			} else {
-				MGR_LOG_DEBUG("%s:: cmd processed, state=%u, tx.next_req=%u\r\n",
+				SPI_LOG_VERBOSE("%s:: cmd processed, state=%u, tx.next_req=%u\r\n",
 							  __func__, spiState, txBuf.next_req);
 			}
            break;
@@ -209,17 +214,18 @@ void MGR_SPI_CMD_state_handler() {
 			   uint16_t bytes_received = 0;
 			   if (MCU_SPI_DRIVER_check_transaction_end(&bytes_received))
 			   {
-				   MGR_LOG_DEBUG("%s:: WAITING_RX: Transaction ended, %u bytes\r\n", __func__, bytes_received);
-
-				   /* Debug: Print received bytes (first 16 or less) */
+	#ifdef SPI_VERBOSE_LOG
+				   /* Debug: Print received bytes in a single log line */
 				   {
-					   uint16_t debug_len = (bytes_received > 16) ? 16 : bytes_received;
-					   MGR_LOG_DEBUG("RX bytes: ");
-					   for (uint16_t i = 0; i < debug_len; i++) {
-						   MGR_LOG_DEBUG("%02X ", rxBuf.data[i]);
+					   char hex_buf[64];
+					   uint16_t debug_len = (bytes_received > 8) ? 8 : bytes_received;
+					   int pos = 0;
+					   for (uint16_t i = 0; i < debug_len && pos < 60; i++) {
+						   pos += snprintf(hex_buf + pos, sizeof(hex_buf) - pos, "%02X ", rxBuf.data[i]);
 					   }
-					   MGR_LOG_DEBUG("\r\n");
+					   MGR_LOG_DEBUG("RX %u bytes: %s\r\n", bytes_received, hex_buf);
 				   }
+#endif
 
 				   /* Transaction ended - abort HAL transfer and process data */
 				   MCU_SPI_DRIVER_abort_transfer();
@@ -229,14 +235,14 @@ void MGR_SPI_CMD_state_handler() {
 					   rxBuf.size = bytes_received;
 
 					   /* Process the complete received frame */
-					   MGR_LOG_DEBUG("%s:: Processing %u bytes\r\n", __func__, bytes_received);
+					   SPI_LOG_VERBOSE("%s:: Processing %u bytes\r\n", __func__, bytes_received);
 					   bool frame_ready = MGR_SPI_PROTOCOL_process_buffer(rxBuf.data, bytes_received);
 
 					   if (frame_ready) {
 						   if (MGR_SPI_PROTOCOL_is_legacy()) {
 							   /* Legacy protocol: direct command byte */
 							   cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
-							   MGR_LOG_DEBUG("%s:: Legacy cmd=0x%02X\r\n", __func__, cmdInProgress);
+							   SPI_LOG_VERBOSE("%s:: Legacy cmd=0x%02X\r\n", __func__, cmdInProgress);
 
 							   /* Store SPI state for status commands */
 							   if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
@@ -258,7 +264,7 @@ void MGR_SPI_CMD_state_handler() {
 							   } else {
 								   /* Valid frame - extract command */
 								   cmdInProgress = req->command;
-								   MGR_LOG_DEBUG("%s:: A+ cmd=0x%02X seq=%u\r\n", __func__,
+								   SPI_LOG_VERBOSE("%s:: A+ cmd=0x%02X seq=%u\r\n", __func__,
 												 cmdInProgress, req->sequence);
 
 								   /* Store SPI state for status commands */
@@ -293,7 +299,7 @@ void MGR_SPI_CMD_state_handler() {
 
 				   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
 				   {
-					   MGR_LOG_DEBUG("%s::SPICMD_WAITING_RX::Read timeout (req=%u)!\r\n", __func__, rxBuf.next_req);
+					   MGR_LOG_DEBUG("SPI RX TIMEOUT\r\n");
 					   spi_stats.timeout_count++;
 					   spiState = SPICMD_ERROR;
 				   }
@@ -301,6 +307,17 @@ void MGR_SPI_CMD_state_handler() {
 		   }
            break;
        case SPICMD_WAITING_TX:
+    	   /* Check for TX transaction completion (for two-transaction protocol).
+    	    * The error callback re-arms for transaction 2, and we poll here
+    	    * for when the master actually clocks out the response. */
+    	   if (MCU_SPI_DRIVER_check_tx_complete()) {
+    		   /* Transaction 2 completed - response was sent, go to IDLE */
+    		   SPI_LOG_VERBOSE("%s:: TX complete, going to IDLE\r\n", __func__);
+    		   startTickTimeout = 0;
+    		   spiState = SPICMD_IDLE;
+    		   break;
+    	   }
+
     	   /* Timeout for all TX operations to prevent blocking */
     	   if (startTickTimeout == 0)
     	   {
@@ -316,6 +333,8 @@ void MGR_SPI_CMD_state_handler() {
            break;
        case SPICMD_ERROR:
 		    MGR_LOG_DEBUG("%s:: SPI error, resetting...\r\n", __func__);
+		    /* Reset timeout counter to prevent immediate re-timeout after reset */
+		    startTickTimeout = 0;
 		    ret = MCU_SPI_DRIVER_reset(NULL);
 			if (!ret)
 			{

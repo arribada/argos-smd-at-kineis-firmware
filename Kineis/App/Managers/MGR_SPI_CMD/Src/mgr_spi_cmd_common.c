@@ -13,6 +13,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include <string.h>
 #include "mgr_spi_cmd_common.h"
+#include "mgr_spi_cmd.h"
 #include "mgr_spi_protocol.h"
 #include "user_data.h"
 #include "kns_mac.h"
@@ -97,7 +98,7 @@ uint8_t bMGR_SPI_DRIVER_writeread()
 		);
 
 		txBuf.next_req = frame_len;
-		MGR_LOG_DEBUG("%s:: A+ response: SEQ=%u LEN=%u frame_len=%u\r\n",
+		SPI_LOG_VERBOSE("%s:: A+ response: SEQ=%u LEN=%u frame_len=%u\r\n",
 					  __func__, req->sequence, payload_len, frame_len);
 	}
 

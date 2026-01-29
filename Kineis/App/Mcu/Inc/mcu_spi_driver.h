@@ -195,6 +195,17 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received);
  */
 void MCU_SPI_DRIVER_abort_transfer(void);
 
+/**
+ * @brief Check if TX transaction has completed for two-transaction protocol.
+ *
+ * In the two-transaction protocol, after the error callback re-arms for
+ * transaction 2, this function polls for completion. When the master clocks
+ * out the response, this returns true.
+ *
+ * @return true if TX transaction completed (response was sent), false if still waiting.
+ */
+bool MCU_SPI_DRIVER_check_tx_complete(void);
+
 #ifdef __cplusplus
 }
 #endif

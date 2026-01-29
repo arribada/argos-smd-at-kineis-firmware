@@ -26,12 +26,16 @@
 #include KINEIS_SW_ASSERT_H
 #include "mgr_log.h"
 #include "mcu_spi_driver.h"
+#include "mgr_spi_cmd.h"
 
 /* Defines -------------------------------------------------------------------*/
 
 
 /* Variables -----------------------------------------------------------------*/
 static SPI_HandleTypeDef *hspi_handle = NULL;
+
+/* External SPI interrupt counter from stm32wlxx_it.c */
+extern volatile uint32_t spi_irq_count;
 
 static uint8_t spiTxBuf[TXBUF_SIZE];
 static uint8_t spiRxBuf[RXBUF_SIZE];
@@ -47,10 +51,19 @@ static int8_t (*rxSpiEvtCb)(SPI_Buffer *rx, SPI_Buffer *tx) = NULL;
 volatile uint32_t startTickTimeout = 0;
 
 /* Variables for transaction end detection based on RxXferCount stability */
-static uint16_t last_rx_count = 0;        /* Last observed RxXferCount */
-static uint32_t rx_stable_start_tick = 0; /* When RxXferCount stopped changing */
-static bool rx_activity_detected = false; /* True if we've received at least one byte */
-#define RX_STABLE_TIMEOUT_MS 2  /* Consider transaction complete after 2ms of no new bytes */
+/* Must be volatile - accessed from both ISR and main context */
+static volatile uint16_t last_rx_count = 0;        /* Last observed RxXferCount */
+static volatile uint32_t rx_stable_start_tick = 0; /* When RxXferCount stopped changing */
+static volatile bool rx_activity_detected = false; /* True if we've received at least one byte */
+
+/* Flag for two-transaction protocol: prevents state change after error recovery */
+static volatile bool waiting_for_tx_transaction = false;
+/* Consider transaction complete after no new bytes for this duration.
+ * At 100kHz SPI clock, one byte takes 80us (8 bits / 100kHz).
+ * A 255-byte frame would take ~20ms. But master sends only 5-byte command.
+ * After CS goes high, we should detect quickly (within 1 byte time + margin).
+ */
+#define RX_STABLE_TIMEOUT_MS 2
 /* Private function prototypes -----------------------------------------------*/
 
 
@@ -58,19 +71,17 @@ static bool rx_activity_detected = false; /* True if we've received at least one
 // Callback when a command is received (for Receive_IT only - not used anymore)
 void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
-        MGR_LOG_DEBUG("RX completed\r\n");
+        /* NOTE: No logging in ISR - would block for 500ms */
         spi_stats.rx_count++;
         if (rxSpiEvtCb != NULL)
         {
         	rxSpiEvtCb(&rxBuf, &txBuf);
 			startTickTimeout = 0;
         } else {
-			MGR_LOG_DEBUG("%s:: rxSpiEvtCb not defined\r\n", __func__);
             spiState = SPICMD_ERROR;
             spi_stats.error_count++;
         }
     } else {
-		MGR_LOG_DEBUG("%s::ERROR SPI interrupt from other SPI instance\r\n", __func__);
     	kns_assert(0);
     }
 }
@@ -78,7 +89,7 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
 // Callback for SPI TxRx completion - used for both read and writeread
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
-        MGR_LOG_DEBUG("TX-RX completed (state=%d)\r\n", spiState);
+        /* NOTE: No logging in ISR - would block for 500ms */
 		startTickTimeout = 0;
 
 		if (spiState == SPICMD_WAITING_RX) {
@@ -87,20 +98,24 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
 			if (rxSpiEvtCb != NULL) {
 				rxSpiEvtCb(&rxBuf, &txBuf);
 			} else {
-				MGR_LOG_DEBUG("%s:: rxSpiEvtCb not defined\r\n", __func__);
 				spiState = SPICMD_ERROR;
 				spi_stats.error_count++;
 			}
 		} else if (spiState == SPICMD_WAITING_TX) {
-			/* This was a "writeread" operation - response sent, go idle */
+			/* Check if this is a spurious callback from HAL_SPI_Abort during error recovery.
+			 * When waiting_for_tx_transaction is true, we're in the middle of re-arming
+			 * and should NOT transition to IDLE yet. */
+			if (waiting_for_tx_transaction) {
+				/* Spurious callback from Abort - stay in WAITING_TX, don't change anything */
+				return;
+			}
+			/* Real completion - response sent, go idle */
 			spi_stats.tx_count++;
 			spiState = SPICMD_IDLE;
 		} else {
-			MGR_LOG_DEBUG("%s:: Unexpected state %d\r\n", __func__, spiState);
 			spiState = SPICMD_IDLE;
 		}
     } else {
-		MGR_LOG_DEBUG("%s::ERROR SPI interrupt from other SPI instance\r\n", __func__);
     	kns_assert(0);
     }
 }
@@ -108,11 +123,10 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
 // Callback not used
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
-        MGR_LOG_DEBUG("TX completed\r\n");
+        /* NOTE: No logging in ISR - would block for 500ms */
 		startTickTimeout = 0;
 		spi_stats.tx_count++;
     } else {
-		MGR_LOG_DEBUG("%s::ERROR SPI interrupt from other SPI instance\r\n", __func__);
     	kns_assert(0);
     }
 }
@@ -130,7 +144,7 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_writeread()
 		return HAL_ERROR;
 	}
 
-	MGR_LOG_DEBUG("%s:: Sending %u bytes, first=0x%02X\r\n",
+	SPI_LOG_VERBOSE("%s:: Sending %u bytes, first=0x%02X\r\n",
 				  __func__, txBuf.next_req, txBuf.data[0]);
 
 	/* Reset transaction detection for the new transfer */
@@ -138,11 +152,51 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_writeread()
 	rx_stable_start_tick = 0;
 	rx_activity_detected = false;
 
-	// waiting Read request
-	ret = HAL_SPI_TransmitReceive_IT(hspi_handle, txBuf.data, rxBuf.data, txBuf.next_req);
+	/* Clear the two-transaction flag - this is the initial TX setup */
+	waiting_for_tx_transaction = false;
+
+	/* Clear any pending error flags from previous transaction to prevent
+	 * the error callback from firing immediately after DMA setup */
+	if (hspi_handle->ErrorCode != HAL_SPI_ERROR_NONE) {
+		if (hspi_handle->ErrorCode & HAL_SPI_ERROR_OVR) {
+			__HAL_SPI_CLEAR_OVRFLAG(hspi_handle);
+		}
+		if (hspi_handle->ErrorCode & HAL_SPI_ERROR_MODF) {
+			__HAL_SPI_CLEAR_MODFFLAG(hspi_handle);
+		}
+		if (hspi_handle->ErrorCode & HAL_SPI_ERROR_FRE) {
+			__HAL_SPI_CLEAR_FREFLAG(hspi_handle);
+		}
+		hspi_handle->ErrorCode = HAL_SPI_ERROR_NONE;
+	}
+
+	/* Ensure SPI is in ready state */
+	if (hspi_handle->State != HAL_SPI_STATE_READY) {
+		HAL_SPI_Abort(hspi_handle);
+		hspi_handle->State = HAL_SPI_STATE_READY;
+	}
+
+	/* Pad TX buffer with 0xAA after the response data.
+	 * The master may read more bytes than the response size.
+	 * We configure DMA for a larger size to avoid overrun errors. */
+	uint16_t transfer_size = txBuf.next_req;
+	if (transfer_size < 16) {
+		/* Minimum 16 bytes to handle master reading extra bytes */
+		memset(&txBuf.data[transfer_size], 0xAA, 16 - transfer_size);
+		transfer_size = 16;
+	}
+
+	/* CRITICAL: Set state BEFORE HAL call to prevent race condition!
+	 * If error callback fires during HAL_SPI_TransmitReceive_DMA, it needs
+	 * to see WAITING_TX state, otherwise it does a full reset (which sets
+	 * up idle pattern 0xAA instead of our response). */
+	spiState = SPICMD_WAITING_TX;
+
+	/* Set up response transfer using DMA - master will clock this out */
+	ret = HAL_SPI_TransmitReceive_DMA(hspi_handle, txBuf.data, rxBuf.data, transfer_size);
 	if (ret == HAL_OK){
-		spiState = SPICMD_WAITING_TX;
-		MGR_LOG_DEBUG("%s:: TX ready, waiting for master clock\r\n", __func__);
+		SPI_LOG_VERBOSE("%s:: TX ready at tick=%lu, size=%u, first byte=0x%02X\r\n",
+					  __func__, (unsigned long)HAL_GetTick(), txBuf.next_req, txBuf.data[0]);
 	} else {
 		MGR_LOG_DEBUG("%s:: HAL error %d\r\n", __func__, ret);
 		spiState = SPICMD_ERROR;
@@ -168,22 +222,53 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read()
 		return HAL_ERROR;
 	}
 
-	/* Fill entire idle TX buffer with 0xFF so slave sends 0xFF during the whole transaction
-	 * This is critical for SPI slave mode - we must pre-load the TX buffer before master clocks */
-	memset(spiIdleTxBuf, 0xFF, RXBUF_SIZE);
+	/* Fill entire idle TX buffer with 0xAA so we can see if MISO is working
+	 * This is critical for SPI slave mode - we must pre-load the TX buffer before master clocks
+	 * Using 0xAA (10101010) makes it easy to see on a scope and distinguishes from 0x00/0xFF */
+	memset(spiIdleTxBuf, 0xAA, RXBUF_SIZE);
 
 	/* Reset transaction detection state for new transfer */
 	last_rx_count = 0;
 	rx_stable_start_tick = 0;
 	rx_activity_detected = false;
 
-	/* Use TransmitReceive_IT instead of Receive_IT so slave sends data while receiving */
-	HAL_StatusTypeDef ret = HAL_SPI_TransmitReceive_IT(hspi_handle, spiIdleTxBuf, rxBuf.data, rxBuf.next_req);
+	/* Ensure SPI is in ready state */
+	if (hspi_handle->State != HAL_SPI_STATE_READY) {
+		/* Abort any ongoing transfer */
+		HAL_SPI_Abort(hspi_handle);
+	}
+
+	/* Use DMA for reliable high-speed SPI slave operation.
+	 * DMA handles data transfer without CPU intervention, preventing overrun errors
+	 * that occur with interrupt-based transfers when master clocks too fast. */
+	HAL_StatusTypeDef ret = HAL_SPI_TransmitReceive_DMA(hspi_handle,
+		spiIdleTxBuf,   /* TX buffer with 0xAA pattern */
+		rxBuf.data,     /* RX buffer */
+		rxBuf.next_req);
+
 	if (ret == HAL_OK) {
 		spiState = SPICMD_WAITING_RX;
-		MGR_LOG_DEBUG("%s:: SPI ready, RxSize=%u, State=%u, SR=0x%04X\r\n",
-					  __func__, hspi_handle->RxXferSize, hspi_handle->State,
-					  (unsigned int)hspi_handle->Instance->SR);
+		/* Debug: Check DMA configuration - only log once at startup */
+		static bool dma_debug_logged = false;
+		if (!dma_debug_logged) {
+			MGR_LOG_DEBUG("DMA RX: CNDTR=%lu CPAR=0x%08lX CMAR=0x%08lX CCR=0x%08lX\r\n",
+						  (unsigned long)hspi_handle->hdmarx->Instance->CNDTR,
+						  (unsigned long)hspi_handle->hdmarx->Instance->CPAR,
+						  (unsigned long)hspi_handle->hdmarx->Instance->CMAR,
+						  (unsigned long)hspi_handle->hdmarx->Instance->CCR);
+			/* Check DMAMUX configuration */
+#ifdef DEBUG
+			uint32_t dmamux_rx = DMAMUX1_Channel0->CCR;
+			uint32_t dmamux_tx = DMAMUX1_Channel1->CCR;
+			MGR_LOG_DEBUG("DMAMUX: Ch0(RX)=0x%08lX Ch1(TX)=0x%08lX\r\n",
+						  (unsigned long)dmamux_rx, (unsigned long)dmamux_tx);
+#endif
+			MGR_LOG_DEBUG("SPI: CR1=0x%04X CR2=0x%04X SR=0x%04X\r\n",
+						  (unsigned int)hspi_handle->Instance->CR1,
+						  (unsigned int)hspi_handle->Instance->CR2,
+						  (unsigned int)hspi_handle->Instance->SR);
+			dma_debug_logged = true;
+		}
 	} else {
 		MGR_LOG_DEBUG("%s:: HAL error %d, State=%u, ErrorCode=0x%X\r\n",
 					  __func__, ret, hspi_handle->State, (unsigned int)hspi_handle->ErrorCode);
@@ -204,24 +289,51 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read()
  * @param[out] bytes_received Number of bytes that were received
  * @return true if transaction ended and data is available, false otherwise
  */
+/* Counter for periodic debug output */
+static uint32_t last_debug_tick = 0;
+#define DEBUG_INTERVAL_MS 5000  /* Print debug every 5 seconds when waiting */
+
+/* Timestamp when bytes first arrived - for timing diagnostics */
+static volatile uint32_t first_byte_tick = 0;
+
 bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
 {
 	if (hspi_handle == NULL) {
 		return false;
 	}
 
-	/* Calculate current bytes received */
+	/* Calculate current bytes received from DMA NDTR register.
+	 * For DMA mode, RxXferCount is NOT updated during transfer.
+	 * The DMA's CNDTR register shows remaining bytes to transfer. */
 	uint16_t total_requested = hspi_handle->RxXferSize;
-	uint16_t remaining = hspi_handle->RxXferCount;
+	uint16_t remaining;
+
+	if (hspi_handle->hdmarx != NULL) {
+		/* DMA mode: read remaining count from DMA controller */
+		remaining = __HAL_DMA_GET_COUNTER(hspi_handle->hdmarx);
+	} else {
+		/* Interrupt mode fallback */
+		remaining = hspi_handle->RxXferCount;
+	}
 	uint16_t current_rx_count = total_requested - remaining;
+
+	/* Periodic debug output when waiting for data */
+	if (!rx_activity_detected && (HAL_GetTick() - last_debug_tick) >= DEBUG_INTERVAL_MS) {
+		#ifdef DEBUG
+		uint8_t nss = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15);
+		MGR_LOG_DEBUG("SPI wait: NSS=%d rx=%u/%u\r\n", nss, current_rx_count, remaining);
+		#endif
+		last_debug_tick = HAL_GetTick();
+	}
 
 	/* Check if we've received new bytes */
 	if (current_rx_count > last_rx_count) {
 		/* Activity detected - bytes are being received */
 		if (!rx_activity_detected) {
-			/* First activity - log HAL state for debugging */
-			MGR_LOG_DEBUG("%s:: First RX activity: count=%u, Size=%u, Remain=%u, SR=0x%04X\r\n",
-						  __func__, current_rx_count, total_requested, remaining,
+			/* First activity - record timestamp for timing diagnostics */
+			first_byte_tick = HAL_GetTick();
+			SPI_LOG_VERBOSE("%s:: First RX at tick=%lu: count=%u, SR=0x%04X\r\n",
+						  __func__, (unsigned long)first_byte_tick, current_rx_count,
 						  (unsigned int)hspi_handle->Instance->SR);
 		}
 		rx_activity_detected = true;
@@ -240,14 +352,18 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
 		/* Check if RX count has been stable long enough */
 		if ((HAL_GetTick() - rx_stable_start_tick) >= RX_STABLE_TIMEOUT_MS) {
 			*bytes_received = current_rx_count;
+#ifdef SPI_VERBOSE_LOG
+			uint32_t end_tick = HAL_GetTick();
+			uint32_t total_time = (first_byte_tick > 0) ? (end_tick - first_byte_tick) : 0;
 
-			MGR_LOG_DEBUG("%s:: Transaction ended, received %u bytes (stable for %ums)\r\n",
-						  __func__, *bytes_received, RX_STABLE_TIMEOUT_MS);
-
+			SPI_LOG_VERBOSE("%s:: Transaction ended at tick=%lu, received %u bytes, total_time=%lums\r\n",
+						  __func__, (unsigned long)end_tick, *bytes_received, (unsigned long)total_time);
+#endif
 			/* Reset state for next transaction */
 			last_rx_count = 0;
 			rx_stable_start_tick = 0;
 			rx_activity_detected = false;
+			first_byte_tick = 0;
 
 			return true;
 		}
@@ -268,8 +384,8 @@ void MCU_SPI_DRIVER_abort_transfer(void)
 		return;
 	}
 
-	/* Abort any ongoing transfer */
-	HAL_SPI_Abort_IT(hspi_handle);
+	/* Abort any ongoing DMA transfer */
+	HAL_SPI_Abort(hspi_handle);
 
 	/* Reset state */
 	hspi_handle->State = HAL_SPI_STATE_READY;
@@ -280,6 +396,44 @@ void MCU_SPI_DRIVER_abort_transfer(void)
 	rx_activity_detected = false;
 }
 
+/**
+ * @brief Check if TX transaction has completed for two-transaction protocol.
+ *
+ * In the two-transaction protocol:
+ * 1. Master sends command (transaction 1)
+ * 2. STM32 processes and prepares response, error callback re-arms TX
+ * 3. Master clocks to read response (transaction 2)
+ *
+ * This function polls for transaction 2 completion by checking if the
+ * IT/DMA transfer finished (HAL_SPI_STATE_READY).
+ *
+ * @return true if TX transaction completed, false if still waiting.
+ */
+bool MCU_SPI_DRIVER_check_tx_complete(void)
+{
+	if (hspi_handle == NULL) {
+		return false;
+	}
+
+	/* Only applicable if we're waiting for transaction 2 */
+	if (!waiting_for_tx_transaction) {
+		return false;
+	}
+
+	/* Check if the SPI transfer completed.
+	 * When using IT mode, the HAL state goes to READY when transfer completes.
+	 * The TxRxCpltCallback was ignored due to the flag, but the HAL state
+	 * still updates. */
+	if (hspi_handle->State == HAL_SPI_STATE_READY) {
+		/* Transaction 2 completed - response was sent */
+		SPI_LOG_VERBOSE("%s:: TX transaction 2 completed\r\n", __func__);
+		spi_stats.tx_count++;
+		waiting_for_tx_transaction = false;
+		return true;
+	}
+
+	return false;
+}
 
 
 bool MCU_SPI_DRIVER_register(void *handle, int8_t (*rx_spi_evt_cb)(SPI_Buffer *rx, SPI_Buffer *tx))
@@ -290,6 +444,37 @@ bool MCU_SPI_DRIVER_register(void *handle, int8_t (*rx_spi_evt_cb)(SPI_Buffer *r
 	if (handle != NULL && hspi_handle == NULL) // Handle is not set yet
 	{
 		hspi_handle = (SPI_HandleTypeDef *)handle;
+
+		/* Diagnostic: Verify SPI and GPIO configuration */
+		MGR_LOG_DEBUG("%s:: SPI1 CR1=0x%04X, CR2=0x%04X, SR=0x%04X\r\n",
+					  __func__,
+					  (unsigned int)hspi_handle->Instance->CR1,
+					  (unsigned int)hspi_handle->Instance->CR2,
+					  (unsigned int)hspi_handle->Instance->SR);
+
+		/* Check GPIO mode registers for SPI pins
+		 * MODER: 00=Input, 01=Output, 10=Alternate Function, 11=Analog
+		 * PB4 (MISO) should be 10 (AF), PB5 (MOSI) should be 10 (AF)
+		 * PA1 (SCK) should be 10 (AF), PA15 (NSS) should be 10 (AF) */
+#ifdef DEBUG
+		uint32_t gpiob_moder = GPIOB->MODER;
+		uint32_t gpioa_moder = GPIOA->MODER;
+		uint8_t pb4_mode = (gpiob_moder >> (4 * 2)) & 0x3;  /* MISO */
+		uint8_t pb5_mode = (gpiob_moder >> (5 * 2)) & 0x3;  /* MOSI */
+		uint8_t pa1_mode = (gpioa_moder >> (1 * 2)) & 0x3;  /* SCK */
+		uint8_t pa15_mode = (gpioa_moder >> (15 * 2)) & 0x3; /* NSS */
+
+		MGR_LOG_DEBUG("%s:: GPIO: MISO(PB4)=%u, MOSI(PB5)=%u, SCK(PA1)=%u, NSS(PA15)=%u (2=AF)\r\n",
+					  __func__, pb4_mode, pb5_mode, pa1_mode, pa15_mode);
+#endif
+		/* Check GPIO clock status */
+#ifdef DEBUG
+		uint32_t rcc_ahb2enr = RCC->AHB2ENR;
+		MGR_LOG_DEBUG("%s:: RCC_AHB2ENR=0x%08X (GPIOA=%d, GPIOB=%d)\r\n",
+					  __func__, (unsigned int)rcc_ahb2enr,
+					  (rcc_ahb2enr & RCC_AHB2ENR_GPIOAEN) ? 1 : 0,
+					  (rcc_ahb2enr & RCC_AHB2ENR_GPIOBEN) ? 1 : 0);
+#endif
     } else if (handle == NULL && hspi_handle == NULL) // Handle is already set
 	{
 	    MGR_LOG_DEBUG("%s::ERROR failed to register: invalid hspi ptr \r\n", __func__);
@@ -412,15 +597,45 @@ bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi)
   */
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
 {
+	SPI_LOG_VERBOSE("%s:: called, state=%d, error=0x%X\r\n", __func__, spiState, (unsigned int)hspi->ErrorCode);
 
-	// Set SPI OK and TX WAITING flags
-	MGR_LOG_DEBUG("%s:: called\r\n", __func__);
-    bool ret = MCU_SPI_DRIVER_reset(hspi);
-    if (!ret) {
-        // Retry to register
-        MGR_LOG_DEBUG("%s::ERROR Failed to reset SPI_driver...\r\n", __func__);
-        kns_assert(0);
-    }
+	/* For two-transaction protocol, errors during WAITING_RX or WAITING_TX are NORMAL.
+	 * They typically occur when CS goes HIGH (end of transaction 1) while DMA was
+	 * expecting more bytes. We must NOT reset - just clear errors and let the
+	 * polling mechanism (check_transaction_end) detect the end and process data.
+	 *
+	 * CRITICAL: A full reset here would LOSE the received data!
+	 *
+	 * Two-transaction protocol flow:
+	 * 1. Master sends command (transaction 1) - state = WAITING_RX
+	 * 2. CS goes HIGH → error callback fires (overrun)
+	 * 3. Main loop polling detects end, processes command, prepares response
+	 * 4. Master reads response (transaction 2) - state = WAITING_TX
+	 */
+	if (spiState == SPICMD_WAITING_RX || spiState == SPICMD_WAITING_TX) {
+		/* Clear error flags but DO NOT reset or abort */
+		if (hspi->ErrorCode & HAL_SPI_ERROR_OVR) {
+			__HAL_SPI_CLEAR_OVRFLAG(hspi);
+		}
+		if (hspi->ErrorCode & HAL_SPI_ERROR_MODF) {
+			__HAL_SPI_CLEAR_MODFFLAG(hspi);
+		}
+		if (hspi->ErrorCode & HAL_SPI_ERROR_FRE) {
+			__HAL_SPI_CLEAR_FREFLAG(hspi);
+		}
+		hspi->ErrorCode = HAL_SPI_ERROR_NONE;
+
+		SPI_LOG_VERBOSE("%s:: %s - errors cleared, continuing\r\n", __func__,
+			spiState == SPICMD_WAITING_RX ? "WAITING_RX" : "WAITING_TX");
+		return;
+	}
+
+	/* For other states (IDLE, ERROR, PROCESS_CMD), do a full reset */
+	bool ret = MCU_SPI_DRIVER_reset(hspi);
+	if (!ret) {
+		MGR_LOG_DEBUG("%s::ERROR Failed to reset SPI_driver...\r\n", __func__);
+		kns_assert(0);
+	}
 }
 
 /**

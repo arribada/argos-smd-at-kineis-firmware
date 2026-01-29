@@ -389,8 +389,12 @@ void GPIO_DisableAllToAnalogInput(void)
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
 
-  /* Disable GPIOs clock */
+#ifndef USE_SPI_DRIVER
+  /* Disable GPIOs clock - but NOT when SPI is in use!
+   * SPI uses PA1 (SCK) and PA15 (NSS) which need GPIOA clock enabled.
+   * Disabling the clock would break SPI communication. */
   __HAL_RCC_GPIOA_CLK_DISABLE();
+#endif
 }
 
 void LPM_init(void)
