@@ -2,8 +2,15 @@
 # Bootloader Unit Tests Makefile
 #######################################
 
-# Compiler
-CC = gcc
+# Compiler - use WSL gcc if native gcc not available (Windows)
+ifeq ($(shell which gcc 2>/dev/null),)
+    # No native gcc, try WSL
+    CC = wsl.exe gcc
+    RUN_PREFIX = wsl.exe ./
+else
+    CC = gcc
+    RUN_PREFIX = ./
+endif
 CFLAGS = -Wall -Wextra -g -O0 -std=c99
 
 # Directories
@@ -14,9 +21,10 @@ BUILD_DIR = build
 TEST_CRC32 = $(BUILD_DIR)/test_crc32
 TEST_DFU = $(BUILD_DIR)/test_dfu_protocol
 TEST_HEADER = $(BUILD_DIR)/test_app_header
+TEST_SPI = $(BUILD_DIR)/test_spi_protocol
 
 # All tests
-TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER)
+TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI)
 
 # Default target
 all: $(BUILD_DIR) $(TESTS)
@@ -40,6 +48,9 @@ $(TEST_DFU): $(UNIT_DIR)/test_dfu_protocol.c $(UNIT_DIR)/test_framework.h
 $(TEST_HEADER): $(UNIT_DIR)/test_app_header.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
+$(TEST_SPI): $(UNIT_DIR)/test_spi_protocol.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
 # Run all unit tests
 run: all
 	@echo ""
@@ -50,7 +61,7 @@ run: all
 	@failed=0; \
 	for test in $(TESTS); do \
 		echo "Running $$test..."; \
-		$$test || failed=1; \
+		$(RUN_PREFIX)$$test || failed=1; \
 	done; \
 	if [ $$failed -eq 0 ]; then \
 		echo ""; \
@@ -67,13 +78,16 @@ run: all
 
 # Run individual tests
 run-crc32: $(TEST_CRC32)
-	$(TEST_CRC32)
+	$(RUN_PREFIX)$(TEST_CRC32)
 
 run-dfu: $(TEST_DFU)
-	$(TEST_DFU)
+	$(RUN_PREFIX)$(TEST_DFU)
 
 run-header: $(TEST_HEADER)
-	$(TEST_HEADER)
+	$(RUN_PREFIX)$(TEST_HEADER)
+
+run-spi: $(TEST_SPI)
+	$(RUN_PREFIX)$(TEST_SPI)
 
 # Clean
 clean:
@@ -91,4 +105,4 @@ integration-spi:
 integration-spi-mock:
 	python integration/test_spi_dfu.py --mock --verbose
 
-.PHONY: all run clean run-crc32 run-dfu run-header integration-uart integration-spi integration-spi-mock
+.PHONY: all run clean run-crc32 run-dfu run-header run-spi integration-uart integration-spi integration-spi-mock

@@ -45,12 +45,25 @@ extern uint32_t SystemCoreClock;
 
 /* Functions ------------------------------------------------------------------------------------ */
 
+/** @brief Additional delay after PA enable for TCXO stabilization with GR5504 load
+ *  The PA draws significant current which can cause TCXO drift. This delay allows
+ *  the power supply and TCXO to stabilize after the initial PA boot current surge.
+ */
+#define MCU_PA_TCXO_STABILIZATION_MS  50
+
 void MCU_MISC_turn_on_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
 #ifdef KRD_FW_MP
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+#ifdef USE_SMPS_BYPASS_TX
+	/* Switch SMPS to bypass mode (LDO) to reduce switching noise on TCXO.
+	 * This improves TCXO stability during TX at the cost of slightly higher power consumption.
+	 * The SubGHz radio may also control SMPS, but we force bypass here for PA startup. */
+	HAL_PWREx_SMPS_SetMode(PWR_SMPS_BYPASS);
+	DELAY_MS(1);  /* Wait for LDO to stabilize */
+#endif
 
 	/* GPIO Ports Clock Enable */
 	__HAL_RCC_GPIOC_CLK_ENABLE();
@@ -79,6 +92,11 @@ void MCU_MISC_turn_on_pa()
 	DELAY_MS(10);
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_SET);
 	DELAY_MS(MCU_PA_BOOTDELAY_MS);
+
+	/* Additional delay for TCXO stabilization after GR5504 PA startup.
+	 * The PA draws ~300-500mA which can cause voltage droop affecting TCXO.
+	 * This allows the power supply to stabilize before RF transmission. */
+	DELAY_MS(MCU_PA_TCXO_STABILIZATION_MS);
 #endif
 }
 
@@ -108,6 +126,13 @@ void MCU_MISC_turn_off_pa()
 	DELAY_MS(10);
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
 	//DELAY_MS(MCU_PA_BOOTDELAY_MS);
+
+#ifdef USE_SMPS_BYPASS_TX
+	/* Restore SMPS to step-down mode for better power efficiency after TX.
+	 * Small delay to ensure PA is fully off before switching regulator mode. */
+	DELAY_MS(5);
+	HAL_PWREx_SMPS_SetMode(PWR_SMPS_STEP_DOWN);
+#endif
 #endif
 }
 

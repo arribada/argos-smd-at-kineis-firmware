@@ -97,7 +97,13 @@ dfu_response_t bl_dfu_cmd_ping(uint8_t* response, uint16_t* response_len)
 {
     /* Return bootloader version string */
     const char* version = bl_get_version_string();
-    uint16_t len = strlen(version);
+
+    /* Defensive null checks */
+    if (version == NULL || response == NULL || response_len == NULL) {
+        return DFU_RSP_ERROR;
+    }
+
+    uint16_t len = (uint16_t)strlen(version);
 
     if (*response_len < len) {
         return DFU_RSP_SIZE_ERROR;
@@ -111,6 +117,11 @@ dfu_response_t bl_dfu_cmd_ping(uint8_t* response, uint16_t* response_len)
 
 dfu_response_t bl_dfu_cmd_get_info(uint8_t* response, uint16_t* response_len)
 {
+    /* Defensive null checks */
+    if (response == NULL || response_len == NULL) {
+        return DFU_RSP_ERROR;
+    }
+
     /* Build info response:
      * - BL version (4 bytes)
      * - App header valid flag (1 byte)
@@ -212,6 +223,11 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
     /* Check alignment (flash requires 64-bit alignment) */
     if ((address % 8) != 0) {
         return DFU_RSP_ADDR_ERROR;
+    }
+
+    /* Validate payload size to prevent buffer overflow */
+    if (payload_len > BL_CHUNK_SIZE) {
+        return DFU_RSP_SIZE_ERROR;
     }
 
     /* Pad payload to 8-byte boundary if needed */

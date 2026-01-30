@@ -62,8 +62,14 @@ static volatile bool waiting_for_tx_transaction = false;
  * At 100kHz SPI clock, one byte takes 80us (8 bits / 100kHz).
  * A 255-byte frame would take ~20ms. But master sends only 5-byte command.
  * After CS goes high, we should detect quickly (within 1 byte time + margin).
+ *
+ * IMPORTANT: This timeout affects the minimum delay the master must wait
+ * before reading the response. Master should wait at least:
+ *   RX_STABLE_TIMEOUT_MS + processing_time (~5ms) + margin
+ *
+ * Increased to 10ms for reliability with slower SPI speeds (125kHz).
  */
-#define RX_STABLE_TIMEOUT_MS 2
+#define RX_STABLE_TIMEOUT_MS 10
 /* Private function prototypes -----------------------------------------------*/
 
 
@@ -176,14 +182,18 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_writeread()
 		hspi_handle->State = HAL_SPI_STATE_READY;
 	}
 
-	/* Pad TX buffer with 0xAA after the response data.
+	/* Pad TX buffer with idle pattern after the response data.
 	 * The master may read more bytes than the response size.
-	 * We configure DMA for a larger size to avoid overrun errors. */
+	 * We configure DMA for a larger size to avoid overrun errors.
+	 * Using 0xAA pattern for easy scope identification. */
 	uint16_t transfer_size = txBuf.next_req;
 	if (transfer_size < 16) {
 		/* Minimum 16 bytes to handle master reading extra bytes */
 		memset(&txBuf.data[transfer_size], 0xAA, 16 - transfer_size);
 		transfer_size = 16;
+	} else if (transfer_size < TXBUF_SIZE) {
+		/* Pad remaining buffer to prevent sending stale data */
+		txBuf.data[transfer_size] = 0xAA;
 	}
 
 	/* CRITICAL: Set state BEFORE HAL call to prevent race condition!
@@ -222,10 +232,13 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read()
 		return HAL_ERROR;
 	}
 
-	/* Fill entire idle TX buffer with 0xAA so we can see if MISO is working
-	 * This is critical for SPI slave mode - we must pre-load the TX buffer before master clocks
-	 * Using 0xAA (10101010) makes it easy to see on a scope and distinguishes from 0x00/0xFF */
-	memset(spiIdleTxBuf, 0xAA, RXBUF_SIZE);
+	/* Initialize idle TX buffer with 0xAA pattern only once for efficiency.
+	 * 0xAA (10101010) makes it easy to see on a scope and distinguishes from 0x00/0xFF */
+	static bool idle_buf_initialized = false;
+	if (!idle_buf_initialized) {
+		memset(spiIdleTxBuf, 0xAA, RXBUF_SIZE);
+		idle_buf_initialized = true;
+	}
 
 	/* Reset transaction detection state for new transfer */
 	last_rx_count = 0;
@@ -286,16 +299,11 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read()
  * if the number of received bytes has stopped changing. More reliable than
  * BSY flag in slave mode.
  *
+ * CRITICAL: This function is called in a tight polling loop - NO LOGGING here!
+ *
  * @param[out] bytes_received Number of bytes that were received
  * @return true if transaction ended and data is available, false otherwise
  */
-/* Counter for periodic debug output */
-static uint32_t last_debug_tick = 0;
-#define DEBUG_INTERVAL_MS 5000  /* Print debug every 5 seconds when waiting */
-
-/* Timestamp when bytes first arrived - for timing diagnostics */
-static volatile uint32_t first_byte_tick = 0;
-
 bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
 {
 	if (hspi_handle == NULL) {
@@ -308,34 +316,21 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
 	uint16_t total_requested = hspi_handle->RxXferSize;
 	uint16_t remaining;
 
-	if (hspi_handle->hdmarx != NULL) {
+	if (hspi_handle->hdmarx != NULL && hspi_handle->hdmarx->Instance != NULL) {
 		/* DMA mode: read remaining count from DMA controller */
 		remaining = __HAL_DMA_GET_COUNTER(hspi_handle->hdmarx);
 	} else {
-		/* Interrupt mode fallback */
+		/* Interrupt mode fallback or DMA not configured */
 		remaining = hspi_handle->RxXferCount;
 	}
-	uint16_t current_rx_count = total_requested - remaining;
 
-	/* Periodic debug output when waiting for data */
-	if (!rx_activity_detected && (HAL_GetTick() - last_debug_tick) >= DEBUG_INTERVAL_MS) {
-		#ifdef DEBUG
-		uint8_t nss = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15);
-		MGR_LOG_DEBUG("SPI wait: NSS=%d rx=%u/%u\r\n", nss, current_rx_count, remaining);
-		#endif
-		last_debug_tick = HAL_GetTick();
-	}
+	/* Protect against underflow if remaining > total_requested (shouldn't happen) */
+	uint16_t current_rx_count = (remaining <= total_requested) ?
+		(total_requested - remaining) : 0;
 
-	/* Check if we've received new bytes */
+	/* Check if we've received new bytes - NO logging in this hot path */
 	if (current_rx_count > last_rx_count) {
 		/* Activity detected - bytes are being received */
-		if (!rx_activity_detected) {
-			/* First activity - record timestamp for timing diagnostics */
-			first_byte_tick = HAL_GetTick();
-			SPI_LOG_VERBOSE("%s:: First RX at tick=%lu: count=%u, SR=0x%04X\r\n",
-						  __func__, (unsigned long)first_byte_tick, current_rx_count,
-						  (unsigned int)hspi_handle->Instance->SR);
-		}
 		rx_activity_detected = true;
 		last_rx_count = current_rx_count;
 		rx_stable_start_tick = HAL_GetTick();  /* Reset stability timer */
@@ -352,18 +347,11 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
 		/* Check if RX count has been stable long enough */
 		if ((HAL_GetTick() - rx_stable_start_tick) >= RX_STABLE_TIMEOUT_MS) {
 			*bytes_received = current_rx_count;
-#ifdef SPI_VERBOSE_LOG
-			uint32_t end_tick = HAL_GetTick();
-			uint32_t total_time = (first_byte_tick > 0) ? (end_tick - first_byte_tick) : 0;
 
-			SPI_LOG_VERBOSE("%s:: Transaction ended at tick=%lu, received %u bytes, total_time=%lums\r\n",
-						  __func__, (unsigned long)end_tick, *bytes_received, (unsigned long)total_time);
-#endif
 			/* Reset state for next transaction */
 			last_rx_count = 0;
 			rx_stable_start_tick = 0;
 			rx_activity_detected = false;
-			first_byte_tick = 0;
 
 			return true;
 		}
@@ -586,13 +574,12 @@ bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi)
 }
 
 /**
-  * @brief  UART error callback. Can raise in case of UART OVERFLOW, DMA RX ERROR, ...
- *
- * This function is highly based on STM32HAL_UART. It overrides the generic defined error callback
- *
- * @note So far, this callback is emptied
- *
-  * @param  huart UART handle.
+  * @brief  SPI error callback. Handles overrun, mode fault, and frame errors.
+  *
+  * For two-transaction protocol, errors during WAITING_RX or WAITING_TX are normal
+  * (occur when CS goes HIGH). We clear errors but don't reset to preserve received data.
+  *
+  * @param  hspi SPI handle.
   * @retval None
   */
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
@@ -633,8 +620,12 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
 	/* For other states (IDLE, ERROR, PROCESS_CMD), do a full reset */
 	bool ret = MCU_SPI_DRIVER_reset(hspi);
 	if (!ret) {
-		MGR_LOG_DEBUG("%s::ERROR Failed to reset SPI_driver...\r\n", __func__);
-		kns_assert(0);
+		MGR_LOG_DEBUG("%s::ERROR Failed to reset SPI_driver, attempting recovery...\r\n", __func__);
+		/* Instead of fatal assert, try to recover by clearing errors */
+		hspi->ErrorCode = HAL_SPI_ERROR_NONE;
+		hspi->State = HAL_SPI_STATE_READY;
+		spiState = SPICMD_ERROR;
+		spi_stats.error_count++;
 	}
 }
 

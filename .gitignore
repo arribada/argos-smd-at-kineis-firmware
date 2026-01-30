@@ -1,4 +1,6 @@
 build/*
+build_bl/*
+Tests/build/*
 .settings/
 .vscode/
 Kineis/doc/html/

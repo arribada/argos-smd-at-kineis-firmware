@@ -86,9 +86,13 @@ void test_crc32_test_vector_123456789(void)
     const uint8_t data[] = "123456789";
     uint32_t crc = crc32_calculate(data, 9);
 
-    /* STM32 CRC32 result for "123456789" */
-    /* Note: STM32 uses different bit order, so result differs from standard CRC32 */
-    ASSERT_EQ_HEX(0x89A1897F, crc);
+    /* STM32 CRC32 result for "123456789"
+     * Note: STM32 uses polynomial 0x04C11DB7 with:
+     * - MSB-first processing (not reflected like IEEE 802.3)
+     * - Initial value 0xFFFFFFFF
+     * - No final XOR
+     * This differs from standard CRC32 which gives 0xCBF43926. */
+    ASSERT_EQ_HEX(0x0376E6E7, crc);
 
     TEST_PASS();
 }

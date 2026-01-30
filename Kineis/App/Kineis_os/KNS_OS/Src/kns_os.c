@@ -17,6 +17,7 @@
 
 #include "kns_os.h"
 #include "mgr_log.h"  /* For MGR_LOG_flush() */
+#include "mcu_spi_driver.h"  /* For spiState - to avoid flushing logs during SPI transactions */
 
 #pragma GCC visibility push(default)
 
@@ -52,9 +53,13 @@ void KNS_OS_main(void)
 				taskPool[idx]();
 		}
 
-		/* Flush debug log buffer (non-blocking, sends up to 128 bytes per call) */
+		/* Flush debug log buffer ONLY when SPI is idle to avoid timing issues.
+		 * SPI transactions are time-critical and UART TX can block for ~10ms.
+		 * Only flush when SPI is in IDLE state or not actively processing. */
 #ifdef DEBUG
-		MGR_LOG_flush();
+		if (spiState == SPICMD_IDLE || spiState == SPICMD_UNKNOWN || spiState == SPICMD_INIT) {
+			MGR_LOG_flush();
+		}
 #endif
 	}
 }

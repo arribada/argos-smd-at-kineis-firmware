@@ -49,6 +49,10 @@ LPM = NONE
 # * KRD board: choose between: KRD_FW_LP, KRD_FW_MP
 KRD_BOARD = KRD_FW_MP
 
+# TCXO Stability: Use SMPS bypass (LDO mode) during TX to reduce noise
+# Set to 1 if TCXO instability is observed during satellite TX
+SMPS_BYPASS_TX = 0
+
 # optimization
 ifeq ($(DEBUG), 1)
 OPT = -Og
@@ -227,6 +231,11 @@ C_DEFS +=  \
 -DVERBOSE
 endif
 
+ifeq ($(SMPS_BYPASS_TX), 1)
+C_DEFS +=  \
+-DUSE_SMPS_BYPASS_TX
+endif
+
 ifeq ($(APP),STDLN)
 	C_DEFS +=  \
 	-DUSE_STDALONE_APP
@@ -318,6 +327,9 @@ BUILD_VERSION := $(BUILD_VERSION)_Mp
 endif
 ifeq ($(KRD_BOARD),KRD_FW_LP)
 BUILD_VERSION := $(BUILD_VERSION)_Lp
+endif
+ifeq ($(SMPS_BYPASS_TX), 1)
+BUILD_VERSION := $(BUILD_VERSION)_SmpsByp
 endif
 
 #######################################

@@ -94,9 +94,19 @@
 #define BL_WRITE_TIMEOUT_MS         500         /* Flash write timeout */
 #define BL_ERASE_TIMEOUT_MS         500         /* Flash erase timeout per page */
 
+/* SPI transaction detection timeout (ms)
+ * After receiving bytes, wait this long with no new bytes before
+ * considering the transaction complete. Master must wait at least
+ * this + processing time (~5ms) + margin before reading response. */
+#define BL_SPI_RX_STABLE_TIMEOUT_MS 10
+
 /* Retry counts */
 #define BL_FLASH_WRITE_RETRIES      3
 #define BL_COMM_RETRIES             3
+
+/* SPI idle pattern - sent on MISO when no response data
+ * 0xAA (10101010) is easy to identify on scope and distinguishes from 0x00/0xFF */
+#define BL_SPI_IDLE_PATTERN         0xAA
 
 /*******************************************************************************
  * DFU COMMAND IDs (Unified for UART and SPI)

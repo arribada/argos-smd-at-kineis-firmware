@@ -62,8 +62,8 @@ bool bl_uart_init(void)
         return false;
     }
 
-    /* Configure NVIC for LPUART1 */
-    HAL_NVIC_SetPriority(LPUART1_IRQn, 5, 0);
+    /* Configure NVIC for LPUART1 - lower priority (6) than SPI (1) */
+    HAL_NVIC_SetPriority(LPUART1_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(LPUART1_IRQn);
 
     /* Reset buffers */
@@ -136,7 +136,13 @@ bool bl_uart_read_byte(uint8_t* byte)
 bool bl_uart_transmit(const uint8_t* data, uint16_t len)
 {
     HAL_StatusTypeDef status;
-    status = HAL_UART_Transmit(&huart, (uint8_t*)data, len, 500);
+    /* Calculate timeout based on data length at 9600 baud:
+     * 10 bits per byte (8 data + 1 start + 1 stop) at 9600 baud = ~1.04ms/byte
+     * Add 50ms margin for safety */
+    uint32_t timeout = ((uint32_t)len * 10 * 1000) / BL_UART_BAUDRATE + 50;
+    if (timeout < 100) timeout = 100;  /* Minimum 100ms */
+    if (timeout > 1000) timeout = 1000;  /* Maximum 1s to avoid blocking too long */
+    status = HAL_UART_Transmit(&huart, (uint8_t*)data, len, timeout);
     return (status == HAL_OK);
 }
 
@@ -157,6 +163,13 @@ bool bl_uart_process(void)
     /* Check if we already have a complete command */
     if (cmd_ready) {
         return true;
+    }
+
+    /* Check for buffer overflow - reset if detected */
+    if (rx_overflow) {
+        rx_overflow = false;
+        cmd_len = 0;  /* Discard partial command */
+        /* Don't flush rx buffer - let it continue receiving */
     }
 
     /* Process received bytes */
@@ -216,13 +229,15 @@ uint16_t bl_uart_get_command(char* buffer, uint16_t max_len)
 
 void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t data_len)
 {
-    char response[BL_TX_BUFFER_SIZE];
+    /* Use static tx_buffer to avoid stack allocation */
+    char* response = (char*)tx_buffer;
+    const size_t response_size = BL_TX_BUFFER_SIZE;  /* Fix: use actual buffer size, not sizeof(pointer) */
     int len;
 
     if (status == DFU_RSP_OK) {
         if (data != NULL && data_len > 0) {
             /* Format: +DFU=OK,<data>\r\n */
-            len = snprintf(response, sizeof(response), "+DFU=OK,");
+            len = snprintf(response, response_size, "+DFU=OK,");
 
             /* Check if data is printable string */
             bool is_string = true;
@@ -234,17 +249,22 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
             }
 
             if (is_string) {
-                memcpy(response + len, data, data_len);
-                len += data_len;
+                /* Ensure we don't overflow */
+                uint16_t copy_len = data_len;
+                if ((size_t)(len + copy_len + 3) > response_size) {
+                    copy_len = (uint16_t)(response_size - len - 3);
+                }
+                memcpy(response + len, data, copy_len);
+                len += copy_len;
             } else {
                 /* Convert to hex */
-                for (uint16_t i = 0; i < data_len && len < (int)sizeof(response) - 3; i++) {
-                    len += snprintf(response + len, sizeof(response) - len, "%02X", data[i]);
+                for (uint16_t i = 0; i < data_len && (size_t)(len + 3) < response_size; i++) {
+                    len += snprintf(response + len, response_size - len, "%02X", data[i]);
                 }
             }
-            len += snprintf(response + len, sizeof(response) - len, "\r\n");
+            len += snprintf(response + len, response_size - len, "\r\n");
         } else {
-            len = snprintf(response, sizeof(response), "+DFU=OK\r\n");
+            len = snprintf(response, response_size, "+DFU=OK\r\n");
         }
     } else {
         /* Error response */
@@ -262,7 +282,7 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
             case DFU_RSP_VERIFY_ERROR:   err_str = "VERIFY_ERROR"; break;
             default:                     err_str = "ERROR"; break;
         }
-        len = snprintf(response, sizeof(response), "+DFU=ERR,%s\r\n", err_str);
+        len = snprintf(response, response_size, "+DFU=ERR,%s\r\n", err_str);
     }
 
     bl_uart_transmit((uint8_t*)response, len);

@@ -202,8 +202,18 @@ bl_flash_status_t bl_flash_read(uint32_t address, void* buffer, uint32_t length)
         return BL_FLASH_SIZE_ERROR;
     }
 
-    /* Validate address is in flash range */
-    if (address < FLASH_BASE || (address + length) > (FLASH_BASE + BL_FLASH_TOTAL_SIZE)) {
+    /* Validate address is in flash range with overflow protection */
+    if (address < FLASH_BASE) {
+        return BL_FLASH_ADDR_ERROR;
+    }
+
+    /* Check for integer overflow before addition */
+    if (length > (UINT32_MAX - address)) {
+        return BL_FLASH_ADDR_ERROR;
+    }
+
+    uint32_t end_addr = address + length;
+    if (end_addr > (FLASH_BASE + BL_FLASH_TOTAL_SIZE)) {
         return BL_FLASH_ADDR_ERROR;
     }
 
