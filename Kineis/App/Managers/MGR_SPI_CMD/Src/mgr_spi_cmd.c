@@ -2,7 +2,14 @@
 /**
  * @file   mgr_spi_cmd.c
  * @author Arribada
- * @brief  TBD
+ * @brief  SPI Command Manager - Pipelined Single-Transaction Protocol
+ *
+ * This module implements a pipelined protocol where:
+ * - Each transaction is a fixed 64 bytes
+ * - Master sends command, slave sends response to PREVIOUS command
+ * - Response is always ready: no timing issues
+ *
+ * For immediate response, master sends command then NOP (to get response).
  */
 
 /**
@@ -10,14 +17,12 @@
  * @{
  */
 
-
 /* Includes -------------------------------------------------------------------------------------*/
 #include <string.h>
 #include <stdio.h>
 
 #include "kns_types.h"
 #include "mgr_spi_cmd.h"
-// #include "mgr_at_cmd_list.h"
 #include "kineis_sw_conf.h"
 #include KINEIS_SW_ASSERT_H
 #include "mgr_log.h"
@@ -33,489 +38,336 @@
 #include "mgr_spi_protocol.h"
 #include "kns_cfg.h"
 #include "mcu_misc.h"
-/* Defines --------------------------------------------------------------------------------------*/
-/** @brief Reception buffer size for Protocol A+ frames */
-#define SPI_RX_FRAME_SIZE  SPI_FRAME_MAX_SIZE
 
-/* Structure Declaration ------------------------------------------------------------------------*/
+/* Defines --------------------------------------------------------------------------------------*/
+/** @brief Timeout for waiting for transaction (1 second) */
+#define TRANSACTION_TIMEOUT_MS  1000
+
 /* Private variables ----------------------------------------------------------------------------*/
 volatile SpiState spiState = SPICMD_INIT;
 MACStatus macStatus = MAC_OK;
 CmdValue cmdInProgress = CMD_NONE;
 
 /* Private functions ----------------------------------------------------------------------------*/
+
 /**
- * @brief
+ * @brief Process a command and prepare response
  *
- * @attention This fct may be called from ISR context
- *
- * @note
- *
- * @param[in,out] pu8_RxBuffer pointer to start of RX buffer
- * @param[in,out] pi16_nbRxValidChar number of valid charecters in RX buffer
- *
- * @retval Return number of byt to read
+ * @param cmd Command to process
+ * @return true if command was processed successfully
  */
-static int8_t MGR_SPI_CMD_parseStreamCb(SPI_Buffer *rx, SPI_Buffer *tx)
-{
-	if (rx->size > 0)
-	{
-		/* Feed byte to protocol parser */
-		bool frame_ready = MGR_SPI_PROTOCOL_rx_byte(rx->data[0]);
-
-		if (frame_ready) {
-			if (MGR_SPI_PROTOCOL_is_legacy()) {
-				/* Legacy protocol: direct command byte */
-				cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
-
-				/* Store SPI state for status commands */
-				if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
-					tx->data[0] = spiState;
-				}
-				spiState = SPICMD_PROCESS_CMD;
-			} else {
-				/* A+ protocol: frame received */
-				SpiRequestFrame *req = MGR_SPI_PROTOCOL_get_request();
-
-				if (!req->crc_valid) {
-					/* CRC error - send error response */
-					MGR_LOG_DEBUG("%s:: CRC error, sending NACK\r\n", __func__);
-					tx->next_req = MGR_SPI_PROTOCOL_build_error_response(
-						tx->data, req->sequence, SPI_PROT_STATUS_CRC_ERROR);
-					bMGR_SPI_DRIVER_writeread();
-					MGR_SPI_PROTOCOL_reset();
-					return CMD_NONE;
-				}
-
-				/* Valid frame - extract command */
-				cmdInProgress = req->command;
-
-				/* Store SPI state for status commands */
-				if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
-					tx->data[0] = spiState;
-				}
-				spiState = SPICMD_PROCESS_CMD;
-			}
-		} else {
-			/* Need more bytes for A+ protocol */
-			if (spi_protocol_ctx.state == SPI_PROT_ERROR) {
-				MGR_LOG_DEBUG("%s:: Protocol error\r\n", __func__);
-				MGR_SPI_PROTOCOL_reset();
-				spiState = SPICMD_IDLE;
-				return CMD_NONE;
-			}
-			/* Continue receiving - request next byte */
-			rx->next_req = 1;
-			bMGR_SPI_DRIVER_read();
-			return CMD_NONE;
-		}
-	}
-	else {
-		MGR_LOG_DEBUG("%s: RX size less than 0\r\n",__func__);
-		cmdInProgress = CMD_NONE;
-		spiState = SPICMD_IDLE;
-	}
-
-	return cmdInProgress;
-}
-
-
-
-/* Timestamp for timing diagnostics */
-static uint32_t cmd_process_start_tick = 0;
-
 static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
 {
-	bool ret = true;
-	cmd_process_start_tick = HAL_GetTick();
+    bool ret = true;
 
-	SPI_LOG_VERBOSE("%s:: Process cmd=%u at tick=%lu\r\n", __func__, cmd, (unsigned long)cmd_process_start_tick);
-	if ((cmd > 0) && (cmd < SPICMD_MAX_COUNT))
-	{
-		/* Check if handler function is valid before calling */
-		if (cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc != NULL)
-		{
-			ret = cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc(&rxBuf, &txBuf);
-		} else {
-			MGR_LOG_DEBUG("%s:: NULL handler for cmd %u\r\n", __func__, cmd);
-			rxBuf.next_req = 1;
-			bMGR_SPI_DRIVER_read();
-			ret = false;
-		}
-	} else {
-		MGR_LOG_DEBUG("NONE/Unknown command %u\r\n", cmd);
-		rxBuf.next_req = 1;
-		bMGR_SPI_DRIVER_read();
-		ret = false;
-	}
-	return (ret);
+    SPI_LOG_VERBOSE("%s:: Processing cmd=%u\r\n", __func__, cmd);
+
+    /* Handle NOP (0x00) - no processing, just used to get previous response */
+    if (cmd == CMD_NONE) {
+        SPI_LOG_VERBOSE("%s:: NOP command - no processing\r\n", __func__);
+        return true;  /* Success, but don't change response buffer */
+    }
+
+    if ((cmd > 0) && (cmd < SPICMD_MAX_COUNT)) {
+        /* Check if handler function is valid before calling */
+        if (cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc != NULL) {
+            ret = cas_spicmd_list_array[cmd].f_ht_cmd_fun_proc(&rxBuf, &txBuf);
+
+            /* After processing, set the response in TX buffer for next transaction */
+            if (ret && txBuf.next_req > 0) {
+                MCU_SPI_DRIVER_set_response(txBuf.data, txBuf.next_req);
+            }
+        } else {
+            MGR_LOG_DEBUG("%s:: NULL handler for cmd %u\r\n", __func__, cmd);
+            ret = false;
+        }
+    } else {
+        MGR_LOG_DEBUG("Unknown command %u\r\n", cmd);
+        ret = false;
+    }
+
+    return ret;
 }
 
-/* Functions ------------------------------------------------------------------------------------*/
+/**
+ * @brief Process received transaction data
+ *
+ * @param data Received data buffer
+ * @param len Number of bytes received
+ */
+static void MGR_SPI_CMD_process_transaction(uint8_t *data, uint16_t len)
+{
+    /* Log received data */
+    MGR_LOG_DEBUG("RX %u: %02X %02X %02X %02X %02X\r\n",
+                  len, data[0], data[1], data[2], data[3], data[4]);
+
+    /* Try to parse as protocol frame */
+    bool frame_ready = MGR_SPI_PROTOCOL_process_buffer(data, len);
+
+    if (frame_ready) {
+        if (MGR_SPI_PROTOCOL_is_legacy()) {
+            /* Legacy protocol: direct command byte */
+            cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
+            SPI_LOG_VERBOSE("Legacy cmd=0x%02X\r\n", cmdInProgress);
+            spiState = SPICMD_PROCESS_CMD;
+        } else {
+            /* A+ protocol: frame received */
+            SpiRequestFrame *req = MGR_SPI_PROTOCOL_get_request();
+
+            if (!req->crc_valid) {
+                /* CRC error - prepare error response for next transaction */
+                MGR_LOG_DEBUG("CRC error, preparing NACK\r\n");
+                uint8_t error_response[8];
+                uint16_t resp_len = MGR_SPI_PROTOCOL_build_error_response(
+                    error_response, req->sequence, SPI_PROT_STATUS_CRC_ERROR);
+                MCU_SPI_DRIVER_set_response(error_response, resp_len);
+                MGR_SPI_PROTOCOL_reset();
+                spiState = SPICMD_IDLE;
+            } else {
+                /* Valid frame - process command */
+                cmdInProgress = req->command;
+                SPI_LOG_VERBOSE("A+ cmd=0x%02X seq=%u len=%u\r\n",
+                              cmdInProgress, req->sequence, req->data_len);
+                spiState = SPICMD_PROCESS_CMD;
+            }
+        }
+    } else {
+        /* Not a valid frame - could be all 0xFF (dummy read) or garbage */
+        if (spi_protocol_ctx.state == SPI_PROT_ERROR) {
+            SPI_LOG_VERBOSE("Protocol parse error\r\n");
+        }
+        /* Reset protocol and stay idle */
+        MGR_SPI_PROTOCOL_reset();
+        spiState = SPICMD_IDLE;
+    }
+}
+
+/* Public functions -----------------------------------------------------------------------------*/
 
 bool MGR_SPI_CMD_start(void *context)
 {
-	/* Initialize protocol layer */
-	MGR_SPI_PROTOCOL_init();
+    /* Initialize protocol layer */
+    MGR_SPI_PROTOCOL_init();
 
-	/* spi handler stored and receive interrupt one byte running */
-	bool ret = MCU_SPI_DRIVER_register(context, MGR_SPI_CMD_parseStreamCb);
-	if (!ret) {
-		spiState = SPICMD_ERROR;
-	}
-	return ret;
+    /* Register SPI driver (callback not used in pipelined mode) */
+    bool ret = MCU_SPI_DRIVER_register(context, NULL);
+    if (!ret) {
+        spiState = SPICMD_ERROR;
+    }
+    return ret;
 }
 
+void MGR_SPI_CMD_state_handler(void)
+{
+    switch (spiState) {
+    case SPICMD_INIT:
+        MGR_LOG_DEBUG("SPI_CMD_INIT\r\n");
+        if (MGR_SPI_CMD_start(NULL)) {
+            spiState = SPICMD_IDLE;
+        } else {
+            spiState = SPICMD_ERROR;
+        }
+        break;
 
-void MGR_SPI_CMD_state_handler() {
-	bool ret = true;
-   	switch (spiState) {
-       case SPICMD_INIT:
-	   	   // Only in case of restart service and spi ptr should not be changed.
-    	   MGR_LOG_DEBUG("SPI_CMD_INIT\r\n");
-		   if (MGR_SPI_CMD_start(NULL))
-		   {
-				spiState = SPICMD_IDLE;
-		   } else {
-				spiState = SPICMD_ERROR;
-		   }
-           break;
-       case SPICMD_IDLE:
-    	   /* Note: Verbose logging disabled to reduce log spam */
-    	   /* Reset protocol parser for next frame */
-    	   MGR_SPI_PROTOCOL_reset();
-    	   /* Start RX IT for waiting command - request max frame size to handle variable-length frames */
-		   rxBuf.next_req = SPI_RX_FRAME_SIZE;
-		   cmdInProgress = CMD_NONE;
-		   HAL_StatusTypeDef res = bMGR_SPI_DRIVER_read();
-		   if (res != HAL_OK)
-		   {
-			    MGR_LOG_DEBUG("%s:: Failed to start RX IT, resetting...\r\n", __func__);
-				spiState = SPICMD_ERROR;
-		   }
-           break;
-       case SPICMD_PROCESS_CMD:
-    	    SPI_LOG_VERBOSE("SPI_CMD_PROCESSCMD: cmd=0x%02X, protocol=%s\r\n",
-    	    			  cmdInProgress,
-    	    			  MGR_SPI_PROTOCOL_is_legacy() ? "Legacy" : "A+");
-			ret = MGR_SPI_CMD_process_cmd(cmdInProgress);
-			if (!ret)
-			{
-				MGR_LOG_DEBUG("%s:: failed to process cmd %u\r\n", __func__, cmdInProgress);
-				spiState = SPICMD_IDLE;
-			} else {
-				SPI_LOG_VERBOSE("%s:: cmd processed, state=%u, tx.next_req=%u\r\n",
-							  __func__, spiState, txBuf.next_req);
-			}
-           break;
-       case SPICMD_WAITING_RX:
-    	   {
-			   /* Check for transaction end (SPI became idle after being busy) */
-			   uint16_t bytes_received = 0;
-			   if (MCU_SPI_DRIVER_check_transaction_end(&bytes_received))
-			   {
-	#ifdef SPI_VERBOSE_LOG
-				   /* Debug: Print received bytes in a single log line */
-				   {
-					   char hex_buf[64];
-					   uint16_t debug_len = (bytes_received > 8) ? 8 : bytes_received;
-					   int pos = 0;
-					   for (uint16_t i = 0; i < debug_len && pos < 60; i++) {
-						   pos += snprintf(hex_buf + pos, sizeof(hex_buf) - pos, "%02X ", rxBuf.data[i]);
-					   }
-					   MGR_LOG_DEBUG("RX %u bytes: %s\r\n", bytes_received, hex_buf);
-				   }
-#endif
+    case SPICMD_IDLE:
+        {
+            /* Poll for transaction end */
+            uint16_t bytes_received = 0;
+            if (MCU_SPI_DRIVER_check_transaction_end(&bytes_received)) {
+                /* Transaction complete - abort DMA and process */
+                MCU_SPI_DRIVER_abort_transfer();
 
-				   /* Transaction ended - abort HAL transfer and process data */
-				   MCU_SPI_DRIVER_abort_transfer();
+                if (bytes_received > 0) {
+                    rxBuf.size = bytes_received;
+                    MGR_SPI_CMD_process_transaction(rxBuf.data, bytes_received);
+                }
 
-				   if (bytes_received > 0) {
-					   /* Update rxBuf size with actual bytes received */
-					   rxBuf.size = bytes_received;
+                /* Start next DMA transfer (response already in TX buffer) */
+                if (spiState == SPICMD_IDLE) {
+                    MCU_SPI_DRIVER_read();
+                }
 
-					   /* Process the complete received frame */
-					   SPI_LOG_VERBOSE("%s:: Processing %u bytes\r\n", __func__, bytes_received);
-					   bool frame_ready = MGR_SPI_PROTOCOL_process_buffer(rxBuf.data, bytes_received);
+                startTickTimeout = 0;
+            } else {
+                /* Timeout handling */
+                if (startTickTimeout == 0) {
+                    startTickTimeout = HAL_GetTick();
+                }
 
-					   if (frame_ready) {
-						   if (MGR_SPI_PROTOCOL_is_legacy()) {
-							   /* Legacy protocol: direct command byte */
-							   cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
-							   SPI_LOG_VERBOSE("%s:: Legacy cmd=0x%02X\r\n", __func__, cmdInProgress);
+                if ((HAL_GetTick() - startTickTimeout) > TRANSACTION_TIMEOUT_MS) {
+                    SPI_LOG_VERBOSE("Transaction timeout - still waiting\r\n");
+                    startTickTimeout = HAL_GetTick();  /* Reset for next period */
+                    spi_stats.timeout_count++;
+                }
+            }
+        }
+        break;
 
-							   /* Store SPI state for status commands */
-							   if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
-								   txBuf.data[0] = spiState;
-							   }
-							   spiState = SPICMD_PROCESS_CMD;
-						   } else {
-							   /* A+ protocol: frame received */
-							   SpiRequestFrame *req = MGR_SPI_PROTOCOL_get_request();
+    case SPICMD_PROCESS_CMD:
+        {
+            SPI_LOG_VERBOSE("Processing cmd=0x%02X\r\n", cmdInProgress);
 
-							   if (!req->crc_valid) {
-								   /* CRC error - send error response */
-								   MGR_LOG_DEBUG("%s:: CRC error, sending NACK\r\n", __func__);
-								   txBuf.next_req = MGR_SPI_PROTOCOL_build_error_response(
-									   txBuf.data, req->sequence, SPI_PROT_STATUS_CRC_ERROR);
-								   bMGR_SPI_DRIVER_writeread();
-								   MGR_SPI_PROTOCOL_reset();
-								   spiState = SPICMD_IDLE;
-							   } else {
-								   /* Valid frame - extract command */
-								   cmdInProgress = req->command;
-								   SPI_LOG_VERBOSE("%s:: A+ cmd=0x%02X seq=%u\r\n", __func__,
-												 cmdInProgress, req->sequence);
+            bool ret = MGR_SPI_CMD_process_cmd(cmdInProgress);
+            if (!ret) {
+                MGR_LOG_DEBUG("Failed to process cmd %u\r\n", cmdInProgress);
+            }
 
-								   /* Store SPI state for status commands */
-								   if ((cmdInProgress == CMD_SPI_STATUS) || (cmdInProgress == CMD_READ_SPIMAC_STATE)) {
-									   txBuf.data[0] = spiState;
-								   }
-								   spiState = SPICMD_PROCESS_CMD;
-							   }
-						   }
-					   } else {
-						   /* Incomplete frame or error */
-						   if (spi_protocol_ctx.state == SPI_PROT_ERROR) {
-							   MGR_LOG_DEBUG("%s:: Protocol error\r\n", __func__);
-							   MGR_SPI_PROTOCOL_reset();
-						   }
-						   spiState = SPICMD_IDLE;
-					   }
-				   } else {
-					   /* No bytes received - go back to idle */
-					   spiState = SPICMD_IDLE;
-				   }
+            /* Reset protocol for next command */
+            MGR_SPI_PROTOCOL_reset();
+            cmdInProgress = CMD_NONE;
 
-				   startTickTimeout = 0;
-			   }
-			   else
-			   {
-				   /* Still waiting - check for timeout */
-				   if (startTickTimeout == 0)
-				   {
-					   startTickTimeout = HAL_GetTick();
-				   }
+            /* Start next DMA transfer (response now in TX buffer) */
+            MCU_SPI_DRIVER_read();
+            spiState = SPICMD_IDLE;
+        }
+        break;
 
-				   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
-				   {
-					   MGR_LOG_DEBUG("SPI RX TIMEOUT\r\n");
-					   spi_stats.timeout_count++;
-					   spiState = SPICMD_ERROR;
-				   }
-			   }
-		   }
-           break;
-       case SPICMD_WAITING_TX:
-    	   /* Check for TX transaction completion (for two-transaction protocol).
-    	    * The error callback re-arms for transaction 2, and we poll here
-    	    * for when the master actually clocks out the response. */
-    	   if (MCU_SPI_DRIVER_check_tx_complete()) {
-    		   /* Transaction 2 completed - response was sent, go to IDLE */
-    		   SPI_LOG_VERBOSE("%s:: TX complete, going to IDLE\r\n", __func__);
-    		   startTickTimeout = 0;
-    		   spiState = SPICMD_IDLE;
-    		   break;
-    	   }
+    case SPICMD_ERROR:
+        MGR_LOG_DEBUG("SPI error, resetting...\r\n");
+        startTickTimeout = 0;
+        MGR_SPI_PROTOCOL_reset();
+        cmdInProgress = CMD_NONE;
 
-    	   /* Timeout for all TX operations to prevent blocking */
-    	   if (startTickTimeout == 0)
-    	   {
-    		   startTickTimeout = HAL_GetTick();
-    	   }
+        if (!MCU_SPI_DRIVER_reset(NULL)) {
+            MGR_LOG_DEBUG("Reset failed, retrying...\r\n");
+            spi_stats.error_count++;
+        }
+        spiState = SPICMD_INIT;
+        break;
 
-    	   if ((HAL_GetTick() - startTickTimeout) > CMD_IT_TIMEOUT)
-		   {
-			   MGR_LOG_DEBUG("%s::SPICMD_WAITING_TX::Write timeout (req=%u)!\r\n", __func__, txBuf.next_req);
-			   spi_stats.timeout_count++;
-			   spiState = SPICMD_ERROR;
-		   }
-           break;
-       case SPICMD_ERROR:
-		    MGR_LOG_DEBUG("%s:: SPI error, resetting...\r\n", __func__);
-		    /* Reset timeout counter to prevent immediate re-timeout after reset */
-		    startTickTimeout = 0;
-		    ret = MCU_SPI_DRIVER_reset(NULL);
-			if (!ret)
-			{
-				MGR_LOG_DEBUG("%s:: failed to reset %u\r\n", __func__, cmdInProgress);
-			}
-           break;
-       default:
-           MGR_LOG_DEBUG("%s:: Unknown spiState: %u\r\n", __func__, spiState);
-		   spiState = SPICMD_ERROR;
-           break;
-   }
+    default:
+        MGR_LOG_DEBUG("Unknown state: %u\r\n", spiState);
+        spiState = SPICMD_ERROR;
+        break;
+    }
 }
-
 
 enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
 {
-	/** Empty weak core, can be overwritten, depending on AT cmd processed */
-	enum KNS_status_t cbStatus;
-	struct KNS_MAC_srvcEvt_t srvcEvt;
-	struct sUserDataTxFifoElt_t *spUserDataMsg = USERDATA_txFifoGetFirst();
+    enum KNS_status_t cbStatus;
+    struct KNS_MAC_srvcEvt_t srvcEvt;
+    struct sUserDataTxFifoElt_t *spUserDataMsg = USERDATA_txFifoGetFirst();
 
-	cbStatus = KNS_Q_pop(KNS_Q_UL_MAC2APP, (void *)&srvcEvt);
+    cbStatus = KNS_Q_pop(KNS_Q_UL_MAC2APP, (void *)&srvcEvt);
 
-	if (cbStatus != KNS_STATUS_OK)
-		return cbStatus;
+    if (cbStatus != KNS_STATUS_OK)
+        return cbStatus;
 
-	//MGR_LOG_DEBUG("macEVT status %u\r\n", cbStatus);
-	/** get pointer to user data FIFO element when possible */
-	switch (srvcEvt.id) {
-		case (KNS_MAC_TX_DONE):
-		case (KNS_MAC_TXACK_DONE):
-		case (KNS_MAC_TX_TIMEOUT):
-		case (KNS_MAC_TXACK_TIMEOUT):
-		case (KNS_MAC_RX_ERROR):
-		case (KNS_MAC_RX_TIMEOUT):
-			spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-				srvcEvt.tx_ctxt.data_bitlen);
-			kns_assert(spUserDataMsg != NULL);
-			macStatus = MAC_RX_TIMEOUT;
-		break;
-		case (KNS_MAC_ERROR):
-			if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-				spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-					srvcEvt.tx_ctxt.data_bitlen);
-				MCU_MISC_TCXO_Force_State(false);
-				kns_assert(spUserDataMsg != NULL);
-				macStatus = MAC_ERROR;
-			}
-		break;
-		default:
-		break;
-	}
+    /* Get pointer to user data FIFO element when possible */
+    switch (srvcEvt.id) {
+    case (KNS_MAC_TX_DONE):
+    case (KNS_MAC_TXACK_DONE):
+    case (KNS_MAC_TX_TIMEOUT):
+    case (KNS_MAC_TXACK_TIMEOUT):
+    case (KNS_MAC_RX_ERROR):
+    case (KNS_MAC_RX_TIMEOUT):
+        spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
+            srvcEvt.tx_ctxt.data_bitlen);
+        kns_assert(spUserDataMsg != NULL);
+        macStatus = MAC_RX_TIMEOUT;
+        break;
+    case (KNS_MAC_ERROR):
+        if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
+            spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
+                srvcEvt.tx_ctxt.data_bitlen);
+            MCU_MISC_TCXO_Force_State(false);
+            kns_assert(spUserDataMsg != NULL);
+            macStatus = MAC_ERROR;
+        }
+        break;
+    default:
+        break;
+    }
 
-	/** process event */
-	switch (srvcEvt.id) {
-	case (KNS_MAC_TX_DONE):
-		MGR_LOG_DEBUG("MGR_SPI_CMD TX_DONE callback reached\r\n");
-		kns_assert(spUserDataMsg->bIsToBeTransmit);
-		/** Upon TX done of a mail request message, it means some DL_BC was received
-		 * Thus, UL ACK of DL_BC will transmitted by lower layer internally just
-		 * after the end of this callback.
-		 * AT response "+TX=..." will be sent to UART once UL-ACK is really
-		 * transmitted, cf TXACK_DONE below
-		 */
-		if (spUserDataMsg->u8Attr.sf == ATTR_MAIL_REQUEST) {
-			//TODO no service used for the moment
-		} else {
-			/** @todo Should check integrity between data reported by event
-			 * above and the one stored in user data buffer
-			 *
-			 * So far, as only one user data, consider this is the correct one:
-			 * * notify host with AT cmd response then
-			 * * free element from user data buffer.
-			 */
-			USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-		}
-		MCU_MISC_TCXO_Force_State(false);
-		macStatus = MAC_TX_DONE;
-		cbStatus = KNS_STATUS_OK;
-		break;
-	case (KNS_MAC_TXACK_DONE):
-		MGR_LOG_DEBUG("MGR_SPI_CMD TXACK_DONE callback reached\r\n");
-		kns_assert(spUserDataMsg->bIsToBeTransmit);
-		/** Upon TX done of a mail request message, it means some DL_BC was received
-		 * previously and UL ACK of DL_BC was just transmitted.
-		 * Send +TX= instead of +TACK=, meaning this is the real end of TX data
-		 * transmission
-		 */
+    /* Process event */
+    switch (srvcEvt.id) {
+    case (KNS_MAC_TX_DONE):
+        MGR_LOG_DEBUG("MGR_SPI_CMD TX_DONE callback reached\r\n");
+        kns_assert(spUserDataMsg->bIsToBeTransmit);
+        if (spUserDataMsg->u8Attr.sf == ATTR_MAIL_REQUEST) {
+            /* TODO: no service used for the moment */
+        } else {
+            USERDATA_txFifoRemoveElt(spUserDataMsg);
+        }
+        MCU_MISC_TCXO_Force_State(false);
+        macStatus = MAC_TX_DONE;
+        cbStatus = KNS_STATUS_OK;
+        break;
 
-		if (spUserDataMsg->u8Attr.sf == ATTR_MAIL_REQUEST)
-			macStatus = MAC_TX_DONE;
-		else
-			macStatus = MAC_TXACK_DONE;
-		MCU_MISC_TCXO_Force_State(false);
+    case (KNS_MAC_TXACK_DONE):
+        MGR_LOG_DEBUG("MGR_SPI_CMD TXACK_DONE callback reached\r\n");
+        kns_assert(spUserDataMsg->bIsToBeTransmit);
+        if (spUserDataMsg->u8Attr.sf == ATTR_MAIL_REQUEST)
+            macStatus = MAC_TX_DONE;
+        else
+            macStatus = MAC_TXACK_DONE;
+        MCU_MISC_TCXO_Force_State(false);
+        USERDATA_txFifoRemoveElt(spUserDataMsg);
+        cbStatus = KNS_STATUS_OK;
+        break;
 
-		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-		cbStatus = KNS_STATUS_OK;
-		break;
-	case (KNS_MAC_TX_TIMEOUT):
-		MGR_LOG_DEBUG("MGR_SPI_CMD TX_TIMEOUT callback reached\r\n");
-		kns_assert(spUserDataMsg->bIsToBeTransmit);
-		/** @todo Should check integrity between data reported by event above and
-		 * the one stored in user data buffer
-		 *
-		 * So far, as only one user data, consider this is the correct one:
-		 * * notify host with AT cmd response then
-		 * * free element from user data buffer.
-		 */
-		MCU_MISC_TCXO_Force_State(false);
-		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-		macStatus = MAC_TX_TIMEOUT;
-		cbStatus = KNS_STATUS_TIMEOUT;
-		break;
-	case (KNS_MAC_TXACK_TIMEOUT):
-		MGR_LOG_DEBUG("MGR_SPI_CMD TXACK_TIMEOUT callback reached\r\n");
-		MCU_MISC_TCXO_Force_State(false);
-		kns_assert(spUserDataMsg->bIsToBeTransmit);
-		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-		macStatus = MAC_TXACK_TIMEOUT;
-		cbStatus = KNS_STATUS_TIMEOUT;
-		break;
-	case (KNS_MAC_RX_ERROR):  /**< RX error during TRX frame, report TX failure then */
-		MGR_LOG_DEBUG("MGR_SPI_CMD RX ERROR callback reached\r\n");
-		if (spUserDataMsg->bIsToBeTransmit) {
-			/** @todo Should check integrity between data reported by event
-			 * above and the one stored in user data buffer
-			 *
-			 * So far, as only one user data, consider this is the correct one:
-			 * * notify host with AT cmd response then
-			 * * free element from user data buffer.
-			 */
-			USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-			macStatus = MAC_RX_ERROR;
-			cbStatus = KNS_STATUS_RF_ERR;
-		} else {
-			MGR_LOG_DEBUG("MGR_SPI_CMD RX callback reached\r\n");
-			MGR_LOG_DEBUG("RX ERROR  unexpected event received.\r\n");
-			macStatus = MAC_ERROR;
-			cbStatus = KNS_STATUS_ERROR;
-		}
-	break;
-	case (KNS_MAC_RX_TIMEOUT): /**< RX window reached during TRX, report failure then */
-	/** @attention so far, TX failure is reported upon TRX RX timeout when:
-	 * * no DL-ACK received for a TX requesting ACK (this case is fine)
-		 * * no DL-BC received for a TX mail request. Actually this may really occur
-		 * as no BC was available on board (protocol to be discussed)
-		 */
-		MGR_LOG_DEBUG("MGR_SPI_CMD RX timeout callback reached\r\n");
-		/** @todo Should check integrity between data reported by event above and
-		 * the one stored in user data buffer
-		 *
-		 * So far, as only one user data, consider this is the correct one:
-		 * * notify host with AT cmd response then
-		 * * free element from user data buffer.
-		 */
-		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-		macStatus = MAC_RX_TIMEOUT;
-		cbStatus = KNS_STATUS_TIMEOUT;
-	break;
-	case (KNS_MAC_OK):
-		MGR_LOG_DEBUG("MGR_SPI_CMD MAC reported OK to previous command.\r\n");
-		if (srvcEvt.app_evt == KNS_MAC_STOP_SEND_DATA)
-			kns_assert(USERDATA_txFifoFlush() == true);
-		macStatus = MAC_OK;
-		cbStatus = KNS_STATUS_OK;
-	break;
-	case (KNS_MAC_ERROR):
-		MGR_LOG_DEBUG("MGR_SPI_CMD MAC reported ERROR to previous command.\r\n");
-		if (srvcEvt.app_evt == KNS_MAC_SEND_DATA)
-			USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
-		macStatus = MAC_ERROR;
-		cbStatus = KNS_STATUS_ERROR;
-	break;
-	default:
-		kns_assert(0);
-		macStatus = MAC_ERROR;
-		cbStatus = KNS_STATUS_ERROR;
-	break;
-	}
+    case (KNS_MAC_TX_TIMEOUT):
+        MGR_LOG_DEBUG("MGR_SPI_CMD TX_TIMEOUT callback reached\r\n");
+        kns_assert(spUserDataMsg->bIsToBeTransmit);
+        MCU_MISC_TCXO_Force_State(false);
+        USERDATA_txFifoRemoveElt(spUserDataMsg);
+        macStatus = MAC_TX_TIMEOUT;
+        cbStatus = KNS_STATUS_TIMEOUT;
+        break;
 
-	return cbStatus;
+    case (KNS_MAC_TXACK_TIMEOUT):
+        MGR_LOG_DEBUG("MGR_SPI_CMD TXACK_TIMEOUT callback reached\r\n");
+        MCU_MISC_TCXO_Force_State(false);
+        kns_assert(spUserDataMsg->bIsToBeTransmit);
+        USERDATA_txFifoRemoveElt(spUserDataMsg);
+        macStatus = MAC_TXACK_TIMEOUT;
+        cbStatus = KNS_STATUS_TIMEOUT;
+        break;
+
+    case (KNS_MAC_RX_ERROR):
+        MGR_LOG_DEBUG("MGR_SPI_CMD RX ERROR callback reached\r\n");
+        if (spUserDataMsg->bIsToBeTransmit) {
+            USERDATA_txFifoRemoveElt(spUserDataMsg);
+            macStatus = MAC_RX_ERROR;
+            cbStatus = KNS_STATUS_RF_ERR;
+        } else {
+            MGR_LOG_DEBUG("RX ERROR unexpected event received.\r\n");
+            macStatus = MAC_ERROR;
+            cbStatus = KNS_STATUS_ERROR;
+        }
+        break;
+
+    case (KNS_MAC_RX_TIMEOUT):
+        MGR_LOG_DEBUG("MGR_SPI_CMD RX timeout callback reached\r\n");
+        USERDATA_txFifoRemoveElt(spUserDataMsg);
+        macStatus = MAC_RX_TIMEOUT;
+        cbStatus = KNS_STATUS_TIMEOUT;
+        break;
+
+    case (KNS_MAC_OK):
+        MGR_LOG_DEBUG("MGR_SPI_CMD MAC reported OK to previous command.\r\n");
+        if (srvcEvt.app_evt == KNS_MAC_STOP_SEND_DATA)
+            kns_assert(USERDATA_txFifoFlush() == true);
+        macStatus = MAC_OK;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
+    case (KNS_MAC_ERROR):
+        MGR_LOG_DEBUG("MGR_SPI_CMD MAC reported ERROR to previous command.\r\n");
+        if (srvcEvt.app_evt == KNS_MAC_SEND_DATA)
+            USERDATA_txFifoRemoveElt(spUserDataMsg);
+        macStatus = MAC_ERROR;
+        cbStatus = KNS_STATUS_ERROR;
+        break;
+
+    default:
+        kns_assert(0);
+        macStatus = MAC_ERROR;
+        cbStatus = KNS_STATUS_ERROR;
+        break;
+    }
+
+    return cbStatus;
 }
 
 /**

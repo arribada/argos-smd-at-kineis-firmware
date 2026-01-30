@@ -167,24 +167,40 @@ enum KNS_status_t MCU_NVM_getRadioConfZonePtr(void **ConfZonePtr)
 		return KNS_STATUS_ERROR;
 	}
 
+	/* Try to read radio config from flash */
 	uint8_t flash_radio_conf[FLASH_RADIOCONF_BYTE_SIZE];
-	enum KNS_status_t status = MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_RADIOCONF_OFFSET, flash_radio_conf, FLASH_RADIOCONF_BYTE_SIZE);
+	enum KNS_status_t status = MCU_FLASH_read(
+		FLASH_USER_START_ADDR + FLASH_RADIOCONF_OFFSET,
+		flash_radio_conf,
+		FLASH_RADIOCONF_BYTE_SIZE);
 
-	if (status != KNS_STATUS_OK) {
-		return status;
-	}
+	if (status == KNS_STATUS_OK) {
+		/* Check if flash contains valid data (not all 0xFF = erased, not all 0x00 = zeroed) */
+		bool flash_valid = false;
+		bool has_non_ff = false;
+		bool has_non_00 = false;
 
-	bool flash_empty = true;
-	for (int i = 0; i < FLASH_RADIOCONF_BYTE_SIZE; i++) {
-		if (flash_radio_conf[i] != 0xFF) {
-			flash_empty = false;
-			break;
+		for (int i = 0; i < FLASH_RADIOCONF_BYTE_SIZE; i++) {
+			if (flash_radio_conf[i] != 0xFF) {
+				has_non_ff = true;
+			}
+			if (flash_radio_conf[i] != 0x00) {
+				has_non_00 = true;
+			}
+			/* Exit early if we found valid data */
+			if (has_non_ff && has_non_00) {
+				flash_valid = true;
+				break;
+			}
 		}
-	}
 
-	if (!flash_empty) {
-		memcpy(radioConfZone, flash_radio_conf, FLASH_RADIOCONF_BYTE_SIZE);
+		/* Use flash data only if it's valid */
+		if (flash_valid) {
+			memcpy(radioConfZone, flash_radio_conf, FLASH_RADIOCONF_BYTE_SIZE);
+		}
+		/* Otherwise keep the default radioConfZone value from static initialization */
 	}
+	/* If flash read failed, keep default radioConfZone */
 
 	*ConfZonePtr = radioConfZone;
 	return KNS_STATUS_OK;

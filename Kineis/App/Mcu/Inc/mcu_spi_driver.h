@@ -1,23 +1,12 @@
 /* SPDX-License-Identifier: no SPDX license */
 /**
  * @file    mcu_spi_console.h
- * @brief   MCU wrapper for SPI console.
+ * @brief   MCU wrapper for SPI console - Pipelined Single-Transaction Protocol.
  *
- * This console is used to communicate SPI commands and responses with the device.
- * Depending on your application needs, it could be based on a UART link, I2C, or other interfaces.
- *
- * **Reception**
- *
- * On the reception side, this wrapper should handle incoming data as a stream of ASCII characters.
- * The client of this wrapper must register a callback that is invoked each time new data is received.
- *
- * **Transmission**
- *
- * On the transmission side, it is possible to send formatted strings similarly to printf.
- * A dedicated API is also available to send the content of a binary buffer by converting binary data
- * into ASCII printable strings.
- *
- * @note The client's callback function will be invoked in interrupt context and must therefore execute quickly.
+ * This driver implements a pipelined single-transaction SPI protocol:
+ * - Each transaction is a fixed 64 bytes
+ * - Master sends command, slave simultaneously sends response to PREVIOUS command
+ * - No timing issues: response is always ready before master reads it
  *
  * @author Arribada
  */
@@ -25,8 +14,6 @@
 /**
  * @addtogroup MCU_APP_WRAPPERS
  * @brief MCU wrappers used by the Kineis Application example.
- *
- * One must implement these APIs according to the microcontroller and available platform resources.
  * @{
  */
 
@@ -44,6 +31,13 @@ extern "C" {
 
 #include "kns_app_conf.h" // for STM32 HAL includes on UART
 #include STM32_HAL_H
+
+/* Protocol configuration - Pipelined single-transaction */
+#define SPI_TRANSACTION_SIZE    64   /**< Fixed transaction size in bytes */
+#define SPI_CMD_MAX_SIZE        32   /**< Max command size (first half of transaction) */
+#define SPI_RESPONSE_MAX_SIZE   32   /**< Max response size (fits in transaction) */
+#define SPI_IDLE_PATTERN        0xAA /**< Idle pattern (no response ready) */
+#define SPI_BUSY_PATTERN        0xBB /**< Busy pattern (processing) */
 
 #ifdef USE_HDA4
 #define TXBUF_SIZE 2560
@@ -84,40 +78,29 @@ extern SPI_Buffer rxBuf;   /**< Global SPI reception buffer */
 extern SPI_Buffer txBuf;   /**< Global SPI transmission buffer */
 
 /**
- * @brief Enumeration of SPI console states.
+ * @brief Enumeration of SPI console states (simplified for pipelined protocol).
  */
 typedef enum {
     SPICMD_UNKNOWN,           /**< Unknown state */
     SPICMD_INIT,              /**< SPI console initialization state */
-    SPICMD_IDLE,              /**< Idle state, waiting for a TX request */
-    SPICMD_PROCESS_CMD,       /**< Processing an incoming command */
-    SPICMD_WAITING_RX,        /**< Waiting for RX data of a specified length */
-    SPICMD_WAITING_TX,        /**< Waiting for TX data to be sent */
-    SPICMD_WAITING_MAC_EVT,   /**< Waiting for a MAC event (e.g., TX done, RX done) */
+    SPICMD_IDLE,              /**< Idle state, DMA armed waiting for transaction */
+    SPICMD_PROCESS_CMD,       /**< Processing received command, preparing response */
     SPICMD_ERROR              /**< Error state */
 } SpiState;
 
 extern volatile SpiState spiState;         /**< Current state of the SPI console */
 extern volatile uint32_t startTickTimeout; /**< Timeout tick value for SPI operations */
 
+/* Flag indicating if a valid response is ready in TX buffer */
+extern volatile bool response_ready;
+
 /* Functions prototypes ------------------------------------------------------*/
 
 /**
  * @brief Start the SPI console for command reception.
  *
- * This function registers a client's callback used to process the incoming SPI data stream.
- * The callback is invoked each time new data is received.
- *
- * @attention The callback may be executed in an interrupt context, so it must execute quickly.
- *
- * The format of the client's callback is:
- * @code
- * int8_t (*rx_spi_evt_cb)(SPI_Buffer *rx, SPI_Buffer *tx);
- * @endcode
- * The callback should process the received data in the SPI_Buffer and update the buffer as necessary.
- *
- * @param[in] context Pointer to a context object (e.g., an SPI handle) that may be used to configure the console.
- * @param[in] rx_spi_evt_cb Pointer to the callback function invoked on each SPI reception event.
+ * @param[in] context Pointer to SPI handle.
+ * @param[in] rx_spi_evt_cb Callback function (not used in pipelined mode, can be NULL).
  *
  * @return true if the SPI console is successfully started, false otherwise.
  */
@@ -125,62 +108,29 @@ bool MCU_SPI_DRIVER_register(void *context,
 		int8_t (*rx_spi_evt_cb)(SPI_Buffer *rx, SPI_Buffer *tx));
 
 /**
- * @brief Send an SPI command response to the console.
+ * @brief Perform an SPI read operation (arm DMA for next transaction).
  *
- * This function sends a formatted string as an SPI command response. It functions similarly to printf,
- * and may implement only a subset of printf functionality.
+ * In pipelined mode, this arms the DMA with the current TX buffer content
+ * (previous response or idle pattern) and waits for the next transaction.
  *
- * @note This function can be redirected to a standard printf if available in your application.
- *
- * @param[in] format Format string (see printf documentation for details).
- * @param[in] ... Additional arguments corresponding to the format.
+ * @return HAL status of the operation.
  */
-void MCU_SPI_DRIVER_send(const char *format, ...);
+HAL_StatusTypeDef MCU_SPI_DRIVER_read(void);
 
 /**
- * @brief Perform an SPI read operation.
+ * @brief Set response data for the next transaction.
  *
- * This function initiates a read operation on the SPI interface.
+ * Call this after processing a command to set the response that will be
+ * sent in the next transaction. The response is copied to the TX buffer.
  *
- * @return HAL status of the read operation.
+ * @param[in] data Pointer to response data
+ * @param[in] len Length of response data
+ * @return true if response was set, false if buffer overflow
  */
-HAL_StatusTypeDef MCU_SPI_DRIVER_read();
+bool MCU_SPI_DRIVER_set_response(const uint8_t *data, uint16_t len);
 
 /**
- * @brief Perform a simultaneous SPI write and read operation.
- *
- * This function initiates a write/read operation on the SPI interface.
- *
- * @return HAL status of the write/read operation.
- */
-HAL_StatusTypeDef MCU_SPI_DRIVER_writeread();
-
-/**
- * @brief Send the content of a binary data buffer as an SPI command response.
- *
- * This function converts the binary data into an ASCII representation and sends it via the SPI console.
- *
- * @param[in] pu8_inDataBuff Pointer to the binary data buffer.
- * @param[in] u16_dataLenBit Length of the data buffer in bits.
- */
-void MCU_SPI_DRIVER_send_dataBuf(uint8_t *pu8_inDataBuff, uint16_t u16_dataLenBit);
-
-/**
- * @brief Reset the SPI interface.
- *
- * This function resets the SPI interface using the provided SPI handle.
- *
- * @param[in] hspi Pointer to the SPI handle.
- *
- * @return true if the SPI interface is successfully reset, false otherwise.
- */
-bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi);
-
-/**
- * @brief Check if SPI transaction has ended by detecting idle state.
- *
- * This function detects when a SPI transaction has completed by monitoring
- * the BSY flag. When the master finishes clocking, SPI becomes idle.
+ * @brief Check if SPI transaction has ended.
  *
  * @param[out] bytes_received Pointer to store the number of bytes received.
  * @return true if transaction ended and data is available, false otherwise.
@@ -189,22 +139,20 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received);
 
 /**
  * @brief Abort current SPI transfer and return to idle state.
- *
- * This should be called when a transaction has ended to properly terminate
- * the HAL transfer before processing data.
  */
 void MCU_SPI_DRIVER_abort_transfer(void);
 
 /**
- * @brief Check if TX transaction has completed for two-transaction protocol.
+ * @brief Reset the SPI interface.
  *
- * In the two-transaction protocol, after the error callback re-arms for
- * transaction 2, this function polls for completion. When the master clocks
- * out the response, this returns true.
- *
- * @return true if TX transaction completed (response was sent), false if still waiting.
+ * @param[in] hspi Pointer to the SPI handle.
+ * @return true if successfully reset, false otherwise.
  */
-bool MCU_SPI_DRIVER_check_tx_complete(void);
+bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi);
+
+/* Legacy functions - kept for compatibility but simplified */
+#define MCU_SPI_DRIVER_writeread MCU_SPI_DRIVER_read
+#define MCU_SPI_DRIVER_check_tx_complete() (true)
 
 #ifdef __cplusplus
 }

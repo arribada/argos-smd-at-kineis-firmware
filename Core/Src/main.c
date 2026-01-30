@@ -183,7 +183,7 @@ void assertMspOverflow(void)
  *
  * This task is called at last position when there is absolutely nothing else to do in other tasks.
  * Thus, its main purpose is to go into low power mode.
- *  
+ *
  * @note When Standby LPM is supported and GUI application is runnin, a 10s delay is added before
  * going to STANDBY in a way to let user to enter a new AT cmd from UART if wanted.
  *
@@ -376,7 +376,7 @@ int main(void)
 #endif
 
   /** As we just woke up, most of GPIOs are useless so far. Limit their current drain */
-  GPIO_DisableAllToAnalogInput();
+  //GPIO_DisableAllToAnalogInput();
 
   /** Do specific Init sequence as per wake up mode. The low power mode was set before entering.
    * Some of them (typically standby, shutdown) makes the uC to reset

@@ -392,6 +392,7 @@ CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
 #######################################
 # link script
 LDSCRIPT = STM32WL55XX_FLASH_CM4.ld
+#LDSCRIPT = STM32WL55XX_FLASH_APP.ld
 
 # libraries
 LIBS = -lc -lm -lnosys

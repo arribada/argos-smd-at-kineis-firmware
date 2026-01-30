@@ -53,11 +53,13 @@ void KNS_OS_main(void)
 				taskPool[idx]();
 		}
 
-		/* Flush debug log buffer ONLY when SPI is idle to avoid timing issues.
-		 * SPI transactions are time-critical and UART TX can block for ~10ms.
-		 * Only flush when SPI is in IDLE state or not actively processing. */
+		/* Flush debug log buffer to UART.
+		 * With pipelined protocol, we can flush anytime except during
+		 * PROCESS_CMD (need to prepare response quickly).
+		 * UART TX at 115200 baud sends 1KB in ~90ms, but MGR_LOG_flush
+		 * limits to 50ms max per call. */
 #ifdef DEBUG
-		if (spiState == SPICMD_IDLE || spiState == SPICMD_UNKNOWN || spiState == SPICMD_INIT) {
+		if (spiState != SPICMD_PROCESS_CMD) {
 			MGR_LOG_flush();
 		}
 #endif

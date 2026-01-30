@@ -110,9 +110,15 @@ bool MGR_SPI_PROTOCOL_rx_byte(uint8_t byte)
                 SPI_LOG_VERBOSE("%s:: Legacy cmd=0x%02X\r\n", __func__, byte);
                 return true;
             } else {
-                /* Invalid first byte */
-                MGR_LOG_DEBUG("%s:: Invalid byte 0x%02X\r\n", __func__, byte);
-                spi_protocol_ctx.state = SPI_PROT_ERROR;
+                /* Invalid first byte - handle 0xFF specially (sync issue) */
+                if (byte == 0xFF) {
+                    /* Master reading when we have no response - sync issue */
+                    SPI_LOG_VERBOSE("%s:: Sync: 0xFF (master reading)\r\n", __func__);
+                    /* Stay in IDLE to catch next real command */
+                } else {
+                    MGR_LOG_DEBUG("%s:: Invalid byte 0x%02X\r\n", __func__, byte);
+                    spi_protocol_ctx.state = SPI_PROT_ERROR;
+                }
             }
             break;
 
@@ -375,7 +381,25 @@ bool MGR_SPI_PROTOCOL_process_buffer(const uint8_t *data, uint16_t length)
         return true;
 
     } else {
-        /* Invalid first byte */
+        /* Invalid first byte - could be:
+         * 1. 0xFF: Master is reading (Transaction 2) but we missed Transaction 1
+         *    This is a sync issue, not a fatal error. Just reset and wait.
+         * 2. 0x00: Empty/garbage data
+         * 3. Other: Corrupted data
+         *
+         * For 0xFF specifically, this is the master's "read request" pattern.
+         * Don't treat as error - just silently reset to resync.
+         */
+        if (first_byte == 0xFF) {
+            /* Sync issue: master reading when we have no response ready.
+             * This typically happens if we missed Transaction 1.
+             * Reset protocol silently and wait for next real command. */
+            SPI_LOG_VERBOSE("%s:: Sync: master reading (0xFF), waiting for cmd\r\n", __func__);
+            spi_protocol_ctx.state = SPI_PROT_IDLE;
+            return false;
+        }
+
+        /* Other invalid bytes are real protocol errors */
         MGR_LOG_DEBUG("%s:: Invalid first byte 0x%02X\r\n", __func__, first_byte);
         spi_protocol_ctx.state = SPI_PROT_ERROR;
         return false;
