@@ -89,8 +89,11 @@ bool bMGR_SPI_CMD_WRITEKMAC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		break;
 	}
 
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;

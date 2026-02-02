@@ -128,6 +128,16 @@ static void MGR_SPI_CMD_process_transaction(uint8_t *data, uint16_t len)
                 cmdInProgress = req->command;
                 SPI_LOG_VERBOSE("A+ cmd=0x%02X seq=%u len=%u\r\n",
                               cmdInProgress, req->sequence, req->data_len);
+
+                /* Copy payload to rxBuf for handler compatibility:
+                 * Handlers expect: rxBuf.data[0]=cmd, rxBuf.data[1...]=payload
+                 * This maintains backward compatibility with legacy protocol handlers */
+                rxBuf.data[0] = req->command;
+                if (req->data_len > 0) {
+                    memcpy(&rxBuf.data[1], req->data, req->data_len);
+                }
+                rxBuf.size = req->data_len + 1;  /* cmd byte + payload */
+
                 spiState = SPICMD_PROCESS_CMD;
             }
         }
@@ -186,18 +196,19 @@ void MGR_SPI_CMD_state_handler(void)
                 if (spiState == SPICMD_IDLE) {
                     MCU_SPI_DRIVER_read();
                 }
+                /* If state changed to PROCESS_CMD, don't arm DMA yet.
+                 * Command will be processed synchronously, then we arm with response. */
 
                 startTickTimeout = 0;
             } else {
-                /* Timeout handling */
+                /* Timeout handling - just for logging */
                 if (startTickTimeout == 0) {
                     startTickTimeout = HAL_GetTick();
                 }
 
                 if ((HAL_GetTick() - startTickTimeout) > TRANSACTION_TIMEOUT_MS) {
-                    SPI_LOG_VERBOSE("Transaction timeout - still waiting\r\n");
-                    startTickTimeout = HAL_GetTick();  /* Reset for next period */
-                    spi_stats.timeout_count++;
+                    SPI_LOG_VERBOSE("Waiting for transaction...\r\n");
+                    startTickTimeout = HAL_GetTick();
                 }
             }
         }

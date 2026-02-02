@@ -59,8 +59,9 @@ static volatile uint16_t last_rx_count = 0;
 static volatile uint32_t rx_stable_start_tick = 0;
 static volatile bool rx_activity_detected = false;
 
-/* Stability timeout - transaction complete when no new bytes for this duration */
-#define RX_STABLE_TIMEOUT_MS 2
+/* Stability timeout - transaction complete when no new bytes for this duration.
+ * At 125kHz, 64 bytes takes ~4ms. Use 10ms for safe margin. */
+#define RX_STABLE_TIMEOUT_MS 10
 
 /* Private functions ---------------------------------------------------------*/
 
@@ -70,6 +71,15 @@ static volatile bool rx_activity_detected = false;
 static void fill_idle_pattern(void)
 {
     memset(spiTxBuf, SPI_IDLE_PATTERN, SPI_TRANSACTION_SIZE);
+    response_ready = false;
+}
+
+/**
+ * @brief Fill TX buffer with busy pattern
+ */
+static void fill_busy_pattern(void)
+{
+    memset(spiTxBuf, SPI_BUSY_PATTERN, SPI_TRANSACTION_SIZE);
     response_ready = false;
 }
 
@@ -111,6 +121,43 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
 }
 
 /* Public functions ----------------------------------------------------------*/
+
+HAL_StatusTypeDef MCU_SPI_DRIVER_arm_busy(void)
+{
+    /* Reset transaction detection */
+    last_rx_count = 0;
+    rx_stable_start_tick = 0;
+    rx_activity_detected = false;
+
+    /* Ensure SPI is ready */
+    if (hspi_handle->State != HAL_SPI_STATE_READY) {
+        HAL_SPI_Abort(hspi_handle);
+        hspi_handle->State = HAL_SPI_STATE_READY;
+    }
+
+    /* Clear any pending errors */
+    if (hspi_handle->ErrorCode != HAL_SPI_ERROR_NONE) {
+        if (hspi_handle->ErrorCode & HAL_SPI_ERROR_OVR) {
+            __HAL_SPI_CLEAR_OVRFLAG(hspi_handle);
+        }
+        hspi_handle->ErrorCode = HAL_SPI_ERROR_NONE;
+    }
+
+    /* Fill with busy pattern */
+    fill_busy_pattern();
+
+    /* Arm DMA for fixed-size transaction */
+    HAL_StatusTypeDef ret = HAL_SPI_TransmitReceive_DMA(hspi_handle,
+        spiTxBuf, spiRxBuf, SPI_TRANSACTION_SIZE);
+
+    if (ret != HAL_OK) {
+        MGR_LOG_DEBUG("%s:: HAL error %d\r\n", __func__, ret);
+        spi_stats.error_count++;
+        spi_stats.last_error = hspi_handle->ErrorCode;
+    }
+
+    return ret;
+}
 
 bool MCU_SPI_DRIVER_set_response(const uint8_t *data, uint16_t len)
 {

@@ -118,6 +118,17 @@ bool MCU_SPI_DRIVER_register(void *context,
 HAL_StatusTypeDef MCU_SPI_DRIVER_read(void);
 
 /**
+ * @brief Arm DMA with BUSY pattern.
+ *
+ * Call this before starting long operations (like flash write) so that
+ * the master can detect the slave is busy and retry later.
+ * This prevents the slave from missing transactions during processing.
+ *
+ * @return HAL status of the operation.
+ */
+HAL_StatusTypeDef MCU_SPI_DRIVER_arm_busy(void);
+
+/**
  * @brief Set response data for the next transaction.
  *
  * Call this after processing a command to set the response that will be

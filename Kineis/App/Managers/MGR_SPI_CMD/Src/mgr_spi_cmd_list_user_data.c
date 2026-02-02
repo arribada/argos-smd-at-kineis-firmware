@@ -110,12 +110,16 @@ uint16_t u16MGR_SPI_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16
  */
 bool bMGR_SPI_CMD_WRITETXREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused - request has no payload */
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITETX_WAIT_LEN; // Waiting TX_Size req
 	userTxPayloadSize = 0;
-	ret = bMGR_SPI_DRIVER_read();
+
+	/* Send ACK response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -133,16 +137,21 @@ bool bMGR_SPI_CMD_WRITETXSIZE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	userTxPayloadSize = (uint16_t)((rx->data[1] << 8) | rx->data[2]);
-	tx->data[0] = rx->data[0];
-	if(userTxPayloadSize <= (USERDATA_TX_PAYLOAD_MAX_SIZE))
-	{
-		rx->next_req = userTxPayloadSize + 1; // Command + user mesage to send
-		ret = bMGR_SPI_DRIVER_read();
-	} else {
+	/* Extract size from payload (little-endian: LSB first) */
+	userTxPayloadSize = (uint16_t)(rx->data[1] | (rx->data[2] << 8));
+	MGR_LOG_DEBUG("TX size received: %u bytes\r\n", userTxPayloadSize);
+
+	if (userTxPayloadSize > USERDATA_TX_PAYLOAD_MAX_SIZE) {
+		MGR_LOG_DEBUG("[ERROR] TX size too large: %u > %u\r\n",
+		              userTxPayloadSize, USERDATA_TX_PAYLOAD_MAX_SIZE);
 		macStatus = MAC_TX_SIZE_ERROR;
 		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
 	}
+
+	/* Send ACK response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
 
 	if (ret == HAL_OK)
 	{
@@ -159,7 +168,6 @@ bool bMGR_SPI_CMD_WRITETXSIZE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
  */
 bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
-
 	HAL_StatusTypeDef ret = HAL_OK;
 	enum KNS_status_t status = KNS_STATUS_OK;
 	struct sUserDataTxFifoElt_t *spUserDataMsg;
@@ -168,7 +176,6 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	uint16_t u16UserDataBitlen;
 	uint16_t idx;
 
-	//	enum KNS_status_t knsStatus;
 	struct KNS_MAC_appEvt_t appEvtTx = {
 		.id = KNS_MAC_SEND_DATA,
 		.data_ctxt = {
@@ -178,83 +185,97 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		}
 	};
 
-	MCU_MISC_TCXO_Force_State(true);
-	uint32_t tcxo_warmup_ms = 0;
-	MCU_MISC_TCXO_get_warmup(&tcxo_warmup_ms);
-	HAL_Delay(tcxo_warmup_ms);
-	spUserDataMsg = USERDATA_txFifoReserveElt();
-	if (spUserDataMsg != NULL) {
-
-		// Clear the buffer
-		for (idx = 0; idx < sizeof(spUserDataMsg->u8DataBuf); idx++)
-			spUserDataMsg->u8DataBuf[idx] = 0;
-		//memset(spUserDataMsg->u8DataBuf, 0, sizeof(spUserDataMsg->u8DataBuf));
-		pu8UserDataBuf = spUserDataMsg->u8DataBuf;
-		kns_assert(pu8UserDataBuf != NULL);
-
-		// Copy the raw bytes received via SPI
-		// CRITICAL FIX: Use validated userTxPayloadSize instead of buffer size
-		// to prevent buffer over-read from rx->data
-		if (userTxPayloadSize > sizeof(spUserDataMsg->u8DataBuf)) {
-			MGR_LOG_DEBUG("[ERROR] Payload size exceeds buffer: %u > %u\r\n",
-			              userTxPayloadSize, (uint16_t)sizeof(spUserDataMsg->u8DataBuf));
-			USERDATA_txFifoRemoveElt(spUserDataMsg);
-			return bMGR_SPI_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH, tx);
-		}
-		for (idx = 0; idx < userTxPayloadSize; idx++) {
-			pu8UserDataBuf[idx] = rx->data[1 + idx];
-		}
-
-		// Default attribute: raw data, no special service
-		u8UserDataAttr.u8_raw = 0x0;
-
-		// Set the bit length for the message
-		u16UserDataBitlen = userTxPayloadSize * 8;
-		spUserDataMsg->u16DataBitLen = u16UserDataBitlen;
-		spUserDataMsg->u8Attr = u8UserDataAttr;
-
-		// Add the message to the FIFO
-		kns_assert(USERDATA_txFifoAddElt(spUserDataMsg, true));
-
-		// Populate the application event structure
-		//memcpy(appEvtTx.data_ctxt.usrdata, spUserDataMsg->u8DataBuf, sizeof(appEvtTx.data_ctxt.usrdata));
-		for (idx = 0; idx < sizeof(appEvtTx.data_ctxt.usrdata); idx++)
-			appEvtTx.data_ctxt.usrdata[idx] = spUserDataMsg->u8DataBuf[idx];
-
-		appEvtTx.data_ctxt.usrdata_bitlen = spUserDataMsg->u16DataBitLen;
-		appEvtTx.data_ctxt.sf = (enum KNS_serviceFlag_t)(spUserDataMsg->u8Attr.sf);
-
-		 // Push the event to the MAC layer
-		status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvtTx);
-		switch (status) {
-			case KNS_STATUS_QFULL:
-				MGR_LOG_VERBOSE("[ERROR] TX FIFO full, cannot push new data.\r\n");
-				return bMGR_SPI_CMD_logFailedMsg(ERROR_DATA_QUEUE_FULL, &txBuf);
-				break;
-			case KNS_STATUS_OK:
-				// Successfully pushed the event - TX is now in progress
-				macStatus = MAC_TX_IN_PROGRESS;
-				break;
-			default:
-				MGR_LOG_VERBOSE("[ERROR] Unknown status when pushing TX data.\r\n");
-				return bMGR_SPI_CMD_logFailedMsg(ERROR_UNKNOWN, &txBuf);
-				break;
-		}
-	} else {
-		MGR_LOG_VERBOSE("[ERROR] TX FIFO full, cannot get extra data.\r\n");
-		return bMGR_SPI_CMD_logFailedMsg(ERROR_DATA_QUEUE_FULL, &txBuf);
+	/* Validate payload size early - before any blocking operations */
+	if (userTxPayloadSize == 0) {
+		MGR_LOG_DEBUG("[ERROR] TX size not set (call WRITE_TX_SIZE first)\r\n");
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH, tx);
 	}
-	tx->data[0] = 1;
-	tx->next_req = 1;
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
 
-	if (ret == HAL_OK)
-	{
-		return true;
-	} else {
+	/* Reserve FIFO element early to detect queue full before sending ACK */
+	spUserDataMsg = USERDATA_txFifoReserveElt();
+	if (spUserDataMsg == NULL) {
+		MGR_LOG_VERBOSE("[ERROR] TX FIFO full, cannot get extra data.\r\n");
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_DATA_QUEUE_FULL, tx);
+	}
+
+	/* Validate payload fits in buffer */
+	if (userTxPayloadSize > sizeof(spUserDataMsg->u8DataBuf)) {
+		MGR_LOG_DEBUG("[ERROR] Payload size exceeds buffer: %u > %u\r\n",
+		              userTxPayloadSize, (uint16_t)sizeof(spUserDataMsg->u8DataBuf));
+		USERDATA_txFifoRemoveElt(spUserDataMsg);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH, tx);
+	}
+
+	/* CRITICAL: Send ACK response IMMEDIATELY before any blocking operations.
+	 * This prepares the response for the next SPI transaction (NOP from master).
+	 * The actual TX processing (TCXO warmup, MAC queue) happens asynchronously. */
+	tx->data[0] = 1;  /* ACK: TX data received and queued */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
+	if (ret != HAL_OK) {
+		USERDATA_txFifoRemoveElt(spUserDataMsg);
 		return false;
 	}
+
+	/* Now do the actual TX processing (this may take time but response is ready) */
+
+	/* Clear the buffer */
+	for (idx = 0; idx < sizeof(spUserDataMsg->u8DataBuf); idx++)
+		spUserDataMsg->u8DataBuf[idx] = 0;
+
+	pu8UserDataBuf = spUserDataMsg->u8DataBuf;
+	kns_assert(pu8UserDataBuf != NULL);
+
+	/* Copy the raw bytes received via SPI */
+	for (idx = 0; idx < userTxPayloadSize; idx++) {
+		pu8UserDataBuf[idx] = rx->data[1 + idx];
+	}
+
+	/* Default attribute: raw data, no special service */
+	u8UserDataAttr.u8_raw = 0x0;
+
+	/* Set the bit length for the message */
+	u16UserDataBitlen = userTxPayloadSize * 8;
+	spUserDataMsg->u16DataBitLen = u16UserDataBitlen;
+	spUserDataMsg->u8Attr = u8UserDataAttr;
+
+	/* Add the message to the FIFO */
+	kns_assert(USERDATA_txFifoAddElt(spUserDataMsg, true));
+
+	/* Populate the application event structure */
+	for (idx = 0; idx < sizeof(appEvtTx.data_ctxt.usrdata); idx++)
+		appEvtTx.data_ctxt.usrdata[idx] = spUserDataMsg->u8DataBuf[idx];
+
+	appEvtTx.data_ctxt.usrdata_bitlen = spUserDataMsg->u16DataBitLen;
+	appEvtTx.data_ctxt.sf = (enum KNS_serviceFlag_t)(spUserDataMsg->u8Attr.sf);
+
+	/* Enable TCXO (non-blocking - just enables it) */
+	MCU_MISC_TCXO_Force_State(true);
+
+	/* Push the event to the MAC layer */
+	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvtTx);
+	switch (status) {
+		case KNS_STATUS_QFULL:
+			MGR_LOG_VERBOSE("[ERROR] TX queue full after ACK sent.\r\n");
+			USERDATA_txFifoRemoveElt(spUserDataMsg);
+			macStatus = MAC_ERROR;
+			break;
+		case KNS_STATUS_OK:
+			/* Successfully pushed the event - TX is now in progress */
+			macStatus = MAC_TX_IN_PROGRESS;
+			MGR_LOG_DEBUG("TX queued: %u bytes\r\n", userTxPayloadSize);
+			break;
+		default:
+			MGR_LOG_VERBOSE("[ERROR] Unknown status when pushing TX data.\r\n");
+			USERDATA_txFifoRemoveElt(spUserDataMsg);
+			macStatus = MAC_ERROR;
+			break;
+	}
+
+	/* Note: ACK was already sent, so return true.
+	 * Master should poll MAC_STATUS to get actual TX result. */
+	return true;
 }
 
 

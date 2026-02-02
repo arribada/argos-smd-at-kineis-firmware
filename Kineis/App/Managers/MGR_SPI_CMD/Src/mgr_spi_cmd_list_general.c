@@ -188,6 +188,14 @@ bool bMGR_SPI_CMD_WRITEADDRESSREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 bool bMGR_SPI_CMD_WRITEADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
+
+	/* Validate received data size: cmd (1) + addr (4) = 5 bytes minimum */
+	if (rx->size < CMD_WRITEADDRESS_WAIT_LEN) {
+		MGR_LOG_DEBUG("[ERROR] ADDR size invalid: received %u, expected %u\r\n",
+		              rx->size, CMD_WRITEADDRESS_WAIT_LEN);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS, tx);
+	}
+
 	if (MCU_NVM_setAddr(&(rx->data[1])) != KNS_STATUS_OK)
 	{
 		MGR_LOG_DEBUG("Failed to write ADDR=%02x%02x%02x%02x\r\n", rx->data[1], rx->data[2],
@@ -197,10 +205,12 @@ bool bMGR_SPI_CMD_WRITEADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		MGR_LOG_DEBUG("Set new ADDR=%02x%02x%02x%02x\r\n", rx->data[1], rx->data[2],
 								  rx->data[3], rx->data[4]);
 	}
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -260,17 +270,18 @@ bool bMGR_SPI_CMD_WRITESECKEY_cmd(SPI_Buffer *rx, SPI_Buffer *tx) {
 	} else {
 		MGR_LOG_DEBUG("Set new SECKEY=%s\r\n", sec_key_str);
 	}
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
 	} else {
 		return false;
 	}
-
 }
 
 
@@ -344,10 +355,13 @@ bool bMGR_SPI_CMD_WRITEID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 
-//	uint32_t dev_id = (rx->data[1] << 24 ) |
-//					  (rx->data[2] << 16) |
-//					  (rx->data[3] << 8) |
-//					  (rx->data[4] << 0);
+	/* Validate received data size: cmd (1) + id (4) = 5 bytes minimum */
+	if (rx->size < CMD_WRITEID_WAIT_LEN) {
+		MGR_LOG_DEBUG("[ERROR] ID size invalid: received %u, expected %u\r\n",
+		              rx->size, CMD_WRITEID_WAIT_LEN);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS, tx);
+	}
+
 	uint32_t dev_id = 0;
 	memcpy(&dev_id, &(rx->data[1]), sizeof(uint32_t));
 	if (MCU_NVM_setID(&dev_id) != KNS_STATUS_OK)
@@ -357,10 +371,12 @@ bool bMGR_SPI_CMD_WRITEID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	} else {
 		MGR_LOG_DEBUG("New id : %u\r\n", dev_id);
 	}
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -456,10 +472,11 @@ bool bMGR_SPI_CMD_WRITERCONF_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		MGR_LOG_DEBUG("Set new RCONF=%s\r\n", rconf_str);
 	}
 
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
 
-	//Reset tx/rx state if MAC_OK
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -541,11 +558,12 @@ bool bMGR_SPI_CMD_WRITELPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
 	}
 	lpm_config.allowedLPMbitmap = lpm;
-	tx->data[0] = rx->data[0];
-	rx->next_req = 1; // Only waiting profile id for the moment
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -605,10 +623,12 @@ bool bMGR_SPI_CMD_WRITETCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	}
 	MCU_MISC_TCXO_set_warmup(tcxo_ms);
 	MGR_LOG_DEBUG("Set TCXO warmup ms to %u\r\n", tcxo_ms);
-	rx->next_req = 1;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
