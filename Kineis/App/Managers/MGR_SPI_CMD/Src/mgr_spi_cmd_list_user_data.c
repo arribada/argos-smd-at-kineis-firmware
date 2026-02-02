@@ -79,7 +79,7 @@ uint16_t u16MGR_SPI_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16
 		u8_high = u8UTIL_convertCharToHex4bits(pu8InputBuffer[2 * u16_index]);
 		u8_low = u8UTIL_convertCharToHex4bits(pu8InputBuffer[2 * u16_index + 1]);
 		if ((u8_high != 0xFF) && (u8_low != 0xFF))
-			pu8InputBuffer[u16_index] = (u8_high << 4) | u8_low;
+			pu8InputBuffer[u16_index] = (uint8_t)((u8_high << 4) | u8_low);
 		else
 			return 0;
 	}
@@ -89,7 +89,7 @@ uint16_t u16MGR_SPI_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16
 		u8_high = u8UTIL_convertCharToHex4bits(pu8InputBuffer[u16_charNb - 1]);
 		u8_low = 0;
 		if (u8_high != 0xFF)
-			pu8InputBuffer[u16_index++] = (u8_high << 4) | u8_low;
+			pu8InputBuffer[u16_index++] = (uint8_t)((u8_high << 4) | u8_low);
 		else
 			return 0;
 	}
@@ -99,7 +99,7 @@ uint16_t u16MGR_SPI_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16
 		pu8InputBuffer[u16_index] = 0;
 
 	/** Return data length in bits */
-	return (((u16_charNb / 2) * 8) + ((u16_charNb % 2) ? 4 : 0));
+	return (uint16_t)(((u16_charNb / 2) * 8) + ((u16_charNb % 2) ? 4 : 0));
 }
 
 
@@ -133,7 +133,7 @@ bool bMGR_SPI_CMD_WRITETXSIZE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	userTxPayloadSize = (rx->data[1] <<8 )| rx->data[2];
+	userTxPayloadSize = (uint16_t)((rx->data[1] << 8) | rx->data[2]);
 	tx->data[0] = rx->data[0];
 	if(userTxPayloadSize <= (USERDATA_TX_PAYLOAD_MAX_SIZE))
 	{
@@ -193,9 +193,17 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		kns_assert(pu8UserDataBuf != NULL);
 
 		// Copy the raw bytes received via SPI
-		//memcpy(pu8UserDataBuf, &(rx->data[1]), userTxPayloadSize);
-		for (idx = 0; idx < sizeof(spUserDataMsg->u8DataBuf); idx++)
+		// CRITICAL FIX: Use validated userTxPayloadSize instead of buffer size
+		// to prevent buffer over-read from rx->data
+		if (userTxPayloadSize > sizeof(spUserDataMsg->u8DataBuf)) {
+			MGR_LOG_DEBUG("[ERROR] Payload size exceeds buffer: %u > %u\r\n",
+			              userTxPayloadSize, (uint16_t)sizeof(spUserDataMsg->u8DataBuf));
+			USERDATA_txFifoRemoveElt(spUserDataMsg);
+			return bMGR_SPI_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH, tx);
+		}
+		for (idx = 0; idx < userTxPayloadSize; idx++) {
 			pu8UserDataBuf[idx] = rx->data[1 + idx];
+		}
 
 		// Default attribute: raw data, no special service
 		u8UserDataAttr.u8_raw = 0x0;
@@ -224,7 +232,8 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 				return bMGR_SPI_CMD_logFailedMsg(ERROR_DATA_QUEUE_FULL, &txBuf);
 				break;
 			case KNS_STATUS_OK:
-				// Successfully pushed the event
+				// Successfully pushed the event - TX is now in progress
+				macStatus = MAC_TX_IN_PROGRESS;
 				break;
 			default:
 				MGR_LOG_VERBOSE("[ERROR] Unknown status when pushing TX data.\r\n");

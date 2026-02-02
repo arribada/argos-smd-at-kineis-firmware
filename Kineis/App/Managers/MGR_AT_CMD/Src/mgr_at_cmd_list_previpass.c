@@ -31,7 +31,7 @@ bool bMGR_AT_CMD_PREPASS_EN_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e
 		return true;
 	}
 
-	i16_scan_id_param_res = sscanf((const char *)pu8_cmdParamString,
+	i16_scan_id_param_res = (int16_t)sscanf((const char *)pu8_cmdParamString,
 			(const char *)"AT+PREPASS_EN=%hhu",
 			&u8_previpassSt);
 

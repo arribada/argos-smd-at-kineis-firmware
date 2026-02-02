@@ -9,6 +9,7 @@
 #include "bl_crc.h"
 #include "bl_main.h"
 #include "bl_app_header.h"
+#include "bl_spi_protocol.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -326,37 +327,28 @@ dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
 
 dfu_response_t bl_dfu_cmd_get_status(uint8_t* response, uint16_t* response_len)
 {
-    /* Build status response:
-     * - Current state (1 byte)
-     * - Bytes received (4 bytes)
-     * - Current write address (4 bytes)
-     * - Last error (1 byte)
-     * - Erase done flag (1 byte)
-     */
-    uint8_t* ptr = response;
+    /* Build extended status response using protocol structure */
+    if (*response_len < sizeof(bl_extended_status_t)) {
+        /* Fallback to legacy format if buffer too small */
+        if (*response_len < 11) {
+            return DFU_RSP_SIZE_ERROR;
+        }
 
-    if (*response_len < 11) {
-        return DFU_RSP_SIZE_ERROR;
+        /* Legacy format for backward compatibility */
+        uint8_t* ptr = response;
+        *ptr++ = (uint8_t)bl_get_state();
+        memcpy(ptr, &dfu_ctx.received_size, 4); ptr += 4;
+        memcpy(ptr, &dfu_ctx.write_addr, 4); ptr += 4;
+        *ptr++ = (uint8_t)dfu_ctx.last_error;
+        *ptr++ = dfu_ctx.erase_done ? 1 : 0;
+        *response_len = 11;
+        return DFU_RSP_OK;
     }
 
-    /* State */
-    *ptr++ = (uint8_t)bl_get_state();
-
-    /* Received size */
-    memcpy(ptr, &dfu_ctx.received_size, 4);
-    ptr += 4;
-
-    /* Write address */
-    memcpy(ptr, &dfu_ctx.write_addr, 4);
-    ptr += 4;
-
-    /* Last error */
-    *ptr++ = (uint8_t)dfu_ctx.last_error;
-
-    /* Erase done */
-    *ptr++ = dfu_ctx.erase_done ? 1 : 0;
-
-    *response_len = (uint16_t)(ptr - response);
+    /* Extended status format */
+    bl_extended_status_t *status = (bl_extended_status_t*)response;
+    bl_spi_protocol_build_extended_status(status);
+    *response_len = sizeof(bl_extended_status_t);
 
     return DFU_RSP_OK;
 }

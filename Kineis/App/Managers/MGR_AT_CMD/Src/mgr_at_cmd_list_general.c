@@ -31,6 +31,8 @@
 #include "mcu_nvm.h"
 #include "mcu_aes.h"
 
+/* TCXO warmup limits - MEDIUM FIX: Replace magic number with constant */
+#define TCXO_MAX_WARMUP_MS      30000UL
 
 /* Functions -----------------------------------------------------------------*/
 
@@ -96,13 +98,17 @@ bool bMGR_AT_CMD_SECKEY_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 
 		return bMGR_AT_CMD_logSucceedMsg();
 	} else if (e_exec_mode == ATCMD_ACTION_MODE) {
-		while(pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\r' ||
-				pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\n')
-		{
-			pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] = '\0';
+		/* CRITICAL FIX: Prevent strlen underflow on empty string */
+		size_t len = strlen((char*)pu8_cmdParamString);
+		while (len > 0 && (pu8_cmdParamString[len - 1] == '\r' ||
+		                   pu8_cmdParamString[len - 1] == '\n')) {
+			pu8_cmdParamString[--len] = '\0';
 		}
-			nbBits = u16MGR_AT_CMD_convertAsciiBinary(pu8_cmdParamString + 10,
-				strlen((char*)(pu8_cmdParamString + 10)));
+		if (len <= 10) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
+		}
+		nbBits = u16MGR_AT_CMD_convertAsciiBinary(pu8_cmdParamString + 10,
+			(uint16_t)strlen((char*)(pu8_cmdParamString + 10)));
 			
 			if (nbBits != DSK_BYTE_LENGTH*8)
 			{
@@ -136,13 +142,17 @@ bool bMGR_AT_CMD_ADDR_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 
 		return bMGR_AT_CMD_logSucceedMsg();
 	} else if (e_exec_mode == ATCMD_ACTION_MODE) {
-		while(pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\r' ||
-				pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\n')
-		{
-			pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] = '\0';
+		/* CRITICAL FIX: Prevent strlen underflow on empty string */
+		size_t len = strlen((char*)pu8_cmdParamString);
+		while (len > 0 && (pu8_cmdParamString[len - 1] == '\r' ||
+		                   pu8_cmdParamString[len - 1] == '\n')) {
+			pu8_cmdParamString[--len] = '\0';
 		}
-			nbBits = u16MGR_AT_CMD_convertAsciiBinary(pu8_cmdParamString + 8,
-				strlen((char*)(pu8_cmdParamString + 8)));
+		if (len <= 8) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
+		}
+		nbBits = u16MGR_AT_CMD_convertAsciiBinary(pu8_cmdParamString + 8,
+			(uint16_t)strlen((char*)(pu8_cmdParamString + 8)));
 			
 			if ((nbBits != 32) && (nbBits != 28))
 			{
@@ -177,14 +187,16 @@ bool bMGR_AT_CMD_ID_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 
 		return bMGR_AT_CMD_logSucceedMsg();
 	} else if (e_exec_mode == ATCMD_ACTION_MODE) {
-		while(pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\r' ||
-				pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\n')
-		{
-			pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] = '\0';
+		/* CRITICAL FIX: Prevent strlen underflow on empty string */
+		size_t len = strlen((char*)pu8_cmdParamString);
+		while (len > 0 && (pu8_cmdParamString[len - 1] == '\r' ||
+		                   pu8_cmdParamString[len - 1] == '\n')) {
+			pu8_cmdParamString[--len] = '\0';
 		}
-
-			//MGR_LOG_DEBUG("%s",__func__);
-			nbChar = strlen((char*)pu8_cmdParamString+6);
+		if (len <= 6) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
+		}
+		nbChar = (uint16_t)strlen((char*)pu8_cmdParamString+6);
 			if (nbChar > 7)
 			{
 				MGR_LOG_DEBUG("[ERROR] Invalid ID length\r\n");	
@@ -234,7 +246,8 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 {
 	enum KNS_status_t status;
 	struct KNS_CFG_radio_t radio_cfg;
-	uint8_t modulation[8];
+	/* CRITICAL FIX: Buffer increased to hold "UNKNOWN" + null (8 chars) */
+	uint8_t modulation[16];
 	uint16_t nbBits;
 #if defined(KRD_FW_MP) ||  defined(KRD_FW_LP)
 	struct rfSettings_t hwSettings;
@@ -269,11 +282,17 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 #endif
 	}
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
-		while(pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\r' ||
-			pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\n')
-			pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] = '\0';
+		/* CRITICAL FIX: Prevent strlen underflow on empty string */
+		size_t len = strlen((char*)pu8_cmdParamString);
+		while (len > 0 && (pu8_cmdParamString[len - 1] == '\r' ||
+		                   pu8_cmdParamString[len - 1] == '\n')) {
+			pu8_cmdParamString[--len] = '\0';
+		}
+		if (len <= 9) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
+		}
 		nbBits = u16MGR_AT_CMD_convertAsciiBinary(pu8_cmdParamString + 9,
-			strlen((char*)(pu8_cmdParamString + 9)));
+			(uint16_t)strlen((char*)(pu8_cmdParamString + 9)));
 
 		if (nbBits != 128)
 			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) KNS_STATUS_RADIO_CONF_BAD);
@@ -314,7 +333,7 @@ bool bMGR_AT_CMD_LPM_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 
 		/** Extract USER DATA from pu8_cmdParamString */
-		scanParamRes = sscanf((const char *)pu8_cmdParamString, (const char *)"AT+LPM=0x%hX", &lpm);
+		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString, (const char *)"AT+LPM=0x%hX", &lpm);
 		if (scanParamRes == 1) {
 			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
 				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
@@ -364,36 +383,47 @@ bool bMGR_AT_CMD_TCXO_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	enum atcmd_type_t e_exec_mode)
 {
 	uint32_t tcxo_ms;
+
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
-		MCU_MISC_TCXO_get_warmup(&tcxo_ms);
+		/* MISRA C:2012 Rule 17.7 - Return value intentionally ignored */
+		(void)MCU_MISC_TCXO_get_warmup(&tcxo_ms);
 		MCU_AT_CONSOLE_send("+TCXO=%d\r\n", tcxo_ms);
 		return bMGR_AT_CMD_logSucceedMsg();
 	} else if (e_exec_mode == ATCMD_ACTION_MODE) {
 		uint16_t nbChar;
-		while(pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\r' ||
-				pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] == '\n')
-		{
-			pu8_cmdParamString[strlen((char*)pu8_cmdParamString) - 1] = '\0';
+		/* CRITICAL FIX: Prevent strlen underflow on empty string */
+		size_t len = strlen((char*)pu8_cmdParamString);
+
+		while ((len > 0U) && ((pu8_cmdParamString[len - 1U] == (uint8_t)'\r') ||
+		                      (pu8_cmdParamString[len - 1U] == (uint8_t)'\n'))) {
+			len--;
+			pu8_cmdParamString[len] = (uint8_t)'\0';
 		}
 
-			MGR_LOG_DEBUG("%s",__func__);
-			nbChar = strlen((char*)pu8_cmdParamString+11);
-			if (nbChar > 5)
-			{
-				MGR_LOG_DEBUG("[ERROR] Invalid TCXO MS length, max value is 30 000ms\r\n");	
-				return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
-			}
-			
-			u16MGR_AT_CMD_convertAsciiToInt32(pu8_cmdParamString + 11, &tcxo_ms);
+		if (len <= 11U) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
+		}
 
-			if (tcxo_ms > 30000)
-			{
-				MGR_LOG_DEBUG("[ERROR] Invalid ID TCXO Warmup time, should be less than 30 000ms\r\n");
-				return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
-			}
+		MGR_LOG_DEBUG("%s", __func__);
+		nbChar = (uint16_t)strlen((char*)pu8_cmdParamString + 11);
 
-			MCU_MISC_TCXO_set_warmup(tcxo_ms);
-			return bMGR_AT_CMD_logSucceedMsg();	
+		if (nbChar > 5U) {
+			MGR_LOG_DEBUG("[ERROR] Invalid TCXO MS length, max value is %lu ms\r\n",
+			              TCXO_MAX_WARMUP_MS);
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
+
+		(void)u16MGR_AT_CMD_convertAsciiToInt32(pu8_cmdParamString + 11, &tcxo_ms);
+
+		if (tcxo_ms > TCXO_MAX_WARMUP_MS) {
+			MGR_LOG_DEBUG("[ERROR] Invalid TCXO Warmup time, should be less than %lu ms\r\n",
+			              TCXO_MAX_WARMUP_MS);
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
+
+		/* MISRA C:2012 Rule 17.7 - Return value intentionally ignored */
+		(void)MCU_MISC_TCXO_set_warmup(tcxo_ms);
+		return bMGR_AT_CMD_logSucceedMsg();
 	} else {
 		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 	}

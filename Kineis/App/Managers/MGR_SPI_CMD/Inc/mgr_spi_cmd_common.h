@@ -35,18 +35,25 @@ extern "C" {
  * @brief Enumeration of MAC statuses.
  *
  * This enumeration defines various status codes related to the MAC (Media Access Control) layer operations.
+ * These are returned via CMD_MAC_STATUS (0x03) and indicate async operation results.
  */
 typedef enum {
-    MAC_UNKNOWN       = 0x00, /**< Unknown MAC status. */
-    MAC_OK            = 0x01, /**< MAC operation successful. */
-    MAC_TX_DONE       = 0x02, /**< Transmission completed. */
-    MAC_TX_SIZE_ERROR = 0x03, /**< Error due to incorrect transmission size. */
-    MAC_TXACK_DONE    = 0x04, /**< Transmission with acknowledgment completed. */
-    MAC_TX_TIMEOUT    = 0x05, /**< Transmission timed out. */
-    MAC_TXACK_TIMEOUT = 0x06, /**< Acknowledgment timeout after transmission. */
-    MAC_RX_ERROR      = 0x07, /**< Error during reception. */
-    MAC_RX_TIMEOUT    = 0x08, /**< Reception timed out. */
-    MAC_ERROR         = 0x09  /**< General MAC error. */
+    MAC_UNKNOWN         = 0x00, /**< Unknown MAC status (initial state). */
+    MAC_OK              = 0x01, /**< MAC ready, no pending operation. */
+    MAC_TX_DONE         = 0x02, /**< Transmission completed successfully. */
+    MAC_TX_SIZE_ERROR   = 0x03, /**< Error due to incorrect transmission size. */
+    MAC_TXACK_DONE      = 0x04, /**< Transmission with acknowledgment completed. */
+    MAC_TX_TIMEOUT      = 0x05, /**< Transmission timed out (no satellite). */
+    MAC_TXACK_TIMEOUT   = 0x06, /**< Acknowledgment timeout after transmission. */
+    MAC_RX_ERROR        = 0x07, /**< Error during reception. */
+    MAC_RX_TIMEOUT      = 0x08, /**< Reception timed out. */
+    MAC_ERROR           = 0x09, /**< General MAC error. */
+    /* Extended status codes for additional async events */
+    MAC_TX_IN_PROGRESS  = 0x0A, /**< TX operation in progress (queued). */
+    MAC_RX_RECEIVED     = 0x0B, /**< Downlink frame received. */
+    MAC_SAT_DETECTED    = 0x0C, /**< Satellite detected. */
+    MAC_SAT_LOST        = 0x0D, /**< Satellite lost. */
+    MAC_RF_ABORTED      = 0x0E, /**< RF operation aborted. */
 } MACStatus;
 
 extern MACStatus macStatus;

@@ -49,15 +49,27 @@ extern "C" {
 
 /**
  * @brief Protocol status codes returned in response frames
+ * @note Aligned with bootloader bl_prot_status_t for consistency
  */
 typedef enum {
-    SPI_PROT_STATUS_OK          = 0x00, /**< Command successful */
-    SPI_PROT_STATUS_ERROR       = 0x01, /**< Generic error */
-    SPI_PROT_STATUS_CRC_ERROR   = 0x02, /**< CRC mismatch detected */
-    SPI_PROT_STATUS_INVALID_CMD = 0x03, /**< Unknown command */
-    SPI_PROT_STATUS_INVALID_LEN = 0x04, /**< Invalid data length */
-    SPI_PROT_STATUS_BUSY        = 0x05, /**< Device busy, retry later */
-    SPI_PROT_STATUS_SEQ_ERROR   = 0x06, /**< Sequence number error */
+    /* Standard status codes (0x00-0x0F) - aligned with bootloader DFU */
+    SPI_PROT_STATUS_OK              = 0x00, /**< Command successful */
+    SPI_PROT_STATUS_ERROR           = 0x01, /**< Generic error */
+    SPI_PROT_STATUS_CRC_ERROR       = 0x02, /**< CRC mismatch (DFU data) */
+    SPI_PROT_STATUS_ADDR_ERROR      = 0x03, /**< Invalid address */
+    SPI_PROT_STATUS_SIZE_ERROR      = 0x04, /**< Invalid size/length */
+    SPI_PROT_STATUS_FLASH_ERROR     = 0x05, /**< Flash operation failed */
+    SPI_PROT_STATUS_BUSY            = 0x06, /**< Device busy, retry later */
+    SPI_PROT_STATUS_INVALID_CMD     = 0x07, /**< Unknown command */
+    SPI_PROT_STATUS_TIMEOUT         = 0x08, /**< Operation timeout */
+    SPI_PROT_STATUS_NOT_READY       = 0x09, /**< Prerequisite not met */
+    SPI_PROT_STATUS_INVALID_HEADER  = 0x0A, /**< Invalid header */
+    SPI_PROT_STATUS_VERIFY_ERROR    = 0x0B, /**< Verification failed */
+
+    /* Protocol-specific errors (0x10+) */
+    SPI_PROT_STATUS_FRAME_CRC_ERROR = 0x10, /**< Frame CRC mismatch */
+    SPI_PROT_STATUS_SEQ_ERROR       = 0x11, /**< Sequence number error */
+    SPI_PROT_STATUS_FRAME_ERROR     = 0x12, /**< Malformed frame */
 } SpiProtocolStatus;
 
 /**

@@ -115,11 +115,11 @@ static void MGR_SPI_CMD_process_transaction(uint8_t *data, uint16_t len)
             SpiRequestFrame *req = MGR_SPI_PROTOCOL_get_request();
 
             if (!req->crc_valid) {
-                /* CRC error - prepare error response for next transaction */
-                MGR_LOG_DEBUG("CRC error, preparing NACK\r\n");
+                /* Frame CRC error - prepare error response for next transaction */
+                MGR_LOG_DEBUG("Frame CRC error, preparing NACK\r\n");
                 uint8_t error_response[8];
                 uint16_t resp_len = MGR_SPI_PROTOCOL_build_error_response(
-                    error_response, req->sequence, SPI_PROT_STATUS_CRC_ERROR);
+                    error_response, req->sequence, SPI_PROT_STATUS_FRAME_CRC_ERROR);
                 MCU_SPI_DRIVER_set_response(error_response, resp_len);
                 MGR_SPI_PROTOCOL_reset();
                 spiState = SPICMD_IDLE;
@@ -253,7 +253,8 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
     if (cbStatus != KNS_STATUS_OK)
         return cbStatus;
 
-    /* Get pointer to user data FIFO element when possible */
+    /* Get pointer to user data FIFO element when possible.
+     * Note: macStatus is set in the second switch below, not here. */
     switch (srvcEvt.id) {
     case (KNS_MAC_TX_DONE):
     case (KNS_MAC_TXACK_DONE):
@@ -264,7 +265,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
             srvcEvt.tx_ctxt.data_bitlen);
         kns_assert(spUserDataMsg != NULL);
-        macStatus = MAC_RX_TIMEOUT;
+        /* macStatus will be set in the processing switch below */
         break;
     case (KNS_MAC_ERROR):
         if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
@@ -272,7 +273,6 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
                 srvcEvt.tx_ctxt.data_bitlen);
             MCU_MISC_TCXO_Force_State(false);
             kns_assert(spUserDataMsg != NULL);
-            macStatus = MAC_ERROR;
         }
         break;
     default:
@@ -360,8 +360,51 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         cbStatus = KNS_STATUS_ERROR;
         break;
 
+    /* Downlink and satellite detection events - informational, no user data involved */
+    case (KNS_MAC_RX_RECEIVED):
+        MGR_LOG_DEBUG("MGR_SPI_CMD RX frame received\r\n");
+        macStatus = MAC_RX_RECEIVED;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
+    case (KNS_MAC_DL_BC):
+        MGR_LOG_DEBUG("MGR_SPI_CMD Downlink beacon received\r\n");
+        macStatus = MAC_RX_RECEIVED;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
+    case (KNS_MAC_DL_ACK):
+        MGR_LOG_DEBUG("MGR_SPI_CMD Downlink ACK received\r\n");
+        macStatus = MAC_RX_RECEIVED;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
+    case (KNS_MAC_SAT_DETECTED):
+        MGR_LOG_DEBUG("MGR_SPI_CMD Satellite detected\r\n");
+        macStatus = MAC_SAT_DETECTED;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
+    case (KNS_MAC_SAT_LOST):
+        MGR_LOG_DEBUG("MGR_SPI_CMD Satellite lost\r\n");
+        macStatus = MAC_SAT_LOST;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
+    case (KNS_MAC_SAT_DETECT_TIMEOUT):
+        MGR_LOG_DEBUG("MGR_SPI_CMD Satellite detection timeout\r\n");
+        macStatus = MAC_SAT_LOST;
+        cbStatus = KNS_STATUS_TIMEOUT;
+        break;
+
+    case (KNS_MAC_RF_ABORTED):
+        MGR_LOG_DEBUG("MGR_SPI_CMD RF operation aborted\r\n");
+        macStatus = MAC_RF_ABORTED;
+        cbStatus = KNS_STATUS_OK;
+        break;
+
     default:
-        kns_assert(0);
+        MGR_LOG_DEBUG("MGR_SPI_CMD Unknown MAC event: %d\r\n", srvcEvt.id);
         macStatus = MAC_ERROR;
         cbStatus = KNS_STATUS_ERROR;
         break;

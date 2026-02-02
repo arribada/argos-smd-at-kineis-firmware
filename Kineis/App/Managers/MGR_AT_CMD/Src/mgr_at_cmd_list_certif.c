@@ -45,12 +45,13 @@
 //#define DELAY_MS(time_ms) HAL_Delay(time_ms)
 extern uint32_t SystemCoreClock;
 #define FOR_LOOP_CYCLE_NB 4
+/* MISRA C:2012 Rule 20.7 - Macro parameters shall be enclosed in parentheses */
 #define DELAY_MS(time_ms) \
 { \
-	uint32_t _nb_for_loop_per_ms = SystemCoreClock / 1000 / FOR_LOOP_CYCLE_NB; \
-	for (uint32_t _count = time_ms * _nb_for_loop_per_ms; \
-		_count > 0 ; \
-		_count--) __NOP(); \
+	uint32_t _nb_for_loop_per_ms = SystemCoreClock / 1000U / FOR_LOOP_CYCLE_NB; \
+	for (uint32_t _count = (time_ms) * _nb_for_loop_per_ms; \
+		_count > 0U ; \
+		_count--) { __NOP(); } \
 }
 #endif
 
@@ -187,16 +188,19 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 		MGR_LOG_VERBOSE("[%s] Abort transmission of previous frame\r\n", __func__);
 		isToBeTransmit = false;
 		status = KNS_RFTX_abortRf(NULL);
-		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+		if (status != KNS_STATUS_OK) {
+			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		}
 		status = KNS_RFTX_powerOff(NULL);
-		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+		if (status != KNS_STATUS_OK) {
+			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		}
 	}
 
 	/** Fill-up data bitstream with new random data */
-	for (idx = 0; idx < sizeof(bitstream); idx++)
-		bitstream[idx] = random();
+	for (idx = 0U; idx < sizeof(bitstream); idx++) {
+		bitstream[idx] = (uint8_t)random();
+	}
 
 	/** Fill-up bitlen to max size, depending on the modulation
 	 * and set TX done callback if required
@@ -257,64 +261,65 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 	 *
 	 * Do this reply only the first burst
 	 */
-	if ((mw_cfg.valid == false ) || (!mw_cfg.isRfAlreadyOn))
-		bMGR_AT_CMD_logSucceedMsg();
+	if ((mw_cfg.valid == false) || (!mw_cfg.isRfAlreadyOn)) {
+		(void)bMGR_AT_CMD_logSucceedMsg();
+	}
 
 	/** ---- Send frame ---- */
 	status = KNS_RFTX_powerOn(NULL);
-	if (status != KNS_STATUS_OK)
-		return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+	if (status != KNS_STATUS_OK) {
+		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+	}
 
 	status = KNS_RFTX_setCfg(&rf_cfg_local);
 	if (status != KNS_STATUS_OK) {
 		isToBeTransmit = false;
-		KNS_RFTX_abortRf(NULL);
-		KNS_RFTX_powerOff(NULL);
-		return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+		(void)KNS_RFTX_abortRf(NULL);  /* MISRA Rule 17.7 - Error cleanup, return ignored */
+		(void)KNS_RFTX_powerOff(NULL);
+		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 	}
 
 	/** Keep pushing a bitstream, even with NULL length for CW */
-	kns_assert(bitstream_bitlen <= (sizeof(bitstream) * 8));
+	kns_assert(bitstream_bitlen <= (sizeof(bitstream) * 8U));
 	status = KNS_RFTX_pushBitstream(bitstream, bitstream_bitlen);
 	if (status != KNS_STATUS_OK) {
 		isToBeTransmit = false;
-		KNS_RFTX_abortRf(NULL);
-		KNS_RFTX_powerOff(NULL);
-		return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+		(void)KNS_RFTX_abortRf(NULL);
+		(void)KNS_RFTX_powerOff(NULL);
+		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 	}
 
 	/** Do the TCXO wramp for first transmission. No need to do it for next burst as
 	 * power OFF/ON sequence between burst is saud to be very quick
 	 */
-	if ((mw_cfg.valid == true) && (!mw_cfg.isRfAlreadyOn))
+	if ((mw_cfg.valid == true) && (!mw_cfg.isRfAlreadyOn)) {
 		status = KNS_RFTX_tcxoWarmup(NULL);
+	}
+
 	if (status != KNS_STATUS_OK) {
 		isToBeTransmit = false;
-		KNS_RFTX_abortRf(NULL);
-		KNS_RFTX_powerOff(NULL);
-		return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+		(void)KNS_RFTX_abortRf(NULL);
+		(void)KNS_RFTX_powerOff(NULL);
+		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 	}
 
 	MGR_LOG_DEBUG("[%s] TX bitstream: 0x", __func__);
-	MGR_LOG_array(bitstream, ((bitstream_bitlen + 7) / 8));
+	MGR_LOG_array(bitstream, ((bitstream_bitlen + 7U) / 8U));
 
 	status = KNS_RFTX_startImmediate(eop_isr_cb);
 	if (status == KNS_STATUS_OK) {
-		if (mw_cfg.valid == true)
+		if (mw_cfg.valid == true) {
 			mw_cfg.isRfAlreadyOn = true;
+		}
 		return true;
 	}
 
 	/** Stop RF and Send delayed error reply if failure during send process
 	 */
 	isToBeTransmit = false;
-	KNS_RFTX_abortRf(NULL);
-	KNS_RFTX_powerOff(NULL);
-	return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t) KNS_STATUS_RF_ERR);
-
-	// should never reach this point
-	kns_assert(0);
-	return false;
+	(void)KNS_RFTX_abortRf(NULL);
+	(void)KNS_RFTX_powerOff(NULL);
+	return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) KNS_STATUS_RF_ERR);
 }
 
 /* Public functions ------------------------------------------------------------------------------*/
@@ -453,10 +458,10 @@ bool bMGR_AT_CMD_CW_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
 			isToBeTransmit = false;
 			status = KNS_RFTX_abortRf(NULL);
 			if (status != KNS_STATUS_OK)
-				return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 			status = KNS_RFTX_powerOff(NULL);
 			if (status != KNS_STATUS_OK)
-				return bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)status);
+				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 			else
 				return bMGR_AT_CMD_logSucceedMsg();
 			break;

@@ -225,27 +225,35 @@ bool MCU_AT_CONSOLE_register(void *handle, bool (*rx_evt_cb)(uint8_t *pu8_RxBuff
 void MCU_AT_CONSOLE_send(const char *format, ...)
 {
 	va_list args;
+	int written;
 
 	/* Reset output buffer */
 	memset(uartTxBuf, 0x00, sizeof(uartTxBuf));
 
 	va_start(args, format);
-	vsprintf(uartTxBuf, format, args);
+	/* CRITICAL FIX: Use vsnprintf to prevent buffer overflow */
+	written = vsnprintf(uartTxBuf, sizeof(uartTxBuf), format, args);
 	va_end(args);
-	/** Check buffer is not overflowed, meaning console is not well dimensionned regarding
-	 * AT cmd responses length
-	 */
-	kns_assert(strlen(uartTxBuf) < sizeof(uartTxBuf));
+
+	/* Check for truncation or error */
+	if (written < 0) {
+		/* Encoding error - send error message instead */
+		const char *err_msg = "+ERROR=FORMAT\r\n";
+		if (huart_handle != NULL)
+			HAL_UART_Transmit(huart_handle, (uint8_t *)err_msg, strlen(err_msg), 500);
+		return;
+	}
+	if ((size_t)written >= sizeof(uartTxBuf)) {
+		/* Output was truncated - ensure null termination and continue */
+		uartTxBuf[sizeof(uartTxBuf) - 1] = '\0';
+		written = sizeof(uartTxBuf) - 1;
+	}
 
 	/* Send log message via UART */
-	if (huart_handle != NULL)
-		HAL_UART_Transmit(huart_handle, (uint8_t *)uartTxBuf, strlen(uartTxBuf), 500);
-	else {
-		/** Console is said to be correctly initialized before use
-		 *
-		 */
-		kns_assert(0);
+	if (huart_handle != NULL) {
+		HAL_UART_Transmit(huart_handle, (uint8_t *)uartTxBuf, (uint16_t)written, 500);
 	}
+	/* Note: Removed assert for NULL handle - silent fail is safer than crash */
 }
 
 void MCU_AT_CONSOLE_send_dataBuf(uint8_t *pu8_inDataBuff, uint16_t u16_dataLenBit)

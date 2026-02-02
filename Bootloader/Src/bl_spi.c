@@ -8,6 +8,7 @@
  */
 
 #include "bl_spi.h"
+#include "bl_spi_protocol.h"
 #include "bl_config.h"
 #include "stm32wlxx_hal.h"
 #include <string.h>
@@ -39,6 +40,11 @@ static volatile bool cmd_ready = false;
 static uint32_t pending_write_addr = 0;
 static uint16_t pending_write_len = 0;
 static bool write_req_pending = false;
+
+/* State for multi-transaction commands (READ_REQ -> READ_DATA) */
+static uint8_t pending_read_buffer[BL_CHUNK_SIZE];
+static uint16_t pending_read_len = 0;
+static bool read_data_pending = false;
 
 /* Transaction detection state (polling-based) */
 static volatile uint16_t last_rx_count = 0;
@@ -134,6 +140,9 @@ bool bl_spi_init(void)
     /* Initialize idle TX buffer with idle pattern for scope debugging */
     memset(tx_idle_buffer, BL_SPI_IDLE_PATTERN, sizeof(tx_idle_buffer));
 
+    /* Initialize A+ protocol layer */
+    bl_spi_protocol_init();
+
     /* Reset state */
     rx_count = 0;
     rx_complete = false;
@@ -143,6 +152,8 @@ bool bl_spi_init(void)
     pending_write_addr = 0;
     pending_write_len = 0;
     write_req_pending = false;
+    pending_read_len = 0;
+    read_data_pending = false;
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
@@ -384,106 +395,56 @@ bool bl_spi_process(void)
     /* Process received data */
     rx_complete = false;
 
-    /* First byte is command */
-    if (current_cmd == 0) {
-        if (rx_count < 1) {
-            /* No data, restart reception */
+    if (rx_count < 1) {
+        /* No data, restart reception */
+        bl_spi_start_rx();
+        return false;
+    }
+
+    /* Use protocol layer to parse frame (detects A+ vs legacy) */
+    if (!bl_spi_protocol_process(rx_buffer, rx_count)) {
+        /* Invalid frame or sync issue - restart */
+        bl_spi_start_rx();
+        return false;
+    }
+
+    bl_spi_request_t *request = bl_spi_protocol_get_request();
+    bl_spi_protocol_ctx_t *prot_ctx = bl_spi_protocol_get_ctx();
+
+    /* Check CRC for A+ protocol */
+    if (prot_ctx->mode == BL_PROT_MODE_A_PLUS && !request->crc_valid) {
+        /* CRC error - send error response and restart */
+        bl_spi_send_response(DFU_RSP_CRC_ERROR, NULL, 0);
+        bl_spi_start_rx();
+        return false;
+    }
+
+    /* Extract command and payload */
+    current_cmd = request->command;
+    payload_len = request->data_len;
+
+    if (payload_len > 0 && payload_len <= BL_CHUNK_SIZE) {
+        memcpy(payload_buffer, request->data, payload_len);
+    }
+
+    /* Handle WRITE_REQ - store address/length for WRITE_DATA */
+    if (current_cmd == SPI_CMD_DFU_WRITE_REQ && payload_len >= 6) {
+        memcpy(&pending_write_addr, payload_buffer, 4);
+        memcpy(&pending_write_len, payload_buffer + 4, 2);
+        write_req_pending = true;
+    }
+
+    /* For WRITE_DATA with pending request, validate we got the expected length */
+    if (current_cmd == SPI_CMD_DFU_WRITE_DATA) {
+        if (!write_req_pending || pending_write_len == 0) {
+            /* No pending WRITE_REQ - error */
+            bl_spi_send_response(DFU_RSP_NOT_READY, NULL, 0);
             bl_spi_start_rx();
             return false;
         }
-
-        current_cmd = rx_buffer[0];
-        payload_len = 0;
-
-        /* For commands with payload, extract it from the same transaction */
-        uint16_t expected_payload = 0;
-
-        switch (current_cmd) {
-            case SPI_CMD_DFU_PING:
-            case SPI_CMD_DFU_GET_INFO:
-            case SPI_CMD_DFU_ERASE:
-            case SPI_CMD_DFU_RESET:
-            case SPI_CMD_DFU_JUMP:
-            case SPI_CMD_DFU_GET_STATUS:
-            case SPI_CMD_DFU_ABORT:
-                /* No payload */
-                cmd_ready = true;
-                break;
-
-            case SPI_CMD_DFU_VERIFY:
-                expected_payload = 4;
-                break;
-
-            case SPI_CMD_DFU_WRITE_REQ:
-                expected_payload = 6;
-                break;
-
-            case SPI_CMD_DFU_WRITE_DATA:
-                if (write_req_pending && pending_write_len > 0) {
-                    expected_payload = pending_write_len;
-                } else {
-                    cmd_ready = true;  /* Error */
-                }
-                break;
-
-            case SPI_CMD_DFU_READ_REQ:
-                expected_payload = 6;
-                break;
-
-            case SPI_CMD_DFU_SET_HEADER:
-                expected_payload = 256;
-                break;
-
-            default:
-                cmd_ready = true;
-                break;
-        }
-
-        /* Check if payload was received in the same transaction */
-        if (expected_payload > 0) {
-            if (rx_count >= 1 + expected_payload) {
-                /* Payload received with command */
-                memcpy(payload_buffer, rx_buffer + 1, expected_payload);
-                payload_len = expected_payload;
-
-                /* Handle WRITE_REQ */
-                if (current_cmd == SPI_CMD_DFU_WRITE_REQ && payload_len >= 6) {
-                    memcpy(&pending_write_addr, payload_buffer, 4);
-                    memcpy(&pending_write_len, payload_buffer + 4, 2);
-                    write_req_pending = true;
-                }
-
-                cmd_ready = true;
-            } else {
-                /* Need to wait for more data - restart reception */
-                /* Store partial payload */
-                if (rx_count > 1) {
-                    uint16_t partial = rx_count - 1;
-                    if (partial <= BL_CHUNK_SIZE) {
-                        memcpy(payload_buffer, rx_buffer + 1, partial);
-                        payload_len = partial;
-                    }
-                }
-                bl_spi_start_rx();
-            }
-        }
-    } else {
-        /* Continuation - append received data to payload */
-        if (rx_count <= BL_CHUNK_SIZE - payload_len) {
-            memcpy(payload_buffer + payload_len, rx_buffer, rx_count);
-            payload_len += rx_count;
-        }
-
-        /* Handle WRITE_REQ */
-        if (current_cmd == SPI_CMD_DFU_WRITE_REQ && payload_len >= 6) {
-            memcpy(&pending_write_addr, payload_buffer, 4);
-            memcpy(&pending_write_len, payload_buffer + 4, 2);
-            write_req_pending = true;
-        }
-
-        cmd_ready = true;
     }
 
+    cmd_ready = true;
     return cmd_ready;
 }
 
@@ -509,24 +470,61 @@ uint16_t bl_spi_get_payload(uint8_t* buffer, uint16_t max_len)
     return len;
 }
 
+bool bl_spi_store_read_data(const uint8_t* data, uint16_t len)
+{
+    if (data == NULL || len == 0 || len > BL_CHUNK_SIZE) {
+        return false;
+    }
+    memcpy(pending_read_buffer, data, len);
+    pending_read_len = len;
+    read_data_pending = true;
+    return true;
+}
+
+uint16_t bl_spi_get_read_data(uint8_t* buffer, uint16_t max_len)
+{
+    if (!read_data_pending || buffer == NULL) {
+        return 0;
+    }
+    uint16_t len = (pending_read_len < max_len) ? pending_read_len : max_len;
+    memcpy(buffer, pending_read_buffer, len);
+    return len;
+}
+
+bool bl_spi_has_read_data(void)
+{
+    return read_data_pending;
+}
+
 void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t data_len)
 {
-    /* Prepare response in TX buffer */
-    tx_buffer[0] = (uint8_t)status;
+    bl_spi_protocol_ctx_t *prot_ctx = bl_spi_protocol_get_ctx();
 
-    if (data != NULL && data_len > 0) {
-        uint16_t copy_len = (data_len < BL_TX_BUFFER_SIZE - 1) ? data_len : (BL_TX_BUFFER_SIZE - 1);
-        memcpy(tx_buffer + 1, data, copy_len);
-        tx_len = copy_len + 1;
+    /* Build response based on protocol mode */
+    if (prot_ctx->mode == BL_PROT_MODE_A_PLUS) {
+        /* A+ protocol: [MAGIC][SEQ][STATUS][LEN][DATA...][CRC] */
+        uint8_t data_len_u8 = (data_len > 250) ? 250 : (uint8_t)data_len;
+        tx_len = bl_spi_protocol_build_response(tx_buffer,
+                                                 prot_ctx->request.sequence,
+                                                 (bl_prot_status_t)status,
+                                                 data, data_len_u8);
     } else {
-        tx_len = 1;
-    }
+        /* Legacy protocol: [STATUS][DATA...] */
+        tx_buffer[0] = (uint8_t)status;
 
-    /* Pad TX buffer with idle pattern for master over-read */
-    uint16_t transfer_size = tx_len;
-    if (transfer_size < 16) {
-        memset(&tx_buffer[transfer_size], BL_SPI_IDLE_PATTERN, 16 - transfer_size);
-        transfer_size = 16;
+        if (data != NULL && data_len > 0) {
+            uint16_t copy_len = (data_len < BL_TX_BUFFER_SIZE - 1) ? data_len : (BL_TX_BUFFER_SIZE - 1);
+            memcpy(tx_buffer + 1, data, copy_len);
+            tx_len = copy_len + 1;
+        } else {
+            tx_len = 1;
+        }
+
+        /* Pad TX buffer with idle pattern for master over-read */
+        if (tx_len < 16) {
+            memset(&tx_buffer[tx_len], BL_SPI_IDLE_PATTERN, 16 - tx_len);
+            tx_len = 16;
+        }
     }
 
     /* Clear write pending state after WRITE_DATA */
@@ -534,6 +532,12 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
         write_req_pending = false;
         pending_write_addr = 0;
         pending_write_len = 0;
+    }
+
+    /* Clear read pending state after READ_DATA */
+    if (current_cmd == SPI_CMD_DFU_READ_DATA) {
+        read_data_pending = false;
+        pending_read_len = 0;
     }
 
     /* Reset command state */

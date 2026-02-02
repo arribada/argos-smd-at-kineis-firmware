@@ -36,6 +36,9 @@
 #define BL_FLAG_MAGIC           0x424C464CUL    /* "BLFL" */
 #define BL_FLAG_DFU_REQUEST     0x00000001UL
 
+/* TCXO warmup limits - MEDIUM FIX: Replace magic number with constant */
+#define TCXO_MAX_WARMUP_MS      30000UL
+
 
 /* Functions -----------------------------------------------------------------*/
 
@@ -95,8 +98,8 @@ bool bMGR_SPI_CMD_SPISTATE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	// Already written in MGR_SPI_CMD_parseStreamCB to read value before to update it (proces required)
-	//tx->data[0] = spiState; 
+	/* HIGH FIX: Initialize tx->data[0] - was sending uninitialized data */
+	tx->data[0] = (uint8_t)spiState;
 	tx->next_req = 1;
 	rx->next_req = 1;
 	ret = bMGR_SPI_DRIVER_writeread();
@@ -128,6 +131,7 @@ bool bMGR_SPI_CMD_READSPIVERSION_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_READFIRMWARE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 
 	memcpy(&tx->data[0], uc_fw_vers_commit_id, FW_VERSION_LENGTH);  // Copy the entire fixed-length string
@@ -144,6 +148,7 @@ bool bMGR_SPI_CMD_READFIRMWARE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_READADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 	enum KNS_status_t status;
 	uint8_t dev_addr[DEVICE_ADDR_LENGTH];
@@ -205,6 +210,7 @@ bool bMGR_SPI_CMD_WRITEADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 }
 
 bool bMGR_SPI_CMD_READSECKEY_cmd(SPI_Buffer *rx, SPI_Buffer *tx) {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 
 	uint8_t dev_seckey[DSK_BYTE_LENGTH];
@@ -272,9 +278,9 @@ bool bMGR_SPI_CMD_READSPIMACSTATE_cmd(SPI_Buffer *rx, SPI_Buffer *tx){
 
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	// Already written in MGR_SPI_CMD_parseStreamCB to read value before to update it (proces required)
-	//tx->data[0] = spiState; 
-	tx->data[1] = macStatus;
+	/* HIGH FIX: Initialize tx->data[0] - was sending uninitialized data */
+	tx->data[0] = (uint8_t)spiState;
+	tx->data[1] = (uint8_t)macStatus;
 	tx->next_req = 2;
 	rx->next_req = 1;
 	ret = bMGR_SPI_DRIVER_writeread();
@@ -291,6 +297,7 @@ bool bMGR_SPI_CMD_READSPIMACSTATE_cmd(SPI_Buffer *rx, SPI_Buffer *tx){
 
 bool bMGR_SPI_CMD_READID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 	enum KNS_status_t status;
 
@@ -364,6 +371,7 @@ bool bMGR_SPI_CMD_WRITEID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_READSN_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 	enum KNS_status_t status;
 
@@ -389,6 +397,7 @@ bool bMGR_SPI_CMD_READSN_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_READRCONF_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 
 	struct KNS_CFG_radio_t radio_cfg;
@@ -461,6 +470,7 @@ bool bMGR_SPI_CMD_WRITERCONF_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_SAVERCONF_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns status */
 	HAL_StatusTypeDef ret = HAL_OK;
 	enum KNS_status_t status;
 
@@ -499,6 +509,7 @@ bool bMGR_SPI_CMD_READLPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_WRITELPMREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)tx;  /* Unused parameter - uses global txBuf */
 	HAL_StatusTypeDef ret = HAL_OK;
 	txBuf.data[0] = rx->data[0];
 	rxBuf.next_req = CMD_WRITELPM_WAIT_LEN; // Only waiting profile id for the moment
@@ -545,6 +556,7 @@ bool bMGR_SPI_CMD_WRITELPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_READTCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 
 	uint32_t tcxo_ms;
@@ -585,9 +597,10 @@ bool bMGR_SPI_CMD_WRITETCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 	uint32_t tcxo_ms = 0;
 	memcpy(&tcxo_ms, &(rx->data[1]), sizeof(uint32_t));
-	if (tcxo_ms >30000) {
-		// Invalid value: outside the allowed range
-		MGR_LOG_DEBUG("[ERROR] TCXO Warmup time in ms should be between 0 to 30 000\r\n");
+	if (tcxo_ms > TCXO_MAX_WARMUP_MS) {
+		/* Invalid value: outside the allowed range */
+		MGR_LOG_DEBUG("[ERROR] TCXO Warmup time in ms should be between 0 to %lu\r\n",
+		              TCXO_MAX_WARMUP_MS);
         return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
 	}
 	MCU_MISC_TCXO_set_warmup(tcxo_ms);
@@ -606,6 +619,7 @@ bool bMGR_SPI_CMD_WRITETCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only triggers reset */
 	MGR_LOG_DEBUG("Entering DFU bootloader mode...\r\n");
 
 	/* Send acknowledgment before reset */

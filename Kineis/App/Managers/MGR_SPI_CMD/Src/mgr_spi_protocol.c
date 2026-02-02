@@ -54,9 +54,9 @@ uint8_t MGR_SPI_PROTOCOL_crc8(const uint8_t *data, uint16_t length)
         crc ^= data[i];
         for (uint8_t bit = 0; bit < 8; bit++) {
             if (crc & 0x80) {
-                crc = (crc << 1) ^ 0x07;  /* CRC-8-CCITT polynomial */
+                crc = (uint8_t)((crc << 1) ^ 0x07);  /* CRC-8-CCITT polynomial */
             } else {
-                crc <<= 1;
+                crc = (uint8_t)(crc << 1);
             }
         }
     }

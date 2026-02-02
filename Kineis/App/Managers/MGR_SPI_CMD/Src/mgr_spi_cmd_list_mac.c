@@ -31,6 +31,7 @@
 
 bool bMGR_SPI_CMD_READKMAC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 	struct KNS_MAC_prflInfo_t prfl_info;
 	uint8_t *prflCfgPtr;

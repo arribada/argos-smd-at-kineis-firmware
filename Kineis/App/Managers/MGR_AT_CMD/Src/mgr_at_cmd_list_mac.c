@@ -58,11 +58,15 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 		return true;
 	}
 
-	scan_param_res = sscanf((const char *)pu8_cmdParamString,
-			(const char *)"AT+KMAC=%hd,%12[0-9A-Fa-f]",
-			(int16_t*)&appEvt.init_prfl_ctxt.id,
-			prflCtxtData);
-	prflCtxtCharNb = strlen((const char *)prflCtxtData);
+	{
+		int16_t temp_id = 0;
+		scan_param_res = (int16_t)sscanf((const char *)pu8_cmdParamString,
+				(const char *)"AT+KMAC=%hd,%12[0-9A-Fa-f]",
+				&temp_id,
+				prflCtxtData);
+		appEvt.init_prfl_ctxt.id = (enum KNS_MAC_prflId_t)temp_id;
+	}
+	prflCtxtCharNb = (uint16_t)strlen((const char *)prflCtxtData);
 
 	/* Only one Tr parameter */
 	if (scan_param_res == 0)

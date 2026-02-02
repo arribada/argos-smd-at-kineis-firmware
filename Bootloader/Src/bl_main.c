@@ -11,6 +11,7 @@
 #include "bl_dfu.h"
 #include "bl_uart.h"
 #include "bl_spi.h"
+#include "bl_spi_protocol.h"
 #include "bl_app_header.h"
 #include "stm32wlxx_hal.h"
 #include <string.h>
@@ -343,7 +344,29 @@ static void bl_state_dfu_spi(void)
                     bl_spi_send_response(DFU_RSP_OK, NULL, 0);
                     return;
                 case SPI_CMD_DFU_WRITE_DATA:dfu_cmd = DFU_CMD_WRITE; break;
-                case SPI_CMD_DFU_READ_REQ:  dfu_cmd = DFU_CMD_READ; break;
+                case SPI_CMD_DFU_READ_REQ:
+                    /* READ_REQ reads data and stores for next READ_DATA */
+                    {
+                        uint8_t read_buf[BL_CHUNK_SIZE];
+                        uint16_t read_len = sizeof(read_buf);
+                        dfu_response_t read_status = bl_dfu_process_cmd(DFU_CMD_READ,
+                            payload, payload_len, read_buf, &read_len);
+                        if (read_status == DFU_RSP_OK) {
+                            bl_spi_store_read_data(read_buf, read_len);
+                        }
+                        bl_spi_send_response(read_status, NULL, 0);
+                    }
+                    return;
+                case SPI_CMD_DFU_READ_DATA:
+                    /* READ_DATA returns data stored by previous READ_REQ */
+                    if (bl_spi_has_read_data()) {
+                        uint8_t read_buf[BL_CHUNK_SIZE];
+                        uint16_t read_len = bl_spi_get_read_data(read_buf, sizeof(read_buf));
+                        bl_spi_send_response(DFU_RSP_OK, read_buf, read_len);
+                    } else {
+                        bl_spi_send_response(DFU_RSP_NOT_READY, NULL, 0);
+                    }
+                    return;
                 case SPI_CMD_DFU_VERIFY:    dfu_cmd = DFU_CMD_VERIFY; break;
                 case SPI_CMD_DFU_RESET:     dfu_cmd = DFU_CMD_RESET; break;
                 case SPI_CMD_DFU_JUMP:      dfu_cmd = DFU_CMD_JUMP; break;
@@ -364,8 +387,29 @@ static void bl_state_dfu_spi(void)
                 }
             }
 
+            /* Set operation state before long operations */
+            if (dfu_cmd == DFU_CMD_ERASE) {
+                bl_spi_protocol_set_op_state(BL_DFU_STATE_ERASING);
+            } else if (dfu_cmd == DFU_CMD_WRITE) {
+                bl_spi_protocol_set_op_state(BL_DFU_STATE_WRITING);
+            } else if (dfu_cmd == DFU_CMD_VERIFY) {
+                bl_spi_protocol_set_op_state(BL_DFU_STATE_VERIFYING);
+            }
+
             status = bl_dfu_process_cmd(dfu_cmd, payload, payload_len,
                                        response, &response_len);
+
+            /* Update operation state after completion */
+            if (status == DFU_RSP_OK) {
+                if (dfu_cmd == DFU_CMD_ERASE || dfu_cmd == DFU_CMD_WRITE) {
+                    bl_spi_protocol_set_op_state(BL_DFU_STATE_READY);
+                } else if (dfu_cmd == DFU_CMD_VERIFY) {
+                    bl_spi_protocol_set_op_state(BL_DFU_STATE_COMPLETE);
+                }
+            } else {
+                bl_spi_protocol_set_op_state(BL_DFU_STATE_ERROR);
+            }
+
             bl_spi_send_response(status, response, response_len);
 
             /* Handle special commands */
@@ -640,25 +684,5 @@ void assert_failed(uint8_t *file, uint32_t line)
     NVIC_SystemReset();
 }
 
-/*******************************************************************************
- * DMA STUBS (HAL UART/SPI reference DMA but we don't use it)
- ******************************************************************************/
-#include "stm32wlxx_hal_dma.h"
-
-HAL_StatusTypeDef HAL_DMA_Abort(DMA_HandleTypeDef *hdma)
-{
-    (void)hdma;
-    return HAL_OK;
-}
-
-HAL_StatusTypeDef HAL_DMA_Abort_IT(DMA_HandleTypeDef *hdma)
-{
-    (void)hdma;
-    return HAL_OK;
-}
-
-uint32_t HAL_DMA_GetError(DMA_HandleTypeDef *hdma)
-{
-    (void)hdma;
-    return 0;
-}
+/* Note: DMA functions are provided by stm32wlxx_hal_dma.c
+ * SPI uses DMA for reliable slave operation - do not add stubs here */

@@ -116,10 +116,10 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 
 
 		/** Extract USER DATA from pu8_cmdParamString */
-		i16_scan_param_res = sscanf((const char *)pu8_cmdParamString, pcAtCmdPattern,
+		i16_scan_param_res = (int16_t)sscanf((const char *)pu8_cmdParamString, pcAtCmdPattern,
 					    pu8UserDataBuf,
 					    &u8UserDataAttr.u8_raw);
-		u16UserDataCharNb = strlen((const char *)pu8UserDataBuf);
+		u16UserDataCharNb = (uint16_t)strlen((const char *)pu8UserDataBuf);
 		MGR_LOG_VERBOSE("[%s %d] %d %d\r\n", __func__, __LINE__, i16_scan_param_res, u16UserDataCharNb);
 
 		/** Assert when the number of characters received from AT command is bigger than
@@ -178,7 +178,7 @@ uint16_t u16MGR_AT_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16_
 		u8_high = u8UTIL_convertCharToHex4bits(pu8InputBuffer[2 * u16_index]);
 		u8_low = u8UTIL_convertCharToHex4bits(pu8InputBuffer[2 * u16_index + 1]);
 		if ((u8_high != 0xFF) && (u8_low != 0xFF))
-			pu8InputBuffer[u16_index] = (u8_high << 4) | u8_low;
+			pu8InputBuffer[u16_index] = (uint8_t)((u8_high << 4) | u8_low);
 		else
 			return 0;
 	}
@@ -188,7 +188,7 @@ uint16_t u16MGR_AT_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16_
 		u8_high = u8UTIL_convertCharToHex4bits(pu8InputBuffer[u16_charNb - 1]);
 		u8_low = 0;
 		if (u8_high != 0xFF)
-			pu8InputBuffer[u16_index++] = (u8_high << 4) | u8_low;
+			pu8InputBuffer[u16_index++] = (uint8_t)((u8_high << 4) | u8_low);
 		else
 			return 0;
 	}
@@ -198,7 +198,7 @@ uint16_t u16MGR_AT_CMD_convertAsciiBinary(uint8_t *pu8InputBuffer, uint16_t u16_
 		pu8InputBuffer[u16_index] = 0;
 
 	/** Return data length in bits */
-	return (((u16_charNb / 2) * 8) + ((u16_charNb % 2) ? 4 : 0));
+	return (uint16_t)(((u16_charNb / 2) * 8) + ((u16_charNb % 2) ? 4 : 0));
 }
 
 
@@ -538,6 +538,15 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		if (srvcEvt.app_evt == KNS_MAC_SEND_DATA)
 			USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
 		cbStatus = KNS_STATUS_ERROR;
+	break;
+	case (KNS_MAC_RF_ABORTED):
+		/* RF operation was aborted (e.g. user requested stop) */
+		MCU_MISC_TCXO_Force_State(false);
+		bMGR_AT_CMD_sendResponse(ATCMD_RSP_RFABORTED, NULL);
+		if (spUserDataMsg != NULL && spUserDataMsg->bIsToBeTransmit)
+			USERDATA_txFifoRemoveElt(spUserDataMsg);
+		Set_TX_LED(0);
+		cbStatus = KNS_STATUS_OK;
 	break;
 	default:
 		kns_assert(0);

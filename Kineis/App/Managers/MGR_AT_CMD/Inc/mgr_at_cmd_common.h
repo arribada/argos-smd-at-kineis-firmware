@@ -44,7 +44,8 @@ enum atcmd_rsp_type_t {
 	ATCMD_RSP_DLOK,		    /**< At command delayed response for RX frame reception */
 	ATCMD_RSP_RXTIMEOUT,    /**< At command delayed response for RX timeout */
 	ATCMD_RSP_TXTIMEOUT,    /**< At command delayed response for TX timeout */
-	ATCMD_RSP_RXERROR  	    /**< At command delayed response for RX error */
+	ATCMD_RSP_RXERROR,      /**< At command delayed response for RX error */
+	ATCMD_RSP_RFABORTED     /**< At command delayed response for RF operation aborted */
 };
 
 

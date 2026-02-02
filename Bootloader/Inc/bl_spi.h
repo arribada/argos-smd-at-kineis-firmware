@@ -101,6 +101,28 @@ uint16_t bl_spi_get_payload(uint8_t* buffer, uint16_t max_len);
 void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t data_len);
 
 /**
+ * @brief Store read data for later retrieval via READ_DATA command
+ * @param data Data to store
+ * @param len Data length
+ * @return true if successful
+ */
+bool bl_spi_store_read_data(const uint8_t* data, uint16_t len);
+
+/**
+ * @brief Get stored read data (for READ_DATA command)
+ * @param buffer Buffer to store data
+ * @param max_len Maximum buffer length
+ * @return Length of data copied
+ */
+uint16_t bl_spi_get_read_data(uint8_t* buffer, uint16_t max_len);
+
+/**
+ * @brief Check if read data is pending
+ * @return true if data available from previous READ_REQ
+ */
+bool bl_spi_has_read_data(void);
+
+/**
  * @brief SPI interrupt handler (called from IRQ)
  */
 void bl_spi_irq_handler(void);

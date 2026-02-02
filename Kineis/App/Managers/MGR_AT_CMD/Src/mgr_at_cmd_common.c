@@ -145,6 +145,12 @@ bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *a
 		return true;
 	}
 	break;
+	case ATCMD_RSP_RFABORTED:
+	{
+		MCU_AT_CONSOLE_send("+RFABORT=0\r\n");
+		return true;
+	}
+	break;
 	default:
 		/* Unknown response type - notify user */
 		MCU_AT_CONSOLE_send("+ERROR=%i\r\n", (int)ERROR_UNKNOWN);
