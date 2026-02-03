@@ -486,8 +486,8 @@ void bl_jump_to_app(void)
         return; /* Invalid entry point */
     }
 
-    /* Deinitialize peripherals */
-    bl_hw_deinit();
+    /* Deinitialize peripherals - DISABLED for debug, causing crash */
+    /* bl_hw_deinit(); */
 
     /* Disable all interrupts */
     __disable_irq();
@@ -504,7 +504,7 @@ void bl_jump_to_app(void)
     }
 
     /* Relocate vector table to application */
-    SCB->VTOR = header ? header->app_start_addr : APP_FLASH_BASE;
+    SCB->VTOR = (header && bl_header_magic_valid(header)) ? header->app_start_addr : APP_FLASH_BASE;
 
     /* Set stack pointer */
     __set_MSP(app_stack);
@@ -522,15 +522,30 @@ bool bl_check_app_valid(void)
     const app_header_t* header = bl_get_app_header();
 
     /* Check header validity */
-    if (!bl_validate_app_header(header)) {
+    if (bl_validate_app_header(header)) {
+        /* Valid header - check CRC */
+        if (bl_validate_app_crc(header)) {
+            return true;
+        }
+    }
+
+    /* Fallback: Check if there's valid code at APP_FLASH_BASE
+     * This allows booting apps without a proper header (legacy mode)
+     * Valid app has stack pointer in RAM range (0x20000000 - 0x20010000) */
+    uint32_t app_stack = *(__IO uint32_t*)APP_FLASH_BASE;
+    uint32_t app_entry = *(__IO uint32_t*)(APP_FLASH_BASE + 4);
+
+    /* Stack pointer must be in RAM */
+    if (app_stack < 0x20000000UL || app_stack > 0x20010000UL) {
         return false;
     }
 
-    /* Check CRC */
-    if (!bl_validate_app_crc(header)) {
+    /* Entry point must be in app flash region */
+    if (app_entry < APP_FLASH_BASE || app_entry > (APP_FLASH_BASE + APP_FLASH_SIZE)) {
         return false;
     }
 
+    /* Looks like valid code - allow boot in legacy mode */
     return true;
 }
 

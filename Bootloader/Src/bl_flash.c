@@ -327,22 +327,28 @@ bl_flash_status_t bl_flash_set_dfu_request(bool request)
     return bl_flash_write_bl_state(&state);
 }
 
+/* DFU request via RTC backup register (same as app in main.c) */
+#define DFU_REQUEST_MAGIC       0x4446554DUL  /* "DFUM" - DFU Mode request */
+
 bool bl_flash_is_dfu_requested(void)
 {
-    bl_state_flash_t state;
+    /* Enable access to backup domain
+     * On STM32WL, PWR is always accessible. Just enable RTC APB clock and backup access */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
+    PWR->CR1 |= PWR_CR1_DBP;
 
-    if (bl_flash_read_bl_state(&state) != BL_FLASH_OK) {
-        return false;
-    }
-
-    if (state.magic != BL_FLAG_MAGIC) {
-        return false;
-    }
-
-    return (state.flags & BL_FLAG_DFU_REQUEST) != 0;
+    /* Check RTC backup register 19 for DFU request */
+    return (TAMP->BKP19R == DFU_REQUEST_MAGIC);
 }
 
 bl_flash_status_t bl_flash_clear_dfu_request(void)
 {
-    return bl_flash_set_dfu_request(false);
+    /* Enable access to backup domain */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
+    PWR->CR1 |= PWR_CR1_DBP;
+
+    /* Clear the DFU request flag in backup register 19 */
+    TAMP->BKP19R = 0;
+
+    return BL_FLASH_OK;
 }

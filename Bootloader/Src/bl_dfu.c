@@ -24,7 +24,8 @@ void bl_dfu_init(void)
 void bl_dfu_reset(void)
 {
     memset(&dfu_ctx, 0, sizeof(dfu_ctx));
-    dfu_ctx.write_addr = APP_HEADER_ADDR;
+    /* Start writing at APP_FLASH_BASE (0x08000000 in new layout without header) */
+    dfu_ctx.write_addr = APP_FLASH_BASE;
     dfu_ctx.last_error = DFU_RSP_OK;
     dfu_ctx.session_active = false;
     dfu_ctx.verify_passed = false;

@@ -282,6 +282,81 @@ static void IDLE_task(void)
 #endif
 }
 
+/*******************************************************************************
+ * DFU BOOTLOADER JUMP SUPPORT
+ ******************************************************************************/
+#define BOOTLOADER_ADDR         0x08033000UL
+#define DFU_REQUEST_MAGIC       0x4446554DUL  /* "DFUM" - DFU Mode request */
+
+/**
+ * @brief Check if DFU mode is requested and jump to bootloader if needed
+ * @note  This should be called very early in main(), before any initialization
+ *        The RTC backup registers retain their value across resets (but not power-off)
+ */
+static void check_dfu_request(void)
+{
+    typedef void (*pFunction)(void);
+
+    /* Enable access to backup domain (direct register access to avoid HAL dependency) */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;  /* Enable RTC APB clock */
+    PWR->CR1 |= PWR_CR1_DBP;                  /* Enable backup domain access */
+
+    /* Check DFU request flag in backup register 19 */
+    if (TAMP->BKP19R == DFU_REQUEST_MAGIC) {
+        /* Clear the flag */
+        TAMP->BKP19R = 0;
+
+        /* Get bootloader stack pointer and reset handler */
+        uint32_t bl_stack = *(__IO uint32_t*)BOOTLOADER_ADDR;
+        uint32_t bl_entry = *(__IO uint32_t*)(BOOTLOADER_ADDR + 4);
+
+        /* Validate bootloader (stack must be in RAM) */
+        if (bl_stack >= 0x20000000UL && bl_stack <= 0x20010000UL) {
+            /* Disable all interrupts */
+            __disable_irq();
+
+            /* Disable SysTick */
+            SysTick->CTRL = 0;
+            SysTick->LOAD = 0;
+            SysTick->VAL = 0;
+
+            /* Clear pending interrupts */
+            for (int i = 0; i < 8; i++) {
+                NVIC->ICER[i] = 0xFFFFFFFF;
+                NVIC->ICPR[i] = 0xFFFFFFFF;
+            }
+
+            /* Relocate vector table to bootloader */
+            SCB->VTOR = BOOTLOADER_ADDR;
+
+            /* Set stack pointer and jump */
+            __set_MSP(bl_stack);
+            pFunction bl_reset = (pFunction)bl_entry;
+            bl_reset();
+
+            /* Should never reach here */
+            while (1);
+        }
+    }
+}
+
+/**
+ * @brief Request DFU mode and reset to bootloader
+ * @note  Call this function from SPI command handler when DFU is requested
+ */
+void request_dfu_mode(void)
+{
+    /* Enable access to backup domain (direct register access) */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;  /* Enable RTC APB clock */
+    PWR->CR1 |= PWR_CR1_DBP;                  /* Enable backup domain access */
+
+    /* Set DFU request flag in backup register 19 */
+    TAMP->BKP19R = DFU_REQUEST_MAGIC;
+
+    /* Reset to bootloader */
+    NVIC_SystemReset();
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -292,6 +367,29 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
   bool bIsWakeUpFromReset = false;
+
+  /* Check for DFU request and jump to bootloader if needed */
+  check_dfu_request();
+
+  /* BOOTLOADER CLEANUP - Not needed with new layout (app at 0x08000000) */
+#if 0
+  /* Reset APB1 peripherals */
+  __HAL_RCC_APB1_FORCE_RESET();
+  __HAL_RCC_APB1_RELEASE_RESET();
+  /* Reset APB2 peripherals */
+  __HAL_RCC_APB2_FORCE_RESET();
+  __HAL_RCC_APB2_RELEASE_RESET();
+  /* Reset AHB1 peripherals */
+  __HAL_RCC_AHB1_FORCE_RESET();
+  __HAL_RCC_AHB1_RELEASE_RESET();
+  /* Reset AHB2 peripherals */
+  __HAL_RCC_AHB2_FORCE_RESET();
+  __HAL_RCC_AHB2_RELEASE_RESET();
+  /* Reset AHB3 peripherals (includes SubGHz) */
+  __HAL_RCC_AHB3_FORCE_RESET();
+  __HAL_RCC_AHB3_RELEASE_RESET();
+  for (volatile int i = 0; i < 10000; i++);
+#endif
 
   mspFillup();
 
@@ -311,7 +409,8 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* Re-enable interrupts - bootloader disables them before jumping */
+  /* __enable_irq(); */  /* DISABLED - testing without bootloader */
   /* USER CODE END Init */
 
   /* Configure the system clock */

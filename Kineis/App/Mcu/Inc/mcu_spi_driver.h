@@ -32,6 +32,8 @@ extern "C" {
 #include "kns_app_conf.h" // for STM32 HAL includes on UART
 #include STM32_HAL_H
 
+#ifdef USE_SPI_DRIVER
+
 /* Protocol configuration - Pipelined single-transaction */
 #define SPI_TRANSACTION_SIZE    64   /**< Fixed transaction size in bytes */
 #define SPI_CMD_MAX_SIZE        32   /**< Max command size (first half of transaction) */
@@ -164,6 +166,8 @@ bool MCU_SPI_DRIVER_reset(SPI_HandleTypeDef *hspi);
 /* Legacy functions - kept for compatibility but simplified */
 #define MCU_SPI_DRIVER_writeread MCU_SPI_DRIVER_read
 #define MCU_SPI_DRIVER_check_tx_complete() (true)
+
+#endif /* USE_SPI_DRIVER */
 
 #ifdef __cplusplus
 }

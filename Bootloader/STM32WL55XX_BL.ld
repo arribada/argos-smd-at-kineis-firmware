@@ -1,6 +1,11 @@
 /*
  * Linker script for STM32WL55 Bootloader
- * Bootloader occupies first 32KB of flash (0x08000000 - 0x08007FFF)
+ * Bootloader placed AFTER application (0x08033000 - 0x0803AFFF)
+ *
+ * Memory Layout:
+ * 0x08000000 - 0x08032FFF : Application Code (204KB)
+ * 0x08033000 - 0x0803AFFF : Bootloader (32KB) <-- THIS
+ * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB)
  */
 
 /* Entry Point */
@@ -13,11 +18,19 @@ _estack = ORIGIN(RAM1) + LENGTH(RAM1);
 _Min_Heap_Size = 0x200;     /* 512 bytes heap */
 _Min_Stack_Size = 0x800;    /* 2KB stack */
 
+/* Application address for jump */
+_app_addr = 0x08000000;
+
+/* Application end address (for flash operations) */
+_app_end_addr = 0x08032FFF;
+
 /* Memory regions for bootloader */
 MEMORY
 {
-  ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 32K       /* Bootloader: 32KB */
-  FLASH_USER  (rw)  : ORIGIN = 0x0803B800, LENGTH = 2K        /* BL state storage */
+  /* Bootloader ROM after application */
+  ROM         (rx)  : ORIGIN = 0x08033000, LENGTH = 32K       /* Bootloader: 32KB */
+  /* Flash user for BL state - small portion at start of flash_user */
+  FLASH_USER  (rw)  : ORIGIN = 0x0803B000, LENGTH = 2K        /* BL state storage */
   RAM1        (xrw) : ORIGIN = 0x20000000, LENGTH = 32K       /* SRAM1 */
   RAM2        (xrw) : ORIGIN = 0x20008000, LENGTH = 32K       /* SRAM2 (backup) */
 }
@@ -25,7 +38,7 @@ MEMORY
 /* Sections */
 SECTIONS
 {
-  /* Vector table at start of flash */
+  /* Vector table at start of bootloader region */
   .isr_vector :
   {
     . = ALIGN(8);

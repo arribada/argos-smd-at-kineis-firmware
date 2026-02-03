@@ -17,7 +17,9 @@
 
 #include "kns_os.h"
 #include "mgr_log.h"  /* For MGR_LOG_flush() */
+#ifdef USE_SPI_DRIVER
 #include "mcu_spi_driver.h"  /* For spiState - to avoid flushing logs during SPI transactions */
+#endif
 
 #pragma GCC visibility push(default)
 
@@ -59,9 +61,13 @@ void KNS_OS_main(void)
 		 * UART TX at 115200 baud sends 1KB in ~90ms, but MGR_LOG_flush
 		 * limits to 50ms max per call. */
 #ifdef DEBUG
+#ifdef USE_SPI_DRIVER
 		if (spiState != SPICMD_PROCESS_CMD) {
 			MGR_LOG_flush();
 		}
+#else
+		MGR_LOG_flush();
+#endif
 #endif
 	}
 }

@@ -1,0 +1,178 @@
+##########################################################################################################################
+# Bootloader Makefile for STM32WL55
+##########################################################################################################################
+
+######################################
+# target
+######################################
+TARGET = bootloader
+
+######################################
+# building variables
+######################################
+DEBUG = 1
+OPT = -Os
+
+#######################################
+# paths
+#######################################
+BUILD_DIR = build
+BL_DIR = .
+ROOT_DIR = ..
+
+######################################
+# source
+######################################
+# C sources
+C_SOURCES =  \
+$(BL_DIR)/Src/bl_main.c \
+$(BL_DIR)/Src/bl_flash.c \
+$(BL_DIR)/Src/bl_crc.c \
+$(BL_DIR)/Src/bl_dfu.c \
+$(BL_DIR)/Src/bl_uart.c \
+$(BL_DIR)/Src/bl_spi.c \
+$(BL_DIR)/Src/bl_spi_protocol.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_cortex.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_rcc.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_rcc_ex.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_dma.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_dma_ex.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_flash.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_flash_ex.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_pwr.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_pwr_ex.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_uart.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_uart_ex.c \
+$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_spi.c \
+$(ROOT_DIR)/Core/Src/system_stm32wlxx.c
+
+# ASM sources
+ASM_SOURCES = $(BL_DIR)/startup_bl.s
+
+#######################################
+# binaries
+#######################################
+PREFIX = arm-none-eabi-
+ifdef GCC_PATH
+CC = $(GCC_PATH)/$(PREFIX)gcc
+AS = $(GCC_PATH)/$(PREFIX)gcc -x assembler-with-cpp
+CP = $(GCC_PATH)/$(PREFIX)objcopy
+SZ = $(GCC_PATH)/$(PREFIX)size
+else
+CC = $(PREFIX)gcc
+AS = $(PREFIX)gcc -x assembler-with-cpp
+CP = $(PREFIX)objcopy
+SZ = $(PREFIX)size
+endif
+HEX = $(CP) -O ihex
+BIN = $(CP) -O binary -S
+
+#######################################
+# CFLAGS
+#######################################
+CPU = -mcpu=cortex-m4
+MCU = $(CPU) -mthumb
+
+# C defines
+C_DEFS =  \
+-DCORE_CM4 \
+-DUSE_HAL_DRIVER \
+-DSTM32WL55xx \
+-DBL_BUILD \
+-DUSE_SPI_DRIVER
+
+ifeq ($(DEBUG), 1)
+C_DEFS += -DDEBUG
+endif
+
+# C includes
+C_INCLUDES =  \
+-I$(BL_DIR)/Inc \
+-I$(ROOT_DIR)/Core/Inc \
+-I$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Inc \
+-I$(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Inc/Legacy \
+-I$(ROOT_DIR)/Drivers/CMSIS/Device/ST/STM32WLxx/Include \
+-I$(ROOT_DIR)/Drivers/CMSIS/Include
+
+# compile gcc flags
+ASFLAGS = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections
+
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wextra -fdata-sections -ffunction-sections -fstack-usage
+CFLAGS += -Wno-unused-parameter
+
+ifeq ($(DEBUG), 1)
+CFLAGS += -g -gdwarf-2
+endif
+
+# Generate dependency information
+CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
+
+#######################################
+# LDFLAGS
+#######################################
+LDSCRIPT = $(BL_DIR)/STM32WL55XX_BL.ld
+
+LIBS = -lc -lm -lnosys
+LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
+
+#######################################
+# build the bootloader
+#######################################
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+	@echo '==== Bootloader build completed ===='
+	$(SZ) -t $(BUILD_DIR)/$(TARGET).elf
+
+# list of objects
+OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES:.c=.o)))
+vpath %.c $(sort $(dir $(C_SOURCES)))
+
+OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.s=.o)))
+vpath %.s $(sort $(dir $(ASM_SOURCES)))
+
+$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+
+$(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
+	$(AS) -c $(ASFLAGS) $< -o $@
+
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
+	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/%.hex: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
+	$(HEX) $< $@
+
+$(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
+	$(BIN) $< $@
+
+$(BUILD_DIR):
+	mkdir -p $@
+
+#######################################
+# clean up
+#######################################
+clean:
+	-rm -fR $(BUILD_DIR)
+
+#######################################
+# flash
+#######################################
+JLINK_SERIAL ?= 801035790
+JLINK_SPEED ?= 4000
+
+flash: $(BUILD_DIR)/$(TARGET).hex
+	@echo "Flashing bootloader to 0x08033000..."
+	JLinkExe -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript flash_bl.jlink
+
+flash_bl.jlink: $(BUILD_DIR)/$(TARGET).hex
+	@echo "h" > flash_bl.jlink
+	@echo "erase 0x08033000 0x0803B000" >> flash_bl.jlink
+	@echo "loadfile $(BUILD_DIR)/$(TARGET).hex" >> flash_bl.jlink
+	@echo "r" >> flash_bl.jlink
+	@echo "g" >> flash_bl.jlink
+	@echo "exit" >> flash_bl.jlink
+
+.PHONY: all clean flash
+
+-include $(wildcard $(BUILD_DIR)/*.d)

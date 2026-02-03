@@ -125,7 +125,7 @@
 /*!< Uncomment the following line if you need to relocate CPU1 CM4 and/or CPU2
      CM0+ vector table anywhere in Sram or Flash. Else vector table will be kept
      at address 0x00 which correspond to automatic remap of boot address selected */
-/* #define USER_VECT_TAB_ADDRESS */
+#define USER_VECT_TAB_ADDRESS   /* Enable VTOR relocation for bootloader app */
 #if defined(USER_VECT_TAB_ADDRESS)
 #ifdef CORE_CM0PLUS
  /*!< Uncomment this line for user vector table remap in Sram else user remap
@@ -154,8 +154,13 @@
 #else
 #define VECT_TAB_BASE_ADDRESS   FLASH_BASE      /*!< Vector Table base address field.
                                                      This value must be a multiple of 0x200. */
-#define VECT_TAB_OFFSET         0x00000000U     /*!< Vector Table base offset field.
-                                                     This value must be a multiple of 0x200. */
+#if defined(BL_BUILD)
+/* Bootloader runs at 0x08033000 */
+#define VECT_TAB_OFFSET         0x00033000U     /*!< Bootloader Vector Table offset */
+#else
+/* Application runs at 0x08000000 (default, for Kineis library compatibility) */
+#define VECT_TAB_OFFSET         0x00000000U     /*!< Application Vector Table offset */
+#endif
 #endif
 #endif
 #endif

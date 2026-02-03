@@ -21,44 +21,46 @@
 /*******************************************************************************
  * FLASH MEMORY LAYOUT (256 KB Total)
  *
+ * NEW LAYOUT: Bootloader AFTER application (Kineis library compatibility)
+ *
  * 0x08000000 +------------------+
+ *            | APPLICATION      | 204 KB (102 pages)
+ * 0x08033000 +------------------+
  *            | BOOTLOADER       | 32 KB (16 pages)
- * 0x08008000 +------------------+
- *            | APP_HEADER       | 256 bytes
- * 0x08008100 +------------------+
- *            | APPLICATION      | ~183 KB
  * 0x0803B000 +------------------+
- *            | FLASH_USER       | 18 KB (Kineis config)
- * 0x0803B800 +------------------+
- *            | BL_STATE         | 2 KB (Bootloader state/flags)
- * 0x0803C000 +------------------+
- *            | WEAR_LEVELING    | ~16 KB (counters)
+ *            | FLASH_USER       | 20 KB (Kineis config) - PRESERVED
  * 0x08040000 +------------------+ End of Flash
+ *
+ * Boot process:
+ * 1. MCU starts at 0x08000000 (application)
+ * 2. Application checks DFU flag in RTC backup register
+ * 3. If DFU requested, app jumps to bootloader at 0x08033000
+ * 4. Bootloader handles DFU, then resets to run new app
  ******************************************************************************/
 
-/* Bootloader region */
-#define BL_FLASH_BASE           0x08000000UL
+/* Application code region - starts at 0x08000000 for Kineis compatibility */
+#define APP_FLASH_BASE          0x08000000UL
+#define APP_FLASH_SIZE          0x33000UL       /* 204 KB */
+#define APP_FLASH_END           (APP_FLASH_BASE + APP_FLASH_SIZE - 1)
+#define APP_MAX_SIZE            APP_FLASH_SIZE
+
+/* Bootloader region - AFTER application */
+#define BL_FLASH_BASE           0x08033000UL
 #define BL_FLASH_SIZE           0x8000UL        /* 32 KB */
 #define BL_FLASH_END            (BL_FLASH_BASE + BL_FLASH_SIZE - 1)
 #define BL_FLASH_PAGES          16              /* 32KB / 2KB per page */
 
-/* Application header region */
-#define APP_HEADER_ADDR         0x08008000UL
-#define APP_HEADER_SIZE         0x100UL         /* 256 bytes */
-
-/* Application code region */
-#define APP_FLASH_BASE          0x08008100UL
-#define APP_FLASH_SIZE          0x32F00UL       /* ~183 KB */
-#define APP_FLASH_END           (APP_FLASH_BASE + APP_FLASH_SIZE - 1)
-#define APP_MAX_SIZE            APP_FLASH_SIZE
-
-/* Flash user data (Kineis config - shared with app) */
+/* Flash user data (Kineis config - shared with app) - PRESERVED AT ORIGINAL ADDRESS */
 #define FLASH_USER_START        0x0803B000UL
 #define FLASH_USER_SIZE_TOTAL   0x5000UL        /* 20 KB total */
 
-/* Bootloader state storage */
-#define BL_STATE_FLASH_ADDR     0x0803B800UL
+/* Bootloader state storage - first 2KB of flash_user */
+#define BL_STATE_FLASH_ADDR     0x0803B000UL
 #define BL_STATE_FLASH_SIZE     0x800UL         /* 2 KB (1 page) */
+
+/* In this layout, app starts directly at 0x08000000 (no separate header region) */
+#define APP_HEADER_ADDR         APP_FLASH_BASE  /* Same as app start (no header) */
+#define APP_HEADER_SIZE         0x00UL          /* No separate header region */
 
 /* Flash parameters - use BL_ prefix to avoid conflict with HAL */
 #define BL_FLASH_PAGE_SIZE      0x800UL         /* 2 KB per page */

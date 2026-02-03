@@ -99,6 +99,7 @@ C_SOURCES = \
 Core/Src/main.c \
 Core/Src/stm32wlxx_it.c \
 Core/Src/stm32wlxx_hal_msp.c \
+Core/Src/app_header.c \
 Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_rcc.c \
 Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_rcc_ex.c \
 Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_flash.c \
@@ -391,8 +392,15 @@ CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
 # LDFLAGS
 #######################################
 # link script
-LDSCRIPT = STM32WL55XX_FLASH_CM4.ld
-#LDSCRIPT = STM32WL55XX_FLASH_APP.ld
+# Memory layout with bootloader:
+#   App: 0x08000000 - 0x08032FFF (204KB) - at start for Kineis compatibility
+#   BL:  0x08033000 - 0x0803AFFF (32KB)  - bootloader after app
+#   User:0x0803B000 - 0x0803FFFF (20KB)  - flash user data preserved
+#
+# Use STM32WL55XX_FLASH_CM4.ld  for standalone app (full 236KB, no bootloader)
+# Use STM32WL55XX_FLASH_APP.ld  for app with bootloader (204KB, leaves room for BL)
+#LDSCRIPT = STM32WL55XX_FLASH_CM4.ld
+LDSCRIPT = STM32WL55XX_FLASH_APP.ld
 
 # libraries
 LIBS = -lc -lm -lnosys
@@ -477,24 +485,51 @@ $(BUILD_DIR)/%.hex: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 	$(HEX) $< $@
 
 $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
-	$(BIN) $< $@
+	$(CP) -O binary -S -j .app_header -j .isr_vector -j .text -j .rodata -j .ARM.extab -j .ARM \
+	    -j .preinit_array -j .init_array -j .fini_array -j .data2 -j .data $< $@
 
 #######################################
-# DFU binary (ROM only, excludes FLASH_USER)
+# DFU binary generation
 #######################################
-# DFU file contains only application code (0x08000000 - 0x0803AFFF)
+# DFU file contains:
+# - Application header at 0x08008000 (256 bytes)
+# - Application code at 0x08008100 (~183KB max)
 # FLASH_USER section (0x0803B000+) is preserved during DFU update
-DFU_SECTIONS = -j .isr_vector -j .text -j .rodata -j .ARM.extab -j .ARM \
-               -j .preinit_array -j .init_array -j .fini_array -j .data2 -j .data
 
-$(BUILD_DIR)/$(TARGET)_dfu.bin: $(BUILD_DIR)/$(TARGET).elf | $(BUILD_DIR)
-	@echo "-- Generating DFU binary (ROM only, FLASH_USER preserved) --"
-	$(CP) -O binary $(DFU_SECTIONS) $< $@
-	@echo "DFU file: $@ ($(shell stat -c%s $@ 2>/dev/null || stat -f%z $@) bytes)"
-	@echo "Flash range: 0x08000000 - 0x0803AFFF (236K max)"
+DFU_SCRIPT = Tools/create_dfu.py
+DFU_OUTPUT = $(BUILD_DIR)/$(TARGET)_dfu.bin
+DFU_LEGACY = $(BUILD_DIR)/$(TARGET)_dfu_legacy.bin
 
-dfu: $(BUILD_DIR)/$(TARGET)_dfu.bin
-	@echo "DFU binary ready: $(BUILD_DIR)/$(TARGET)_dfu.bin"
+# DFU with full header (recommended for production)
+$(DFU_OUTPUT): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
+	@echo "-- Generating DFU binary with header --"
+	python3 $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
+	@echo "DFU file: $@"
+	@echo "Flash address: 0x08008000 (header + code)"
+
+# DFU without header (legacy mode - for testing)
+$(DFU_LEGACY): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
+	@echo "-- Generating DFU binary (legacy mode, no header) --"
+	python3 $(DFU_SCRIPT) $< $@ --no-header
+	@echo "DFU file: $@"
+	@echo "Flash address: 0x08008100 (code only)"
+
+# Main DFU target
+dfu: $(DFU_OUTPUT)
+	@echo ""
+	@echo "=== DFU Binary Ready ==="
+	@echo "File: $(DFU_OUTPUT)"
+	@echo "Use this file for SPI DFU update from Zephyr"
+	@echo ""
+	@echo "DFU Protocol:"
+	@echo "  1. Send ERASE command"
+	@echo "  2. Send WRITE commands (256 byte chunks)"
+	@echo "  3. Send VERIFY command with CRC32"
+	@echo "  4. Send JUMP command to boot"
+
+# Legacy DFU target (without header)
+dfu-legacy: $(DFU_LEGACY)
+	@echo "DFU binary (legacy) ready: $(DFU_LEGACY)"
 
 $(KINEIS_DIR) $(BUILD_DIR) $(DOC_DIR):
 	mkdir -p $@
@@ -515,7 +550,7 @@ doc_clean:
 #######################################
 -include $(wildcard $(BUILD_DIR)/*.d)
 
-.PHONY: doc doc_clean dfu
+.PHONY: doc doc_clean dfu dfu-legacy
 
 #######################################
 # force empty target
