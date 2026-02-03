@@ -48,6 +48,13 @@ volatile SpiState spiState = SPICMD_INIT;
 MACStatus macStatus = MAC_OK;
 CmdValue cmdInProgress = CMD_NONE;
 
+/** @brief Flag to track if terminal MAC status (TX_DONE, TX_TIMEOUT, etc.) has been acknowledged
+ *  Terminal statuses are only cleared when:
+ *  - A new TX command is initiated (CMD_WRITETXMSG)
+ *  - The status is explicitly acknowledged via CMD_ACK_MAC_STATUS (if implemented)
+ *  This prevents losing TX_DONE if SPI desync causes missed responses */
+bool macStatusAcknowledged = true;
+
 /* Private functions ----------------------------------------------------------------------------*/
 
 /**
@@ -187,9 +194,14 @@ void MGR_SPI_CMD_state_handler(void)
                 /* Transaction complete - abort DMA and process */
                 MCU_SPI_DRIVER_abort_transfer();
 
-                if (bytes_received > 0) {
+                /* Minimum frame size: Magic + Seq + Cmd + Len + CRC = 5 bytes
+                 * Ignore partial frames (can happen during radio TX interrupts) */
+                if (bytes_received >= SPI_FRAME_MIN_SIZE) {
                     rxBuf.size = bytes_received;
                     MGR_SPI_CMD_process_transaction(rxBuf.data, bytes_received);
+                } else if (bytes_received > 0) {
+                    /* Partial frame - log and discard */
+                    MGR_LOG_DEBUG("Partial frame discarded: %u bytes\r\n", bytes_received);
                 }
 
                 /* Start next DMA transfer (response already in TX buffer) */
@@ -302,6 +314,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         }
         MCU_MISC_TCXO_Force_State(false);
         macStatus = MAC_TX_DONE;
+        macStatusAcknowledged = false;  /* Mark as not yet read by master */
         cbStatus = KNS_STATUS_OK;
         break;
 
@@ -312,6 +325,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
             macStatus = MAC_TX_DONE;
         else
             macStatus = MAC_TXACK_DONE;
+        macStatusAcknowledged = false;  /* Mark as not yet read by master */
         MCU_MISC_TCXO_Force_State(false);
         USERDATA_txFifoRemoveElt(spUserDataMsg);
         cbStatus = KNS_STATUS_OK;
@@ -323,6 +337,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         MCU_MISC_TCXO_Force_State(false);
         USERDATA_txFifoRemoveElt(spUserDataMsg);
         macStatus = MAC_TX_TIMEOUT;
+        macStatusAcknowledged = false;  /* Mark as not yet read by master */
         cbStatus = KNS_STATUS_TIMEOUT;
         break;
 
@@ -332,6 +347,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         kns_assert(spUserDataMsg->bIsToBeTransmit);
         USERDATA_txFifoRemoveElt(spUserDataMsg);
         macStatus = MAC_TXACK_TIMEOUT;
+        macStatusAcknowledged = false;  /* Mark as not yet read by master */
         cbStatus = KNS_STATUS_TIMEOUT;
         break;
 

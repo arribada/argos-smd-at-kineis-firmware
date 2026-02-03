@@ -1,12 +1,11 @@
 /*
- * Linker script for STM32WL55 Application (with bootloader)
- * Application starts at 0x08008100 (after 32KB bootloader + 256B header)
+ * Linker script for STM32WL55 Application (with bootloader after app)
+ * Application starts at 0x08000000 (for Kineis library compatibility)
  *
  * Memory Layout:
- * 0x08000000 - 0x08007FFF : Bootloader (32KB)
- * 0x08008000 - 0x080080FF : Application Header (256 bytes)
- * 0x08008100 - 0x0803AFFF : Application Code (~183KB)
- * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB)
+ * 0x08000000 - 0x08032FFF : Application Code (204KB)
+ * 0x08033000 - 0x0803AFFF : Bootloader (32KB)
+ * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB) - PRESERVED
  */
 
 /* Entry Point */
@@ -18,14 +17,18 @@ _estack = ORIGIN(RAM1) + LENGTH(RAM1);
 _Min_Heap_Size = 0x600;      /* required amount of heap */
 _Min_Stack_Size = 0x2000;    /* required amount of stack */
 
+/* Bootloader address for jump */
+_bootloader_addr = 0x08033000;
+
 /* Memory regions for application */
 MEMORY
 {
-  /* Application header at fixed address */
-  APP_HEADER  (r)   : ORIGIN = 0x08008000, LENGTH = 256
-  /* Application code starts after header */
-  ROM         (rx)  : ORIGIN = 0x08008100, LENGTH = 183K      /* ~183KB for app */
-  FLASH_USER  (rw)  : ORIGIN = 0x0803B000, LENGTH = 20K       /* Shared with BL */
+  /* Application code at start of flash (Kineis compatible) */
+  ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 204K      /* 204KB for app */
+  /* Bootloader region (not used by app, just reserved) */
+  /* BL_ROM   (rx)  : ORIGIN = 0x08033000, LENGTH = 32K */
+  /* Flash user data - PRESERVED at original location */
+  FLASH_USER  (rw)  : ORIGIN = 0x0803B000, LENGTH = 20K       /* 20KB user data */
   RAM1        (xrw) : ORIGIN = 0x20000000, LENGTH = 32K       /* Non-backup SRAM1 */
   RAM2        (xrw) : ORIGIN = 0x20008000, LENGTH = 32K       /* Backup SRAM2 */
   RTC_BKPR    (xrw) : ORIGIN = 0x4000B100, LENGTH = 128       /* RTC backup registers */
@@ -34,16 +37,7 @@ MEMORY
 /* Sections */
 SECTIONS
 {
-  /* Application header - placed at fixed address */
-  .app_header :
-  {
-    . = ALIGN(8);
-    KEEP(*(.app_header))
-    KEEP(*(.app_header*))
-    . = ALIGN(8);
-  } >APP_HEADER
-
-  /* Vector table */
+  /* Vector table at start of flash */
   .isr_vector :
   {
     . = ALIGN(8);
@@ -219,7 +213,7 @@ SECTIONS
     _ertc_bkpr = .;
   } >RTC_BKPR
 
-  /* Flash user data */
+  /* Flash user data - at fixed address */
   .flash_user_data :
   {
     . = ALIGN(8);

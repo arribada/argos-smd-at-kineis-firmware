@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "kns_types.h"
 #include "user_data.h"
@@ -28,6 +29,9 @@
 #ifdef USE_TX_LED // Light on a GPIO when TX occurs
 #include "main.h"
 #endif
+
+/* External variable for MAC status acknowledgment tracking */
+extern bool macStatusAcknowledged;
 
 uint16_t userTxPayloadSize;
 /* Private macro -------------------------------------------------------------*/
@@ -260,16 +264,20 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 			MGR_LOG_VERBOSE("[ERROR] TX queue full after ACK sent.\r\n");
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
 			macStatus = MAC_ERROR;
+			macStatusAcknowledged = true;  /* Allow reset on next read */
 			break;
 		case KNS_STATUS_OK:
-			/* Successfully pushed the event - TX is now in progress */
+			/* Successfully pushed the event - TX is now in progress
+			 * Reset any previous terminal status since we're starting a new TX */
 			macStatus = MAC_TX_IN_PROGRESS;
+			macStatusAcknowledged = true;  /* Previous status cleared, new TX started */
 			MGR_LOG_DEBUG("TX queued: %u bytes\r\n", userTxPayloadSize);
 			break;
 		default:
 			MGR_LOG_VERBOSE("[ERROR] Unknown status when pushing TX data.\r\n");
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
 			macStatus = MAC_ERROR;
+			macStatusAcknowledged = true;  /* Allow reset on next read */
 			break;
 	}
 

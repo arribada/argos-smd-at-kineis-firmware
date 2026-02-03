@@ -8,4 +8,5 @@ Kineis/doc/html/
 *.log/
 *.bak
 .claude/*
-                  
+Tools/*
+Bootloader/build/*

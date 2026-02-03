@@ -307,10 +307,12 @@ void LPUART1_IRQHandler(void)
 /**
   * @brief This function handles SUBGHZ Radio Interrupt.
   */
+volatile uint32_t subghz_irq_count = 0;
+
 void SUBGHZ_Radio_IRQHandler(void)
 {
   /* USER CODE BEGIN SUBGHZ_Radio_IRQn 0 */
-
+  subghz_irq_count++;
   /* USER CODE END SUBGHZ_Radio_IRQn 0 */
   HAL_SUBGHZ_IRQHandler(&hsubghz);
   /* USER CODE BEGIN SUBGHZ_Radio_IRQn 1 */

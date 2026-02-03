@@ -13,6 +13,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "kns_types.h"
 #include "mcu_spi_driver.h"
@@ -31,14 +32,14 @@
 #include "mcu_misc.h"
 #include "stm32wlxx_hal.h"
 
-/* Bootloader state flash address and flags (from bl_config.h) */
-#define BL_STATE_FLASH_ADDR     0x0803B800UL
-#define BL_FLAG_MAGIC           0x424C464CUL    /* "BLFL" */
-#define BL_FLAG_DFU_REQUEST     0x00000001UL
+/* DFU request function (defined in main.c) - uses RTC backup register */
+extern void request_dfu_mode(void);
 
 /* TCXO warmup limits - MEDIUM FIX: Replace magic number with constant */
 #define TCXO_MAX_WARMUP_MS      30000UL
 
+/* External variable for MAC status acknowledgment tracking */
+extern bool macStatusAcknowledged;
 
 /* Functions -----------------------------------------------------------------*/
 
@@ -196,6 +197,19 @@ bool bMGR_SPI_CMD_WRITEADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		return bMGR_SPI_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS, tx);
 	}
 
+	/* Validate data is not garbage (all zeros or all 0xFF - typical SPI desync patterns) */
+	bool all_zeros = true;
+	bool all_ff = true;
+	for (int i = 0; i < DEVICE_ADDR_LENGTH; i++) {
+		if (rx->data[i + 1] != 0x00) all_zeros = false;
+		if (rx->data[i + 1] != 0xFF) all_ff = false;
+	}
+	if (all_zeros || all_ff) {
+		MGR_LOG_DEBUG("[ERROR] ADDR data invalid: all %s (SPI desync?)\r\n",
+		              all_zeros ? "zeros" : "0xFF");
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
+	}
+
 	if (MCU_NVM_setAddr(&(rx->data[1])) != KNS_STATUS_OK)
 	{
 		MGR_LOG_DEBUG("Failed to write ADDR=%02x%02x%02x%02x\r\n", rx->data[1], rx->data[2],
@@ -258,6 +272,27 @@ bool bMGR_SPI_CMD_WRITESECKEYREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx) {
 
 bool bMGR_SPI_CMD_WRITESECKEY_cmd(SPI_Buffer *rx, SPI_Buffer *tx) {
 	HAL_StatusTypeDef ret = HAL_OK;
+
+	/* Validate received data size: cmd (1) + seckey (16) = 17 bytes minimum */
+	if (rx->size < CMD_WRITESECKEY_WAIT_LEN) {
+		MGR_LOG_DEBUG("[ERROR] SECKEY size invalid: received %u, expected %u\r\n",
+		              rx->size, CMD_WRITESECKEY_WAIT_LEN);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS, tx);
+	}
+
+	/* Validate data is not garbage (all zeros or all 0xFF - typical SPI desync patterns) */
+	bool all_zeros = true;
+	bool all_ff = true;
+	for (int i = 0; i < DSK_BYTE_LENGTH; i++) {
+		if (rx->data[i + 1] != 0x00) all_zeros = false;
+		if (rx->data[i + 1] != 0xFF) all_ff = false;
+	}
+	if (all_zeros || all_ff) {
+		MGR_LOG_DEBUG("[ERROR] SECKEY data invalid: all %s (SPI desync?)\r\n",
+		              all_zeros ? "zeros" : "0xFF");
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
+	}
+
 	char sec_key_str[33];
 	for (int i = 0; i < 16; i++) {
 		sprintf(&sec_key_str[i * 2], "%02x", rx->data[i+1]);
@@ -295,11 +330,32 @@ bool bMGR_SPI_CMD_READSPIMACSTATE_cmd(SPI_Buffer *rx, SPI_Buffer *tx){
 	tx->next_req = 2;
 	rx->next_req = 1;
 	ret = bMGR_SPI_DRIVER_writeread();
-	//Reset tx/rx state if MAC_OK
+
 	if (ret == HAL_OK)
 	{
-		// reset Mac status after read if
-		macStatus = MAC_OK;
+		/* Only reset non-terminal statuses immediately.
+		 * Terminal statuses (TX_DONE, TX_TIMEOUT, etc.) are kept until:
+		 * - A new TX command is initiated
+		 * - This prevents losing TX_DONE if SPI desync causes missed responses
+		 */
+		switch (macStatus) {
+		case MAC_TX_DONE:
+		case MAC_TXACK_DONE:
+		case MAC_TX_TIMEOUT:
+		case MAC_TXACK_TIMEOUT:
+		case MAC_ERROR:
+			/* Terminal status - mark as acknowledged but don't reset yet */
+			macStatusAcknowledged = true;
+			/* Status will be reset when new TX is initiated */
+			break;
+		case MAC_TX_IN_PROGRESS:
+			/* TX in progress - don't reset, keep polling */
+			break;
+		default:
+			/* Non-terminal status - reset immediately */
+			macStatus = MAC_OK;
+			break;
+		}
 		return true;
 	} else {
 		return false;
@@ -364,6 +420,13 @@ bool bMGR_SPI_CMD_WRITEID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 	uint32_t dev_id = 0;
 	memcpy(&dev_id, &(rx->data[1]), sizeof(uint32_t));
+
+	/* Validate data is not garbage (all zeros or all 0xFF - typical SPI desync patterns) */
+	if (dev_id == 0x00000000 || dev_id == 0xFFFFFFFF) {
+		MGR_LOG_DEBUG("[ERROR] ID data invalid: 0x%08lX (SPI desync?)\r\n", dev_id);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
+	}
+
 	if (MCU_NVM_setID(&dev_id) != KNS_STATUS_OK)
 	{
 		MGR_LOG_DEBUG("[ERROR] failed to set ID\r\n");
@@ -458,6 +521,27 @@ bool bMGR_SPI_CMD_WRITERCONF_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 	enum KNS_status_t status;
+
+	/* Validate received data size: cmd (1) + rconf (16) = 17 bytes minimum */
+	if (rx->size < CMD_WRITERCONF_WAIT_LEN) {
+		MGR_LOG_DEBUG("[ERROR] RCONF size invalid: received %u, expected %u\r\n",
+		              rx->size, CMD_WRITERCONF_WAIT_LEN);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS, tx);
+	}
+
+	/* Validate data is not garbage (all zeros or all 0xFF - typical SPI desync patterns) */
+	bool all_zeros = true;
+	bool all_ff = true;
+	for (int i = 0; i < 16; i++) {
+		if (rx->data[i + 1] != 0x00) all_zeros = false;
+		if (rx->data[i + 1] != 0xFF) all_ff = false;
+	}
+	if (all_zeros || all_ff) {
+		MGR_LOG_DEBUG("[ERROR] RCONF data invalid: all %s (SPI desync?)\r\n",
+		              all_zeros ? "zeros" : "0xFF");
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
+	}
+
 	char rconf_str[33];
 	for (int i = 0; i < 16; i++) {
 		sprintf(&rconf_str[i * 2], "%02x", rx->data[i+1]);
@@ -650,32 +734,10 @@ bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	/* Small delay to ensure SPI response is sent */
 	HAL_Delay(10);
 
-	/* Set DFU request flag in bootloader state flash */
-	/* Structure: magic (4 bytes) + flags (4 bytes) */
-	uint64_t dfu_state = ((uint64_t)BL_FLAG_DFU_REQUEST << 32) | BL_FLAG_MAGIC;
-
-	/* Unlock flash for writing */
-	HAL_FLASH_Unlock();
-
-	/* Erase the bootloader state page first */
-	FLASH_EraseInitTypeDef erase_init;
-	uint32_t page_error = 0;
-
-	erase_init.TypeErase = FLASH_TYPEERASE_PAGES;
-	erase_init.Page = (BL_STATE_FLASH_ADDR - 0x08000000UL) / 0x800UL;  /* Calculate page number */
-	erase_init.NbPages = 1;
-
-	if (HAL_FLASHEx_Erase(&erase_init, &page_error) == HAL_OK) {
-		/* Write DFU request flag (must write 64-bit doubleword) */
-		HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BL_STATE_FLASH_ADDR, dfu_state);
-	}
-
-	HAL_FLASH_Lock();
-
 	MGR_LOG_DEBUG("DFU flag set, resetting to bootloader...\r\n");
 
-	/* Trigger system reset */
-	NVIC_SystemReset();
+	/* Request DFU mode via RTC backup register and reset */
+	request_dfu_mode();
 
 	/* Should never reach here */
 	return true;

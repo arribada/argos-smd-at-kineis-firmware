@@ -58,10 +58,11 @@ volatile uint32_t startTickTimeout = 0;
 static volatile uint16_t last_rx_count = 0;
 static volatile uint32_t rx_stable_start_tick = 0;
 static volatile bool rx_activity_detected = false;
+static volatile uint16_t expected_transfer_size = SPI_TRANSACTION_SIZE;  /* Save transfer size */
 
 /* Stability timeout - transaction complete when no new bytes for this duration.
- * At 125kHz, 64 bytes takes ~4ms. Use 10ms for safe margin. */
-#define RX_STABLE_TIMEOUT_MS 10
+ * At 125kHz, 64 bytes takes ~4ms. Use 3ms for faster detection. */
+#define RX_STABLE_TIMEOUT_MS 3
 
 /* Private functions ---------------------------------------------------------*/
 
@@ -128,6 +129,7 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_arm_busy(void)
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
+    expected_transfer_size = SPI_TRANSACTION_SIZE;  /* Save for polling */
 
     /* Ensure SPI is ready */
     if (hspi_handle->State != HAL_SPI_STATE_READY) {
@@ -191,6 +193,7 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read(void)
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
+    expected_transfer_size = SPI_TRANSACTION_SIZE;  /* Save for polling */
 
     /* Ensure SPI is ready */
     if (hspi_handle->State != HAL_SPI_STATE_READY) {
@@ -219,8 +222,12 @@ HAL_StatusTypeDef MCU_SPI_DRIVER_read(void)
         spiState = SPICMD_IDLE;
         /* Response was sent, clear flag for next transaction */
         response_ready = false;
+        SPI_LOG_VERBOSE("DMA armed OK, SPI_CR1=0x%04lX\r\n",
+                        (unsigned long)hspi_handle->Instance->CR1);
     } else {
-        MGR_LOG_DEBUG("%s:: HAL error %d\r\n", __func__, ret);
+        MGR_LOG_DEBUG("DMA ARM FAIL: ret=%d err=0x%lX state=%u CR1=0x%04lX\r\n",
+                      ret, (unsigned long)hspi_handle->ErrorCode,
+                      hspi_handle->State, (unsigned long)hspi_handle->Instance->CR1);
         spiState = SPICMD_ERROR;
         spi_stats.error_count++;
         spi_stats.last_error = hspi_handle->ErrorCode;
@@ -235,8 +242,9 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
         return false;
     }
 
-    /* Get current bytes received from DMA */
-    uint16_t total = hspi_handle->RxXferSize;
+    /* Get current bytes received from DMA
+     * Use saved transfer size since HAL may reset RxXferSize after completion */
+    uint16_t total = expected_transfer_size;
     uint16_t remaining = 0;
 
     if (hspi_handle->hdmarx != NULL && hspi_handle->hdmarx->Instance != NULL) {
@@ -247,19 +255,19 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
 
     /* Detect new bytes received */
     if (current > last_rx_count) {
+        uint32_t tick_now = HAL_GetTick();
         rx_activity_detected = true;
         last_rx_count = current;
-        rx_stable_start_tick = HAL_GetTick();
+        rx_stable_start_tick = tick_now;
         return false;
     }
 
     /* Check if stable long enough */
     if (rx_activity_detected && current > 0) {
-        if (rx_stable_start_tick == 0) {
-            rx_stable_start_tick = HAL_GetTick();
-        }
+        uint32_t now = HAL_GetTick();
+        uint32_t elapsed = now - rx_stable_start_tick;
 
-        if ((HAL_GetTick() - rx_stable_start_tick) >= RX_STABLE_TIMEOUT_MS) {
+        if (elapsed >= RX_STABLE_TIMEOUT_MS) {
             *bytes_received = current;
 
             /* Reset for next transaction */
@@ -302,6 +310,16 @@ bool MCU_SPI_DRIVER_register(void *handle, int8_t (*rx_spi_evt_cb)(SPI_Buffer *r
         MGR_LOG_DEBUG("Transaction size: %u bytes\r\n", SPI_TRANSACTION_SIZE);
         MGR_LOG_DEBUG("Mode: %s\r\n",
                       (hspi_handle->Init.Mode == SPI_MODE_SLAVE) ? "SLAVE" : "MASTER");
+        MGR_LOG_DEBUG("CPOL: %s, CPHA: %s\r\n",
+                      (hspi_handle->Init.CLKPolarity == SPI_POLARITY_LOW) ? "LOW" : "HIGH",
+                      (hspi_handle->Init.CLKPhase == SPI_PHASE_1EDGE) ? "1EDGE" : "2EDGE");
+        MGR_LOG_DEBUG("NSS: %s\r\n",
+                      (hspi_handle->Init.NSS == SPI_NSS_HARD_INPUT) ? "HARD_INPUT" :
+                      (hspi_handle->Init.NSS == SPI_NSS_SOFT) ? "SOFT" : "OTHER");
+        MGR_LOG_DEBUG("DMA RX: %s, DMA TX: %s\r\n",
+                      (hspi_handle->hdmarx != NULL) ? "YES" : "NO",
+                      (hspi_handle->hdmatx != NULL) ? "YES" : "NO");
+        MGR_LOG_DEBUG("HAL_GetTick at init: %lu\r\n", (unsigned long)HAL_GetTick());
         MGR_LOG_DEBUG("========================================\r\n");
     } else if (handle == NULL && hspi_handle == NULL) {
         MGR_LOG_DEBUG("%s:: ERROR: invalid hspi ptr\r\n", __func__);
