@@ -54,6 +54,18 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 void SystemClock_Config(void);
+
+/**
+ * @brief Request DFU mode and reset to bootloader
+ *
+ * This function sets the DFU request flag in SRAM2 (backup RAM) and triggers
+ * a system reset. After reset, the application will detect the flag and
+ * jump to the bootloader for firmware update.
+ *
+ * @note Call this function from SPI command handler when DFU is requested.
+ * @note SRAM2 is preserved across system reset.
+ */
+void request_dfu_mode(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

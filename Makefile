@@ -376,9 +376,9 @@ C_DEFS +=  \
 endif
 
 # compile gcc flags
-ASFLAGS += $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
+ASFLAGS += $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
 
-CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2

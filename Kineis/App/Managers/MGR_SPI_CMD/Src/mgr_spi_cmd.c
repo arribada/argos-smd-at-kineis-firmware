@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "stm32wlxx_hal.h"
 #include "kns_types.h"
 #include "mgr_spi_cmd.h"
 #include "kineis_sw_conf.h"
@@ -66,6 +67,13 @@ bool macStatusAcknowledged = true;
 static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
 {
     bool ret = true;
+
+    /* Direct UART output for DFU_ENTER command (0x3F) */
+    if (cmd == 0x3F) {
+        extern UART_HandleTypeDef hlpuart1;
+        const char msg[] = "\r\n>>> PROCESSING CMD 0x3F <<<\r\n";
+        HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
+    }
 
     SPI_LOG_VERBOSE("%s:: Processing cmd=%u\r\n", __func__, cmd);
 

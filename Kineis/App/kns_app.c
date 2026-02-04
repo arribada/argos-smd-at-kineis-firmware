@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: no SPDX license
 /**
- * @file    kns_app.h
- * @brief   provide main application softwares using kineis sw satck
+ * @file    kns_app.c
+ * @brief   Provides main application software using Kineis SW stack
  * @author  Kineis
  */
 

@@ -35,8 +35,8 @@
 /* Entry Point */
 ENTRY(Reset_Handler)
 
-/* Highest address of the user mode stack */
-_estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
+/* Highest address of the user mode stack - MUST stop before RAM_NOINIT */
+_estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory = 0x2000FFF8 */
 
 _Min_Heap_Size = 0x200; /* required amount of heap  */
 _Min_Stack_Size = 0x400; /* required amount of stack */
@@ -44,9 +44,12 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Memories definition */
 MEMORY
 {
-  RAM    (xrw)   : ORIGIN = 0x20000000, LENGTH = 64K
-  RAM2   (xrw)   : ORIGIN = 0x10000000, LENGTH = 32K
-  FLASH   (rx)   : ORIGIN = 0x08000000, LENGTH = 256K
+  /* Main RAM - reduced by 8 bytes to reserve RAM_NOINIT at end */
+  RAM       (xrw)   : ORIGIN = 0x20000000, LENGTH = 64K - 8  /* 0x20000000 - 0x2000FFF7 */
+  /* RAM_NOINIT - DFU flag preserved across reset (shared with bootloader) */
+  RAM_NOINIT (xrw)  : ORIGIN = 0x2000FFF8, LENGTH = 8        /* 0x2000FFF8 - 0x2000FFFF */
+  RAM2      (xrw)   : ORIGIN = 0x10000000, LENGTH = 32K
+  FLASH     (rx)    : ORIGIN = 0x08000000, LENGTH = 256K
 }
 
 /* Sections */
@@ -173,6 +176,15 @@ SECTIONS
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
   } >RAM
+
+  /* Non-initialized data section - DFU flag shared with bootloader, not zeroed */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.noinit)
+    *(.noinit*)
+    . = ALIGN(4);
+  } >RAM_NOINIT
 
   /* Remove information from the compiler libraries */
   /DISCARD/ :
