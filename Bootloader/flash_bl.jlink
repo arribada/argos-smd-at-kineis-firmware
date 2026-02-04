@@ -1,6 +1,6 @@
 h
-erase 0x08000000 0x08008000
-loadfile build/bootloader.hex
+erase 0x08033000 0x0803B000
+loadfile Bootloader/build/bootloader.hex
 r
 g
 exit

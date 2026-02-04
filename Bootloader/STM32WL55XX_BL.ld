@@ -32,7 +32,8 @@ MEMORY
   /* Flash user for BL state - small portion at start of flash_user */
   FLASH_USER  (rw)  : ORIGIN = 0x0803B000, LENGTH = 2K        /* BL state storage */
   RAM1        (xrw) : ORIGIN = 0x20000000, LENGTH = 32K       /* SRAM1 */
-  RAM2        (xrw) : ORIGIN = 0x20008000, LENGTH = 32K       /* SRAM2 (backup) */
+  RAM2        (xrw) : ORIGIN = 0x20008000, LENGTH = 32K - 8   /* SRAM2 (backup) */
+  RAM_NOINIT  (xrw) : ORIGIN = 0x2000FFF8, LENGTH = 8         /* DFU flag (shared with app) */
 }
 
 /* Sections */
@@ -164,6 +165,15 @@ SECTIONS
     KEEP(*(.bl_state*))
     . = ALIGN(8);
   } >FLASH_USER
+
+  /* Non-initialized data section - DFU flag shared with app, not zeroed */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.noinit)
+    *(.noinit*)
+    . = ALIGN(4);
+  } >RAM_NOINIT
 
   /* Remove debug info from libraries */
   /DISCARD/ :
