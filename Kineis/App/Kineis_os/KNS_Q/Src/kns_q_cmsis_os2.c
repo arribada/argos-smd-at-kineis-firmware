@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: no SPDX license
 /**
- * @file    kns_q_freertos.c
+ * @file    kns_q_cmsis_os2.c
  * @brief   Configuration of queues used in kineis_swr
  * @author  William Begoc
  * @date    creation 21/07/2022
  * @version 1.0
- * @note
  */
 
 /**
  * @addtogroup KNS_Q
- * @brief Kineis SW queue utilities based on FreeRTOS
+ * @brief Kineis SW queue utilities based on CMSIS-RTOS2
  * @{
  */
 

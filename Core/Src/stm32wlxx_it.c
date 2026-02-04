@@ -110,7 +110,10 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  /* Direct UART output to detect HardFault */
+  extern UART_HandleTypeDef hlpuart1;
+  const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
+  HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {

@@ -19,7 +19,8 @@ MEMORY
   ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 236K       /* 256K - 20K */
   FLASH_USER  (rw)  : ORIGIN = 0x0803B000, LENGTH = 20K        /* 0x8000 bytes */
   RAM1   (xrw)     : ORIGIN = 0x20000000, LENGTH = 32K    /* Non-backup SRAM1 */
-  RAM2   (xrw)     : ORIGIN = 0x20008000, LENGTH = 32K    /* Backup SRAM2 */
+  RAM2   (xrw)     : ORIGIN = 0x20008000, LENGTH = 32K - 8  /* Backup SRAM2 (reduced for DFU flag) */
+  RAM_NOINIT (xrw) : ORIGIN = 0x2000FFF8, LENGTH = 8       /* DFU flag preserved across reset */
   RTC_BKPR (xrw)   : ORIGIN = 0x4000B100, LENGTH = 128     /* TAMP_BKPR register used to backup over LPM */
 
 }
@@ -201,6 +202,15 @@ SECTIONS
     . = ALIGN(8);
     _eRAM2_region = .;         /* define a global symbol at section end */
   } >RAM2
+
+  /* Non-initialized data section - DFU flag preserved across reset (shared with bootloader) */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.noinit)
+    *(.noinit*)
+    . = ALIGN(4);
+  } >RAM_NOINIT
 
   /* User_heap_stack section, used to check that there is enough "SRAM1" Ram  type memory left */
   ._user_heap_stack :

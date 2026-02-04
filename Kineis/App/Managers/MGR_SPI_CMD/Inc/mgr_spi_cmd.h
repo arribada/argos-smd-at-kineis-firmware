@@ -51,7 +51,7 @@ extern CmdValue cmdInProgress;   /**< Current SPI command in progress */
 
 /**
  * @brief Start the SPI command manager.
- *gg
+ *
  * @param[in] context Handler or pointer to the required hardware settings.
  * @retval true if successfully started, false otherwise.
  */

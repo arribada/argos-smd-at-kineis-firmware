@@ -24,12 +24,12 @@
  * effect of priorities declared on queues. An event delivered in a high-priority queues shall be
  * consumed as soon as possible by the dedicated task.
  *
- * Below is typical list of tasks imvolved in Kineis FW environement (kineis satck + application):
+ * Below is typical list of tasks involved in Kineis FW environment (kineis stack + application):
  * * KNS_OS_TASK_APP one application task defined by default. User can decide to add an extra
  *   application task through (\ref kns_os_conf.h) configuration file. Refer also to
  *   \ref kns_os_conf_page for details.
  * * KNS_OS_TASK_MAC Kineis stack main task
- * * KNS_OS_TASK_IDLE idle tsak entering LPM when other task are not active
+ * * KNS_OS_TASK_IDLE idle task entering LPM when other tasks are not active
  *
  * @section kns_os_subpages Sub-pages
  *

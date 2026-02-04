@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: no SPDX license
 /**
- * @file mgr_at_cmd_list_general.c
- * @author  Kineis
- * @brief subset of AT commands concerning general purpose (get ID, FW version, ...)
+ * @file mgr_spi_cmd_list_general.c
+ * @author Kineis
+ * @brief Subset of SPI commands for general purpose operations (get ID, FW version, etc.)
+ *
+ * This module implements SPI command handlers for device management operations including:
+ * - Device identification (ID, address, serial number)
+ * - Firmware version information
+ * - Configuration read/write (radio config, LPM, TCXO)
+ * - Security key management
+ * - DFU mode entry
  */
 
 /**
@@ -724,17 +731,25 @@ bool bMGR_SPI_CMD_WRITETCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	(void)rx;  /* Unused parameter - command only triggers reset */
-	MGR_LOG_DEBUG("Entering DFU bootloader mode...\r\n");
+
+	/* Direct UART output to confirm handler is called */
+	extern UART_HandleTypeDef hlpuart1;
+	const char msg[] = "\r\n>>> DFU_ENTER HANDLER CALLED <<<\r\n";
+	HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
+
+	MGR_LOG_DEBUG("=== DFU_ENTER (0x3F) RECEIVED! ===\r\n");
+	HAL_Delay(50);  /* Ensure log flushes */
 
 	/* Send acknowledgment before reset */
 	tx->data[0] = 1;  /* OK response */
 	tx->next_req = 1;
 	bMGR_SPI_DRIVER_writeread();
 
-	/* Small delay to ensure SPI response is sent */
-	HAL_Delay(10);
+	/* Wait for Zephyr to clock out the response (NOP transaction takes ~30-50ms) */
+	HAL_Delay(100);
 
-	MGR_LOG_DEBUG("DFU flag set, resetting to bootloader...\r\n");
+	MGR_LOG_DEBUG("DFU: Calling request_dfu_mode()...\r\n");
+	HAL_Delay(50);
 
 	/* Request DFU mode via RTC backup register and reset */
 	request_dfu_mode();

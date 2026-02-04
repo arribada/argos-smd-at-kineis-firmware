@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: no SPDX license */
 /**
- * @file mgr_at_cmd_list_general.h
- * @author
- * @brief Subset of AT commands concerning general purpose operations (e.g., get ID, firmware version, etc.)
+ * @file mgr_spi_cmd_list_general.h
+ * @author Kineis
+ * @brief Subset of SPI commands for general purpose operations (e.g., get ID, firmware version, etc.)
  *
  * This header file declares functions that handle SPI commands for general device management such as
  * retrieving version information, reading configurations, and writing parameters like addresses, IDs,

@@ -30,7 +30,8 @@ MEMORY
   /* Flash user data - PRESERVED at original location */
   FLASH_USER  (rw)  : ORIGIN = 0x0803B000, LENGTH = 20K       /* 20KB user data */
   RAM1        (xrw) : ORIGIN = 0x20000000, LENGTH = 32K       /* Non-backup SRAM1 */
-  RAM2        (xrw) : ORIGIN = 0x20008000, LENGTH = 32K       /* Backup SRAM2 */
+  RAM2        (xrw) : ORIGIN = 0x20008000, LENGTH = 32K - 8   /* Backup SRAM2 (reduced for DFU flag) */
+  RAM_NOINIT  (xrw) : ORIGIN = 0x2000FFF8, LENGTH = 8         /* DFU flag preserved across reset */
   RTC_BKPR    (xrw) : ORIGIN = 0x4000B100, LENGTH = 128       /* RTC backup registers */
 }
 
@@ -188,6 +189,15 @@ SECTIONS
     . = ALIGN(8);
     _eRAM2_region = .;
   } >RAM2
+
+  /* Non-initialized data - DFU flag preserved across reset (shared with bootloader) */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.noinit)
+    *(.noinit*)
+    . = ALIGN(4);
+  } >RAM_NOINIT
 
   /* User heap and stack */
   ._user_heap_stack :
