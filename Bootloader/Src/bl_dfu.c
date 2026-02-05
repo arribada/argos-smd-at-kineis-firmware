@@ -124,48 +124,38 @@ dfu_response_t bl_dfu_cmd_get_info(uint8_t* response, uint16_t* response_len)
         return DFU_RSP_ERROR;
     }
 
-    /* Build info response:
-     * - BL version (4 bytes)
-     * - App header valid flag (1 byte)
-     * - App version (4 bytes) if valid
-     * - App CRC (4 bytes) if valid
-     * - Flash size available (4 bytes)
+    /* Build info response matching Zephyr expected format (15 bytes):
+     * - Version major (1 byte)
+     * - Version minor (1 byte)
+     * - Version patch (1 byte)
+     * - App start address (4 bytes, little-endian)
+     * - App max size (4 bytes, little-endian)
+     * - Page size (4 bytes, little-endian)
      */
     uint8_t* ptr = response;
-    uint32_t bl_ver = bl_get_version();
-    const app_header_t* header = bl_get_app_header();
-    bool app_valid = bl_check_app_valid();
 
-    if (*response_len < 17) {
+    if (*response_len < 15) {
         return DFU_RSP_SIZE_ERROR;
     }
 
-    /* BL version */
-    memcpy(ptr, &bl_ver, 4);
+    /* BL version - separate bytes */
+    *ptr++ = BL_VERSION_MAJOR;
+    *ptr++ = BL_VERSION_MINOR;
+    *ptr++ = BL_VERSION_PATCH;
+
+    /* App start address (little-endian) */
+    uint32_t app_start = APP_FLASH_BASE;
+    memcpy(ptr, &app_start, 4);
     ptr += 4;
 
-    /* App valid flag */
-    *ptr++ = app_valid ? 1 : 0;
-
-    /* App version */
-    if (app_valid && header) {
-        memcpy(ptr, &header->app_version, 4);
-    } else {
-        memset(ptr, 0, 4);
-    }
+    /* App max size (little-endian) */
+    uint32_t max_size = APP_FLASH_SIZE;
+    memcpy(ptr, &max_size, 4);
     ptr += 4;
 
-    /* App CRC */
-    if (app_valid && header) {
-        memcpy(ptr, &header->app_crc32, 4);
-    } else {
-        memset(ptr, 0, 4);
-    }
-    ptr += 4;
-
-    /* Flash size available */
-    uint32_t flash_avail = APP_FLASH_SIZE;
-    memcpy(ptr, &flash_avail, 4);
+    /* Page size (little-endian) */
+    uint32_t page_size = BL_FLASH_PAGE_SIZE;
+    memcpy(ptr, &page_size, 4);
     ptr += 4;
 
     *response_len = (uint16_t)(ptr - response);

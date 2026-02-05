@@ -85,16 +85,6 @@ void MX_SUBGHZ_Init(void)
     HAL_StatusTypeDef status;
     uint8_t radio_status = 0;
 
-    /* Debug: Print NVIC state for SubGHz interrupt */
-    uint32_t nvic_iser = NVIC->ISER[1];  /* IRQ 44 is bit 12 of ISER[1] */
-    uint32_t nvic_ispr = NVIC->ISPR[1];  /* Pending register */
-    MGR_LOG_DEBUG("SUBGHZ NVIC: ISER[1]=0x%08lX (bit12=%d), ISPR[1]=0x%08lX\r\n",
-                  nvic_iser, (nvic_iser >> 12) & 1, nvic_ispr);
-
-    /* Debug: Print PWR state */
-    MGR_LOG_DEBUG("SUBGHZ PWR: CR3=0x%08lX, SR2=0x%08lX, SUBGHZSPICR=0x%08lX\r\n",
-                  PWR->CR3, PWR->SR2, PWR->SUBGHZSPICR);
-
     /* Wake up radio from sleep by toggling NSS */
     LL_PWR_UnselectSUBGHZSPI_NSS();
     for (volatile int i = 0; i < 5000; i++);
@@ -103,7 +93,7 @@ void MX_SUBGHZ_Init(void)
 
     /* Get radio status to check if it's responding */
     status = HAL_SUBGHZ_ExecGetCmd(&hsubghz, RADIO_GET_STATUS, &radio_status, 1);
-    MGR_LOG_DEBUG("SUBGHZ GetStatus: HAL=%d, status=0x%02X\r\n", status, radio_status);
+    (void)status;  /* Suppress unused warning */
 
     /* Clear any pending radio errors */
     uint8_t clr_errors[2] = {0x00, 0x00};
@@ -115,48 +105,16 @@ void MX_SUBGHZ_Init(void)
 
     /* Put radio in STANDBY_RC mode - known good state */
     uint8_t standby_cfg = STDBY_RC;
-    status = HAL_SUBGHZ_ExecSetCmd(&hsubghz, RADIO_SET_STANDBY, &standby_cfg, 1);
-    MGR_LOG_DEBUG("SUBGHZ SetStandby: HAL=%d\r\n", status);
+    HAL_SUBGHZ_ExecSetCmd(&hsubghz, RADIO_SET_STANDBY, &standby_cfg, 1);
 
-    /* Get status again to verify */
-    status = HAL_SUBGHZ_ExecGetCmd(&hsubghz, RADIO_GET_STATUS, &radio_status, 1);
-    MGR_LOG_DEBUG("SUBGHZ GetStatus after reset: HAL=%d, status=0x%02X\r\n", status, radio_status);
-
-    /* FORCE enable SubGHz interrupt - HAL_SUBGHZ_MspInit may not be called */
-    MGR_LOG_DEBUG("Trying HAL_NVIC_EnableIRQ(SUBGHZ_Radio_IRQn=%d)...\r\n", SUBGHZ_Radio_IRQn);
+    /* Enable SubGHz interrupt */
     HAL_NVIC_SetPriority(SUBGHZ_Radio_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(SUBGHZ_Radio_IRQn);
 
-    nvic_iser = NVIC->ISER[1];
-    MGR_LOG_DEBUG("After HAL: ISER[1]=0x%08lX (bit12=%d)\r\n", nvic_iser, (nvic_iser >> 12) & 1);
-
-    /* Try direct NVIC register write */
-    MGR_LOG_DEBUG("Trying direct NVIC->ISER[1] write...\r\n");
+    /* Direct NVIC register write to ensure IRQ is enabled */
     NVIC->ISER[1] = (1UL << 12);  /* Direct write for IRQ 44 */
-    __DSB();  /* Data Synchronization Barrier */
-    __ISB();  /* Instruction Synchronization Barrier */
-
-    nvic_iser = NVIC->ISER[1];
-    MGR_LOG_DEBUG("After direct write: ISER[1]=0x%08lX (bit12=%d)\r\n", nvic_iser, (nvic_iser >> 12) & 1);
-
-    /* Check if something is clearing it - read ICER */
-    uint32_t nvic_icer = NVIC->ICER[1];
-    MGR_LOG_DEBUG("NVIC ICER[1]=0x%08lX\r\n", nvic_icer);
-
-    /* Check VTOR - is vector table correct? */
-    MGR_LOG_DEBUG("SCB->VTOR=0x%08lX (expected 0x08008100)\r\n", SCB->VTOR);
-
-    /* Final check */
-    nvic_iser = NVIC->ISER[1];
-    if ((nvic_iser >> 12) & 1) {
-      MGR_LOG_DEBUG("SUBGHZ IRQ ENABLED OK!\r\n");
-    } else {
-      MGR_LOG_DEBUG("SUBGHZ IRQ STILL DISABLED - NVIC BLOCKED!\r\n");
-      /* Try one more time with CMSIS function */
-      NVIC_EnableIRQ(SUBGHZ_Radio_IRQn);
-      nvic_iser = NVIC->ISER[1];
-      MGR_LOG_DEBUG("After NVIC_EnableIRQ: ISER[1]=0x%08lX (bit12=%d)\r\n", nvic_iser, (nvic_iser >> 12) & 1);
-    }
+    __DSB();
+    __ISB();
   }
   /* USER CODE END SUBGHZ_Init 2 */
 

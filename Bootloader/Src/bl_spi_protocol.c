@@ -87,6 +87,18 @@ bool bl_spi_protocol_process(const uint8_t *data, uint16_t length)
             return false;
         }
 
+        /* Check for poll frame (all 0xAA) - master sends this to read response.
+         * In pipelined Protocol A+, after sending a command in Transaction 1,
+         * master sends idle pattern (all 0xAA) in Transaction 2 to read the
+         * response. We must detect and ignore these poll frames. */
+        if (data[BL_SPI_FRAME_SEQ_OFFSET] == BL_SPI_MAGIC_REQUEST &&
+            data[BL_SPI_FRAME_CMD_OFFSET] == BL_SPI_MAGIC_REQUEST &&
+            data[BL_SPI_FRAME_LEN_OFFSET] == BL_SPI_MAGIC_REQUEST) {
+            /* This is a poll frame - no command to process.
+             * The response is already in the TX buffer from previous command. */
+            return false;
+        }
+
         /* Parse header */
         protocol_ctx.request.sequence = data[BL_SPI_FRAME_SEQ_OFFSET];
         protocol_ctx.request.command = data[BL_SPI_FRAME_CMD_OFFSET];

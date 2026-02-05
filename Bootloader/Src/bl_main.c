@@ -21,6 +21,9 @@
 static bl_state_t current_state = BL_STATE_INIT;
 static bl_protocol_t detected_protocol = BL_PROTO_NONE;
 
+/* Early DFU flag detection - set in main() before any initialization */
+static volatile bool g_early_dfu_flag_detected = false;
+
 /* Application jump function pointer type */
 typedef void (*pFunction)(void);
 
@@ -34,20 +37,30 @@ static void bl_state_validate(void);
 static void bl_state_error(void);
 static void bl_hw_init(void);
 static void bl_hw_deinit(void);
+void Error_Handler(void);
+
+/* Forward declaration for early debug - exported for use by other modules */
+void early_debug_print(const char *str);
 
 void bl_init(void)
 {
+    early_debug_print("[BL] bl_init: HAL_Init...\r\n");
     /* Initialize HAL */
     HAL_Init();
 
+    early_debug_print("[BL] bl_init: bl_hw_init...\r\n");
     /* Configure system clock */
     bl_hw_init();
 
+    early_debug_print("[BL] bl_init: bl_flash_init...\r\n");
     /* Initialize subsystems */
     bl_flash_init();
+    early_debug_print("[BL] bl_init: bl_crc_init...\r\n");
     bl_crc_init();
+    early_debug_print("[BL] bl_init: bl_dfu_init...\r\n");
     bl_dfu_init();
 
+    early_debug_print("[BL] bl_init: done\r\n");
     current_state = BL_STATE_INIT;
 }
 
@@ -111,9 +124,9 @@ bl_protocol_t bl_get_protocol(void)
 
 static void bl_state_init(void)
 {
-    /* Check for DFU request flag */
-    if (bl_flash_is_dfu_requested()) {
-        /* Clear the flag */
+    /* Check for DFU request flag - use early detection result first (most reliable) */
+    if (g_early_dfu_flag_detected || bl_flash_is_dfu_requested()) {
+        /* Clear the flag (may have already been cleared in main) */
         bl_flash_clear_dfu_request();
         /* Go directly to DFU mode */
         current_state = BL_STATE_DETECT_PROTOCOL;
@@ -137,18 +150,32 @@ static void bl_state_check_app(void)
 static void bl_state_detect_protocol(void)
 {
     uint32_t start_tick = HAL_GetTick();
+    static uint32_t last_print_tick = 0;
 
+    early_debug_print("[BL] detect_protocol: Initializing UART...\r\n");
     /* Initialize both interfaces */
     bl_uart_init();
+    early_debug_print("[BL] detect_protocol: Initializing SPI...\r\n");
     bl_spi_init();
 
     /* Start reception on both */
+    early_debug_print("[BL] detect_protocol: Starting RX...\r\n");
     bl_uart_start_rx();
     bl_spi_start_rx();
 
+    early_debug_print("[BL] detect_protocol: Waiting for activity...\r\n");
+    last_print_tick = HAL_GetTick();
+
     /* Wait for activity on either interface */
     while ((HAL_GetTick() - start_tick) < BL_DETECTION_TIMEOUT_MS) {
+        /* Print progress every second */
+        if ((HAL_GetTick() - last_print_tick) >= 1000) {
+            early_debug_print(".");
+            last_print_tick = HAL_GetTick();
+        }
+
         if (bl_uart_has_data()) {
+            early_debug_print("\r\n[BL] UART activity detected!\r\n");
             detected_protocol = BL_PROTO_UART;
             bl_spi_stop_rx();
             bl_spi_deinit();
@@ -157,9 +184,11 @@ static void bl_state_detect_protocol(void)
         }
 
         if (bl_spi_has_data()) {
+            early_debug_print("\r\n[BL] SPI activity detected!\r\n");
             detected_protocol = BL_PROTO_SPI;
             bl_uart_stop_rx();
-            bl_uart_deinit();
+            /* NOTE: Do NOT call bl_uart_deinit() - it disables LPUART1 which
+             * is used by early_debug_print() for debug output. Just stop RX. */
             current_state = BL_STATE_DFU_SPI;
             return;
         }
@@ -320,6 +349,12 @@ static void bl_state_dfu_uart(void)
 
 static void bl_state_dfu_spi(void)
 {
+    static bool first_call = true;
+    if (first_call) {
+        first_call = false;
+        early_debug_print("[BL] DFU_SPI state entered\r\n");
+    }
+
     /* Process SPI commands */
     if (bl_spi_process()) {
         uint8_t spi_cmd = bl_spi_get_command();
@@ -373,6 +408,10 @@ static void bl_state_dfu_spi(void)
                 case SPI_CMD_DFU_GET_STATUS:dfu_cmd = DFU_CMD_GET_STATUS; break;
                 case SPI_CMD_DFU_SET_HEADER:dfu_cmd = DFU_CMD_SET_HEADER; break;
                 case SPI_CMD_DFU_ABORT:     dfu_cmd = DFU_CMD_ABORT; break;
+                case SPI_CMD_DFU_ENTER:
+                    /* DFU_ENTER received while already in bootloader - just respond OK */
+                    bl_spi_send_response(DFU_RSP_OK, NULL, 0);
+                    return;
                 default: break;
             }
         }
@@ -663,13 +702,163 @@ static void bl_hw_deinit(void)
     HAL_DeInit();
 }
 
+/* Simple early debug output via LPUART1 (same as app uses)
+ * LPUART1 is on PA2 (TX) / PA3 (RX) with AF8
+ * Switches to HSI 16MHz for predictable baud rate */
+static void early_debug_init(void)
+{
+    /* When coming from app, the clock could be anything (MSI at various ranges,
+     * HSI, PLL, etc.). To get reliable UART output, switch to HSI 16MHz first. */
+
+    /* Enable HSI */
+    RCC->CR |= RCC_CR_HSION;
+    while (!(RCC->CR & RCC_CR_HSIRDY));  /* Wait for HSI ready */
+
+    /* Switch system clock to HSI */
+    RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | (0x01UL << RCC_CFGR_SW_Pos);
+    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != (0x01UL << RCC_CFGR_SWS_Pos));
+
+    /* Now clock is HSI 16MHz - enable clocks for GPIO and LPUART1 */
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+    RCC->APB1ENR2 |= RCC_APB1ENR2_LPUART1EN;  /* LPUART1 is on APB1ENR2 */
+    __DSB();
+    for (volatile int i = 0; i < 100; i++);  /* Small delay for clock stabilization */
+
+    /* Reset LPUART1 first to clear any previous configuration */
+    RCC->APB1RSTR2 |= RCC_APB1RSTR2_LPUART1RST;
+    RCC->APB1RSTR2 &= ~RCC_APB1RSTR2_LPUART1RST;
+
+    /* PA2 = LPUART1_TX, AF8 (same as app uses) */
+    GPIOA->MODER &= ~(3UL << (2 * 2));
+    GPIOA->MODER |= (2UL << (2 * 2));  /* AF mode */
+    GPIOA->AFR[0] &= ~(0xFUL << (2 * 4));
+    GPIOA->AFR[0] |= (8UL << (2 * 4));  /* AF8 for LPUART1 */
+
+    /* Configure LPUART1: 115200 baud @ 16MHz HSI
+     * LPUART BRR formula: BRR = 256 * LPUART_CLK / BAUD
+     * At 16MHz HSI: BRR = 256 * 16000000 / 115200 = 35556 (0x8AE4) */
+    LPUART1->BRR = 35556;
+    LPUART1->CR1 = USART_CR1_TE | USART_CR1_UE;
+
+    /* Wait for USART to be ready */
+    while (!(LPUART1->ISR & USART_ISR_TEACK));
+}
+
+void early_debug_print(const char *str)
+{
+    while (*str) {
+        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+        LPUART1->TDR = *str++;
+    }
+    while (!(LPUART1->ISR & USART_ISR_TC));
+}
+
+/* Helper to print a hex digit */
+static void early_debug_hex_char(uint8_t nib)
+{
+    char c = (nib < 10) ? ('0' + nib) : ('A' + nib - 10);
+    while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+    LPUART1->TDR = c;
+}
+
+/* Helper to print a 32-bit hex value */
+static void early_debug_hex32(uint32_t val)
+{
+    for (int i = 7; i >= 0; i--) {
+        early_debug_hex_char((val >> (i * 4)) & 0xF);
+    }
+}
+
 /* Main entry point for bootloader */
 int main(void)
 {
+    /* ABSOLUTE FIRST: Capture SRAM flag before ANYTHING else touches memory */
+    volatile uint32_t early_sram_flag = *((volatile uint32_t *)0x2000FFF8);
+    volatile uint32_t early_tamp_flag;
+
+    /* Enable backup domain to read TAMP register */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
+    PWR->CR1 |= PWR_CR1_DBP;
+    for (volatile int i = 0; i < 100; i++);
+    early_tamp_flag = *((volatile uint32_t *)0x4000B100);
+
+    /* CRITICAL: Set vector table to bootloader's address BEFORE anything else.
+     * When app jumps to bootloader, VTOR may still point to app's vector table.
+     * If any interrupt fires before this, it'll use wrong handlers and crash. */
+    SCB->VTOR = BL_FLASH_BASE;
+    __DSB();
+    __ISB();
+
+    /* Now safe to enable interrupts - they'll use bootloader's vector table */
+    __enable_irq();
+
+    /* Initialize early debug output FIRST for diagnostic visibility */
+    early_debug_init();
+    early_debug_print("\r\n[BL] === Bootloader v1.0 started ===\r\n");
+
+    /* Print the VERY EARLY captured flag values */
+    early_debug_print("[BL] EARLY capture (before any init): SRAM=0x");
+    early_debug_hex32(early_sram_flag);
+    early_debug_print(" TAMP=0x");
+    early_debug_hex32(early_tamp_flag);
+    early_debug_print("\r\n");
+
+    /* Print BSS boundaries to verify they don't touch 0x2000FFF8 */
+    extern uint32_t _sbss, _ebss, _sdata, _edata;
+    early_debug_print("[BL] BSS: 0x");
+    early_debug_hex32((uint32_t)&_sbss);
+    early_debug_print(" - 0x");
+    early_debug_hex32((uint32_t)&_ebss);
+    early_debug_print(" DATA: 0x");
+    early_debug_hex32((uint32_t)&_sdata);
+    early_debug_print(" - 0x");
+    early_debug_hex32((uint32_t)&_edata);
+    early_debug_print("\r\n");
+
+    /* If early SRAM flag was valid, use it directly! */
+    if (early_sram_flag == 0x4446554D || early_tamp_flag == 0x4446554D) {
+        early_debug_print("[BL] *** DFU FLAG FOUND EARLY - FORCING DFU MODE ***\r\n");
+        g_early_dfu_flag_detected = true;
+        /* Clear the flags now */
+        *((volatile uint32_t *)0x2000FFF8) = 0;
+        *((volatile uint32_t *)0x4000B100) = 0;
+        __DSB();
+    }
+
+    /* Visual indicator removed - PB5 is used for SPI1_MOSI */
+
+    /* Check DFU flag before full init */
+    early_debug_print("[BL] Checking DFU flags...\r\n");
+    {
+        /* Enable backup domain access */
+        RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
+        PWR->CR1 |= PWR_CR1_DBP;
+        for (volatile int i = 0; i < 1000; i++);
+
+        uint32_t tamp_flag = *((volatile uint32_t *)0x4000B100);
+        uint32_t sram_flag = *((volatile uint32_t *)0x2000FFF8);
+
+        early_debug_print("[BL] TAMP=0x");
+        early_debug_hex32(tamp_flag);
+        early_debug_print(" SRAM=0x");
+        early_debug_hex32(sram_flag);
+        early_debug_print("\r\n");
+
+        if (sram_flag == 0x4446554D || tamp_flag == 0x4446554D) {
+            early_debug_print("[BL] DFU flag FOUND - entering DFU mode\r\n");
+        } else {
+            early_debug_print("[BL] No DFU flag - will check app validity\r\n");
+        }
+    }
+
+    early_debug_print("[BL] Initializing HAL and peripherals...\r\n");
     bl_init();
+    early_debug_print("[BL] Init complete, entering main loop\r\n");
     bl_run();
 
     /* Should never reach here */
+    early_debug_print("[BL] ERROR: bl_run() returned!\r\n");
+    while (1);
     return 0;
 }
 
@@ -689,6 +878,14 @@ void Error_Handler(void)
 }
 
 /**
+ * @brief SysTick interrupt handler - required by HAL for timeouts
+ */
+void SysTick_Handler(void)
+{
+    HAL_IncTick();
+}
+
+/**
  * @brief Assert failed callback for HAL
  */
 void assert_failed(uint8_t *file, uint32_t line)
@@ -697,6 +894,35 @@ void assert_failed(uint8_t *file, uint32_t line)
     (void)line;
     /* In bootloader, just reset on assertion failure */
     NVIC_SystemReset();
+}
+
+/**
+ * @brief HardFault handler - provides debug info before hanging
+ * This overrides the weak Default_Handler from startup
+ */
+void HardFault_Handler(void)
+{
+    /* Try to output debug message if LPUART1 was initialized */
+    const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
+    for (int i = 0; msg[i]; i++) {
+        /* Check if LPUART1 is enabled and try to send */
+        if (LPUART1->CR1 & USART_CR1_UE) {
+            while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+            LPUART1->TDR = msg[i];
+        }
+    }
+    if (LPUART1->CR1 & USART_CR1_UE) {
+        while (!(LPUART1->ISR & USART_ISR_TC));
+    }
+
+    /* Toggle GPIO to indicate fault visually */
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOBEN;
+    GPIOB->MODER &= ~(3UL << (5 * 2));
+    GPIOB->MODER |= (1UL << (5 * 2));
+    while (1) {
+        GPIOB->ODR ^= (1UL << 5);
+        for (volatile int i = 0; i < 500000; i++);
+    }
 }
 
 /* Note: DMA functions are provided by stm32wlxx_hal_dma.c

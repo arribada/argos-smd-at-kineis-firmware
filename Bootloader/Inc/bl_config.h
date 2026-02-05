@@ -80,8 +80,8 @@
 #define BL_DETECTION_TIMEOUT_MS     3000        /* 3 seconds */
 #define BL_DEFAULT_PROTOCOL         BL_PROTO_UART
 
-/* UART configuration */
-#define BL_UART_BAUDRATE            9600
+/* UART configuration - 115200 to match app's LPUART1 settings */
+#define BL_UART_BAUDRATE            115200
 #define BL_UART_WORDLENGTH          UART_WORDLENGTH_8B
 #define BL_UART_STOPBITS            UART_STOPBITS_1
 #define BL_UART_PARITY              UART_PARITY_NONE
@@ -98,17 +98,23 @@
 
 /* SPI transaction detection timeout (ms)
  * After receiving bytes, wait this long with no new bytes before
- * considering the transaction complete. Master must wait at least
- * this + processing time (~5ms) + margin before reading response. */
-#define BL_SPI_RX_STABLE_TIMEOUT_MS 10
+ * considering the transaction complete. With DMA callback fast path,
+ * this timeout is only used as fallback. Match app's 3ms timeout. */
+#define BL_SPI_RX_STABLE_TIMEOUT_MS 3
 
 /* Retry counts */
 #define BL_FLASH_WRITE_RETRIES      3
 #define BL_COMM_RETRIES             3
 
+/* SPI transaction size - MUST match Zephyr driver (64 bytes fixed) */
+#define BL_SPI_TRANSACTION_SIZE     64
+
 /* SPI idle pattern - sent on MISO when no response data
  * 0xAA (10101010) is easy to identify on scope and distinguishes from 0x00/0xFF */
 #define BL_SPI_IDLE_PATTERN         0xAA
+
+/* SPI busy pattern - sent while processing command */
+#define BL_SPI_BUSY_PATTERN         0xBB
 
 /*******************************************************************************
  * DFU COMMAND IDs (Unified for UART and SPI)

@@ -105,6 +105,8 @@ uint32_t g_dfu_debug_val = 0;
 uint32_t g_dfu_debug_bl_stack = 0;
 uint32_t g_dfu_debug_bl_entry = 0;
 uint32_t g_dfu_debug_reason = 0;  /* 0=flag not set, 1=flag set but BL invalid, 2=jumped */
+uint32_t g_dfu_debug_sram = 0;    /* SRAM DFU flag value at startup */
+uint32_t g_dfu_debug_bdcr = 0;    /* RCC_BDCR at time of check (before HAL_Init) */
 
 /* USER CODE END Includes */
 
@@ -297,41 +299,101 @@ static void IDLE_task(void)
 #define BOOTLOADER_ADDR         0x08033000UL
 #define DFU_REQUEST_MAGIC       0x4446554DUL  /* "DFUM" - DFU Mode request */
 
-/* DFU flag using RTC Backup Register (survives ALL resets including power cycle if VBAT)
- * Using BKP19R (last register) to avoid conflicts with LPM which uses BKP0R/BKP1R
- * TAMP_BKP19R at offset 0x14C from TAMP base (0x4000B000) = 0x4000B14C
- * SRAM2 is cleared on system reset, but backup registers survive! */
-#define TAMP_BASE_ADDR          0x4000B000UL
-#define TAMP_BKP19R_OFFSET      0x14CUL  /* BKP19R - last backup register, unused by LPM */
-#define DFU_FLAG_ADDR           (TAMP_BASE_ADDR + TAMP_BKP19R_OFFSET)
-#define DFU_FLAG_PTR            (*((volatile uint32_t *)DFU_FLAG_ADDR))
+/* DFU flag using RTC Backup Register (survives all resets except VBAT removal)
+ * TAMP_BKP0R is used for DFU flag - more reliable than SRAM
+ * The bootloader must also check this register */
+#define TAMP_BKP0R_ADDR         0x4000B100UL  /* TAMP_BASE + 0x100 */
+#define TAMP_BKP1R_ADDR         0x4000B104UL  /* TAMP_BASE + 0x104 */
+#define DFU_FLAG_PTR            (*((volatile uint32_t *)TAMP_BKP0R_ADDR))
+#define DFU_FLAG_MAGIC2         (*((volatile uint32_t *)TAMP_BKP1R_ADDR))
+#define DFU_FLAG_ADDR           TAMP_BKP0R_ADDR
+#define DFU_MAGIC2_VALUE        0x4D465544UL  /* "DUFU" - reverse for verification */
 
-/* Enable access to backup domain (required before accessing TAMP_BKPxR) */
-static void enable_backup_domain_access(void)
+/* Also keep SRAM address for bootloader compatibility (update bootloader later) */
+#define SRAM_DFU_FLAG_ADDR      0x2000FFF8UL
+#define SRAM_DFU_FLAG_PTR       (*((volatile uint32_t *)SRAM_DFU_FLAG_ADDR))
+
+/**
+ * @brief Check and fix SRAM_RST option byte to preserve SRAM across reset
+ * @note  This must be called early to ensure DFU flag survives reset
+ *        The SRAM_RST bit (bit 25) in FLASH_OPTR controls SRAM clearing:
+ *        - 0: SRAM1/SRAM2 erased on system reset (default!)
+ *        - 1: SRAM preserved on system reset
+ */
+static void ensure_sram_preserved_on_reset(void)
 {
-    /* Enable RTCAPB clock (required to access TAMP backup registers) */
-    __HAL_RCC_RTCAPB_CLK_ENABLE();
+    uint32_t optr = FLASH->OPTR;
 
-    /* Enable backup domain access via PWR DBP bit */
-    HAL_PWR_EnableBkUpAccess();
+    /* Check if SRAM_RST bit is set (bit 25 = 0x02000000) */
+    if ((optr & FLASH_OPTR_SRAM_RST) == 0) {
+        /* SRAM will be erased on reset - need to fix this! */
+        /* Unlock FLASH */
+        if ((FLASH->CR & FLASH_CR_LOCK) != 0U) {
+            FLASH->KEYR = 0x45670123U;
+            FLASH->KEYR = 0xCDEF89ABU;
+        }
 
-    /* Wait for backup domain write protection to be disabled */
-    while ((PWR->CR1 & PWR_CR1_DBP) == 0U) {
-        /* Wait for DBP bit to be set */
+        /* Unlock Option bytes */
+        if ((FLASH->CR & FLASH_CR_OPTLOCK) != 0U) {
+            FLASH->OPTKEYR = 0x08192A3BU;
+            FLASH->OPTKEYR = 0x4C5D6E7FU;
+        }
+
+        /* Wait for flash to be ready */
+        while ((FLASH->SR & FLASH_SR_BSY) != 0U);
+
+        /* Set SRAM_RST bit to preserve SRAM on reset */
+        FLASH->OPTR = optr | FLASH_OPTR_SRAM_RST;
+
+        /* Start option byte programming */
+        FLASH->CR |= FLASH_CR_OPTSTRT;
+
+        /* Wait for operation to complete */
+        while ((FLASH->SR & FLASH_SR_BSY) != 0U);
+
+        /* Lock flash */
+        FLASH->CR |= FLASH_CR_OPTLOCK;
+        FLASH->CR |= FLASH_CR_LOCK;
+
+        /* Trigger option byte reload by system reset */
+        /* Note: The change takes effect after reset */
+        NVIC_SystemReset();
     }
+}
+
+/**
+ * @brief Enable access to RTC backup registers (must be called before accessing TAMP_BKPxR)
+ * @note  This uses direct register access to avoid HAL dependencies
+ *        On STM32WL, PWR peripheral is always on, no clock enable needed
+ */
+static void enable_backup_access(void)
+{
+    /* Enable RTC APB clock - required to access TAMP registers */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
+    __DSB();
+    /* Small delay for clock to settle (important at early startup) */
+    for (volatile int i = 0; i < 100; i++);
+
+    /* Enable backup domain access (PWR is always accessible on STM32WL) */
+    PWR->CR1 |= PWR_CR1_DBP;
+    /* Wait for backup domain access to be enabled */
+    while ((PWR->CR1 & PWR_CR1_DBP) == 0);
+    __DSB();
+    /* Additional delay for backup domain to be fully accessible */
+    for (volatile int i = 0; i < 100; i++);
 }
 
 /**
  * @brief Check if DFU mode is requested and jump to bootloader if needed
  * @note  This should be called very early in main(), before any initialization
- *        Uses RTC backup register (BKP19R) which survives all resets
+ *        Uses RTC backup register which survives system reset
  */
 static void check_dfu_request(void)
 {
     typedef void (*pFunction)(void);
 
-    /* Enable backup domain access to read TAMP_BKP19R */
-    enable_backup_domain_access();
+    /* Enable access to backup registers first */
+    enable_backup_access();
 
     /* DEBUG: Check flag address and value */
     extern uint32_t g_dfu_debug_addr;
@@ -339,18 +401,28 @@ static void check_dfu_request(void)
     extern uint32_t g_dfu_debug_bl_stack;
     extern uint32_t g_dfu_debug_bl_entry;
     extern uint32_t g_dfu_debug_reason;
+    extern uint32_t g_dfu_debug_sram;
+    extern uint32_t g_dfu_debug_bdcr;
 
     g_dfu_debug_addr = DFU_FLAG_ADDR;
     g_dfu_debug_val = DFU_FLAG_PTR;
+    g_dfu_debug_sram = SRAM_DFU_FLAG_PTR;  /* Also check SRAM flag */
+    g_dfu_debug_bdcr = RCC->BDCR;          /* Capture RCC_BDCR before HAL_Init */
     g_dfu_debug_bl_stack = *(__IO uint32_t*)BOOTLOADER_ADDR;
     g_dfu_debug_bl_entry = *(__IO uint32_t*)(BOOTLOADER_ADDR + 4);
 
-    /* Check DFU request flag in SRAM2 (backup RAM) */
+    /* Check DFU request flag - try TAMP first, then SRAM as fallback */
     uint32_t dfu_flag = DFU_FLAG_PTR;
+    uint32_t dfu_magic2 = DFU_FLAG_MAGIC2;
+    uint32_t sram_flag = SRAM_DFU_FLAG_PTR;
 
-    if (dfu_flag == DFU_REQUEST_MAGIC) {
-        /* Clear the flag */
+    /* Check TAMP registers first, then SRAM as fallback */
+    if ((dfu_flag == DFU_REQUEST_MAGIC && dfu_magic2 == DFU_MAGIC2_VALUE) ||
+        (sram_flag == DFU_REQUEST_MAGIC)) {
+        /* Clear all flags */
         DFU_FLAG_PTR = 0;
+        DFU_FLAG_MAGIC2 = 0;
+        SRAM_DFU_FLAG_PTR = 0;
 
         /* Get bootloader stack pointer and reset handler */
         uint32_t bl_stack = g_dfu_debug_bl_stack;
@@ -392,54 +464,75 @@ static void check_dfu_request(void)
 }
 
 /**
- * @brief Request DFU mode and reset to bootloader
- * @note  Call this function from SPI command handler when DFU is requested
+ * @brief Request DFU mode - DIRECT JUMP to bootloader (no reset)
+ * @note  This avoids the reset which can be affected by debugger interference
  */
 void request_dfu_mode(void)
 {
-    /* Direct UART for reliable debug output */
+    typedef void (*pFunction)(void);
     extern UART_HandleTypeDef hlpuart1;
     char buf[80];
 
-    /* Step 1: Entry */
-    const char m1[] = "\r\n[DFU] STEP1: Entering request_dfu_mode()\r\n";
+    const char m1[] = "\r\n[DFU] DIRECT JUMP TO BOOTLOADER (no reset)\r\n";
     HAL_UART_Transmit(&hlpuart1, (uint8_t*)m1, sizeof(m1)-1, 100);
 
-    /* Enable backup domain access before writing to TAMP_BKP19R */
-    enable_backup_domain_access();
+    /* Get bootloader entry point */
+    uint32_t bl_stack = *(__IO uint32_t*)BOOTLOADER_ADDR;
+    uint32_t bl_entry = *(__IO uint32_t*)(BOOTLOADER_ADDR + 4);
 
-    /* Step 2: Write flag */
-    snprintf(buf, sizeof(buf), "[DFU] STEP2: Writing 0x%08lX to 0x%08lX (BKP19R)\r\n",
-             (unsigned long)DFU_REQUEST_MAGIC, (unsigned long)DFU_FLAG_ADDR);
+    snprintf(buf, sizeof(buf), "[DFU] BL @0x%08lX: stack=0x%08lX entry=0x%08lX\r\n",
+             (unsigned long)BOOTLOADER_ADDR, (unsigned long)bl_stack, (unsigned long)bl_entry);
     HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), 100);
 
-    /* Set DFU request flag in RTC backup register BKP19R */
-    DFU_FLAG_PTR = DFU_REQUEST_MAGIC;
+    /* Validate bootloader (stack must be in RAM: 0x20000000-0x20010000) */
+    if (bl_stack < 0x20000000UL || bl_stack > 0x20010000UL) {
+        const char err[] = "[DFU] ERROR: Invalid bootloader stack pointer!\r\n";
+        HAL_UART_Transmit(&hlpuart1, (uint8_t*)err, sizeof(err)-1, 100);
+        return;
+    }
+
+    /* Write DFU flag to SRAM - will survive the direct jump (no reset) */
+    SRAM_DFU_FLAG_PTR = DFU_REQUEST_MAGIC;
+    __DSB();
+
+    snprintf(buf, sizeof(buf), "[DFU] SRAM flag written: 0x%08lX\r\n",
+             (unsigned long)SRAM_DFU_FLAG_PTR);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), 100);
+
+    const char m2[] = "[DFU] Deinitializing peripherals...\r\n";
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)m2, sizeof(m2)-1, 100);
+    HAL_Delay(10);
+
+    /* Disable all interrupts */
+    __disable_irq();
+
+    /* Disable SysTick */
+    SysTick->CTRL = 0;
+    SysTick->LOAD = 0;
+    SysTick->VAL = 0;
+
+    /* Clear all pending interrupts */
+    for (int i = 0; i < 8; i++) {
+        NVIC->ICER[i] = 0xFFFFFFFF;  /* Disable all interrupts */
+        NVIC->ICPR[i] = 0xFFFFFFFF;  /* Clear all pending */
+    }
+
+    /* Deinitialize HAL (resets peripherals to default state) */
+    HAL_RCC_DeInit();
+    HAL_DeInit();
+
+    /* Relocate vector table to bootloader */
+    SCB->VTOR = BOOTLOADER_ADDR;
     __DSB();
     __ISB();
 
-    /* Step 3: Verify write */
-    uint32_t readback = DFU_FLAG_PTR;
-    snprintf(buf, sizeof(buf), "[DFU] STEP3: Readback = 0x%08lX\r\n", (unsigned long)readback);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), 100);
+    /* Set stack pointer and jump to bootloader */
+    __set_MSP(bl_stack);
+    pFunction bl_reset = (pFunction)bl_entry;
+    bl_reset();
 
-    if (readback != DFU_REQUEST_MAGIC) {
-        const char m_fail[] = "[DFU] WRITE FAILED! Retrying...\r\n";
-        HAL_UART_Transmit(&hlpuart1, (uint8_t*)m_fail, sizeof(m_fail)-1, 100);
-        DFU_FLAG_PTR = DFU_REQUEST_MAGIC;
-        __DSB();
-        __ISB();
-        readback = DFU_FLAG_PTR;
-        snprintf(buf, sizeof(buf), "[DFU] Retry readback = 0x%08lX\r\n", (unsigned long)readback);
-        HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), 100);
-    }
-
-    /* Step 4: Reset */
-    const char m4[] = "[DFU] STEP4: Calling NVIC_SystemReset()!\r\n";
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)m4, sizeof(m4)-1, 100);
-    HAL_Delay(10);  /* Small delay to ensure UART completes */
-
-    NVIC_SystemReset();
+    /* Should never reach here */
+    while (1);
 }
 
 /* USER CODE END 0 */
@@ -452,6 +545,9 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
   bool bIsWakeUpFromReset = false;
+
+  /* Ensure SRAM is preserved across reset (fix option bytes if needed) */
+  ensure_sram_preserved_on_reset();
 
   /* Check for DFU request and jump to bootloader if needed */
   check_dfu_request();
@@ -544,6 +640,42 @@ int main(void)
   {
     uint8_t test_msg[] = "\r\n==== UART TEST OK ====\r\n";
     HAL_UART_Transmit(&hlpuart1, test_msg, sizeof(test_msg)-1, 1000);
+
+    /* Print DFU debug info captured at startup (before HAL_Init) */
+    char dbg[128];
+    snprintf(dbg, sizeof(dbg),
+             "[BOOT] DFU check: TAMP=0x%08lX SRAM=0x%08lX reason=%lu\r\n",
+             (unsigned long)g_dfu_debug_val,
+             (unsigned long)g_dfu_debug_sram,
+             (unsigned long)g_dfu_debug_reason);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
+
+    /* Show RCC_BDCR at time of check (before HAL_Init) vs now (after) */
+    snprintf(dbg, sizeof(dbg),
+             "[BOOT] BDCR@check=0x%08lX BDCR@now=0x%08lX\r\n",
+             (unsigned long)g_dfu_debug_bdcr,
+             (unsigned long)RCC->BDCR);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
+
+    snprintf(dbg, sizeof(dbg),
+             "[BOOT] BL check: stack=0x%08lX entry=0x%08lX\r\n",
+             (unsigned long)g_dfu_debug_bl_stack,
+             (unsigned long)g_dfu_debug_bl_entry);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
+
+    /* Check PWR_CR1 for DBP bit */
+    snprintf(dbg, sizeof(dbg),
+             "[BOOT] PWR_CR1=0x%08lX (DBP=%d)\r\n",
+             (unsigned long)PWR->CR1,
+             (int)((PWR->CR1 >> 8) & 1));   /* DBP bit 8 */
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
+
+    /* Also print current TAMP register values (after HAL_Init/clocks configured) */
+    snprintf(dbg, sizeof(dbg),
+             "[BOOT] Current TAMP: BKP0=0x%08lX BKP1=0x%08lX\r\n",
+             (unsigned long)(*(volatile uint32_t*)0x4000B100UL),
+             (unsigned long)(*(volatile uint32_t*)0x4000B104UL));
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
   }
 
   MX_SUBGHZ_Init();
@@ -652,7 +784,10 @@ int main(void)
 
 #if defined(USE_SPI_DRIVER)
   MGR_LOG_DEBUG("Running SPI version\r\n");
-  /* DEBUG: Print DFU flag info captured at startup */
+  /* DEBUG: Print FLASH_OPTR and DFU flag info */
+  MGR_LOG_DEBUG("FLASH_OPTR=0x%08X (SRAM_RST bit25=%u, 1=preserved)\r\n",
+                (unsigned int)FLASH->OPTR,
+                (unsigned int)((FLASH->OPTR & FLASH_OPTR_SRAM_RST) ? 1 : 0));
   MGR_LOG_DEBUG("DFU flag at 0x%08X = 0x%08X (expected magic: 0x%08X)\r\n",
                 g_dfu_debug_addr, g_dfu_debug_val, DFU_REQUEST_MAGIC);
   MGR_LOG_DEBUG("BL @0x08033000: stack=0x%08X entry=0x%08X\r\n",
