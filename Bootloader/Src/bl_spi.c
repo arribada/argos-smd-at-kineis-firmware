@@ -22,12 +22,14 @@ static DMA_HandleTypeDef hdma_spi_tx;
 
 /* RX buffer and state */
 static uint8_t rx_buffer[BL_RX_BUFFER_SIZE];
+static uint8_t busy_rx_buffer[BL_RX_BUFFER_SIZE];  /* Separate RX buffer for BUSY DMA - preserves command */
 static volatile uint16_t rx_count = 0;
 static volatile bool rx_complete = false;
 
 /* TX buffer - filled with idle pattern for slave MISO */
 static uint8_t tx_buffer[BL_TX_BUFFER_SIZE];
 static uint8_t tx_idle_buffer[BL_RX_BUFFER_SIZE];  /* Idle TX with 0xAA pattern */
+static uint8_t tx_busy_buffer[BL_RX_BUFFER_SIZE];  /* Busy TX with 0xBB pattern */
 static uint16_t tx_len = 0;
 
 /* Command parsing state */
@@ -35,6 +37,10 @@ static uint8_t current_cmd = 0;
 static uint8_t payload_buffer[BL_CHUNK_SIZE];
 static uint16_t payload_len = 0;
 static volatile bool cmd_ready = false;
+
+/* Flag to track if response DMA has been armed.
+ * Used by callback to know when to transition back to WAITING_RX. */
+static volatile bool response_armed = false;
 
 /* State for multi-transaction commands (WRITE_REQ -> WRITE_DATA) */
 static uint32_t pending_write_addr = 0;
@@ -50,12 +56,14 @@ static bool read_data_pending = false;
 static volatile uint16_t last_rx_count = 0;
 static volatile uint32_t rx_stable_start_tick = 0;
 static volatile bool rx_activity_detected = false;
+static volatile uint16_t expected_transfer_size = 0;  /* Saved before DMA start */
+static volatile bool dma_transfer_complete = false;   /* Set by callback when DMA finishes */
 
 /* Use centralized timeout from bl_config.h */
 #define RX_STABLE_TIMEOUT_MS    BL_SPI_RX_STABLE_TIMEOUT_MS
 
-/* Maximum frame size for DMA setup */
-#define SPI_MAX_FRAME_SIZE      255
+/* Transaction size - MUST match Zephyr driver (64 bytes fixed) */
+#define SPI_TRANSACTION_SIZE    BL_SPI_TRANSACTION_SIZE
 
 /* SPI state machine */
 typedef enum {
@@ -68,22 +76,51 @@ typedef enum {
 
 static volatile bl_spi_state_t spi_state = BL_SPI_STATE_IDLE;
 
+/* Debug flag removed - prints were causing SPI timing issues */
+
 /* Forward declarations */
 static bool bl_spi_init_dma(void);
 static bool bl_spi_start_dma_rx(void);
 static bool bl_spi_check_transaction_end(uint16_t *bytes_received);
 static void bl_spi_clear_errors(void);
 
+/* External debug functions from bl_main.c */
+extern void early_debug_print(const char *str);
+
+/* Forward declaration for debug functions */
+static void spi_debug_hex8(uint8_t val);
+
+/* Helper to print hex values */
+static void spi_print_hex32(uint32_t val)
+{
+    char hex[9];
+    for (int i = 7; i >= 0; i--) {
+        uint8_t nib = (val >> (i * 4)) & 0xF;
+        hex[7-i] = (nib < 10) ? ('0' + nib) : ('A' + nib - 10);
+    }
+    hex[8] = '\0';
+    early_debug_print(hex);
+}
+
 bool bl_spi_init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+    early_debug_print("[SPI] Enabling clocks...\r\n");
     /* Enable clocks */
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_SPI1_CLK_ENABLE();
     __HAL_RCC_DMA1_CLK_ENABLE();
     __HAL_RCC_DMAMUX1_CLK_ENABLE();
+
+    /* Force reset SPI1 to clear any state from previous app */
+    early_debug_print("[SPI] Resetting SPI1 peripheral...\r\n");
+    __HAL_RCC_SPI1_FORCE_RESET();
+    for (volatile int i = 0; i < 100; i++);  /* Small delay */
+    __HAL_RCC_SPI1_RELEASE_RESET();
+
+    /* NOTE: Do NOT reset DMA1 - it breaks DMAMUX configuration */
 
     /* Configure SPI1 GPIO (same pinout as application):
      * PA1  - SPI1_SCK
@@ -111,7 +148,7 @@ bool bl_spi_init(void)
     hspi.Init.Direction = SPI_DIRECTION_2LINES;
     hspi.Init.DataSize = SPI_DATASIZE_8BIT;
     hspi.Init.CLKPolarity = SPI_POLARITY_LOW;
-    hspi.Init.CLKPhase = SPI_PHASE_1EDGE;
+    hspi.Init.CLKPhase = SPI_PHASE_1EDGE;  /* Must match app: CPOL=LOW, CPHA=1EDGE */
     hspi.Init.NSS = SPI_NSS_HARD_INPUT;
     hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
     hspi.Init.TIMode = SPI_TIMODE_DISABLE;
@@ -120,14 +157,22 @@ bool bl_spi_init(void)
     hspi.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
     hspi.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
 
+    early_debug_print("[SPI] Config: CPOL=LOW, CPHA=");
+    early_debug_print((hspi.Init.CLKPhase == SPI_PHASE_1EDGE) ? "1EDGE" : "2EDGE");
+    early_debug_print("\r\n[SPI] HAL_SPI_Init...\r\n");
     if (HAL_SPI_Init(&hspi) != HAL_OK) {
+        early_debug_print("[SPI] HAL_SPI_Init FAILED!\r\n");
         return false;
     }
+    early_debug_print("[SPI] HAL_SPI_Init OK\r\n");
 
     /* Initialize DMA */
+    early_debug_print("[SPI] Init DMA...\r\n");
     if (!bl_spi_init_dma()) {
+        early_debug_print("[SPI] DMA init FAILED!\r\n");
         return false;
     }
+    early_debug_print("[SPI] DMA init OK\r\n");
 
     /* Configure NVIC - SPI and DMA at HIGH priority (1), higher than UART (6) */
     HAL_NVIC_SetPriority(SPI1_IRQn, 1, 0);
@@ -139,6 +184,9 @@ bool bl_spi_init(void)
 
     /* Initialize idle TX buffer with idle pattern for scope debugging */
     memset(tx_idle_buffer, BL_SPI_IDLE_PATTERN, sizeof(tx_idle_buffer));
+
+    /* Initialize busy TX buffer with busy pattern */
+    memset(tx_busy_buffer, BL_SPI_BUSY_PATTERN, sizeof(tx_busy_buffer));
 
     /* Initialize A+ protocol layer */
     bl_spi_protocol_init();
@@ -157,7 +205,31 @@ bool bl_spi_init(void)
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
+    dma_transfer_complete = false;
+    response_armed = false;
     spi_state = BL_SPI_STATE_IDLE;
+
+    /* Debug: Print GPIO and SPI register state */
+    early_debug_print("[SPI] GPIOA MODER=0x");
+    spi_print_hex32(GPIOA->MODER);
+    early_debug_print(" (PA1=SCK, PA15=NSS)\r\n");
+    early_debug_print("[SPI] GPIOB MODER=0x");
+    spi_print_hex32(GPIOB->MODER);
+    early_debug_print(" AFR[0]=0x");
+    spi_print_hex32(GPIOB->AFR[0]);
+    early_debug_print("\r\n[SPI] SPI1 CR1=0x");
+    spi_print_hex32(SPI1->CR1);
+    early_debug_print(" CR2=0x");
+    spi_print_hex32(SPI1->CR2);
+    early_debug_print(" SR=0x");
+    spi_print_hex32(SPI1->SR);
+    early_debug_print("\r\n[SPI] DMA1_Ch1 CCR=0x");
+    spi_print_hex32(DMA1_Channel1->CCR);
+    early_debug_print(" CPAR=0x");
+    spi_print_hex32(DMA1_Channel1->CPAR);
+    early_debug_print("\r\n[SPI] DMAMUX C0=0x");
+    spi_print_hex32(DMAMUX1_Channel0->CCR);
+    early_debug_print("\r\n");
 
     return true;
 }
@@ -216,12 +288,15 @@ void bl_spi_deinit(void)
 
 void bl_spi_start_rx(void)
 {
+    /* NO debug print here - called frequently */
+
     /* Reset state for new reception */
     rx_count = 0;
     rx_complete = false;
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
+    response_armed = false;  /* Clear flag when starting new RX cycle */
 
     /* Start DMA reception */
     bl_spi_start_dma_rx();
@@ -229,6 +304,8 @@ void bl_spi_start_rx(void)
 
 static bool bl_spi_start_dma_rx(void)
 {
+    static bool first_dma_debug = true;
+
     /* Clear any pending errors */
     bl_spi_clear_errors();
 
@@ -242,12 +319,38 @@ static bool bl_spi_start_dma_rx(void)
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
+    dma_transfer_complete = false;  /* Reset callback flag */
+    expected_transfer_size = SPI_TRANSACTION_SIZE;  /* Save BEFORE starting DMA */
+
+    /* Clear RX buffer to detect if DMA actually writes to it */
+    memset(rx_buffer, 0x00, SPI_TRANSACTION_SIZE);
 
     spi_state = BL_SPI_STATE_WAITING_RX;
 
-    /* Start DMA transfer - receive max frame size, use polling to detect actual end */
+    /* Start DMA transfer for fixed 64-byte transaction */
     HAL_StatusTypeDef ret = HAL_SPI_TransmitReceive_DMA(&hspi,
-        tx_idle_buffer, rx_buffer, SPI_MAX_FRAME_SIZE);
+        tx_idle_buffer, rx_buffer, SPI_TRANSACTION_SIZE);
+
+    if (ret != HAL_OK) {
+        early_debug_print("[SPI] DMA FAIL ret=");
+        char c = '0' + ret;
+        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+        LPUART1->TDR = c;
+        early_debug_print(" St=");
+        c = '0' + hspi.State;
+        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+        LPUART1->TDR = c;
+        early_debug_print(" Err=0x");
+        spi_print_hex32(hspi.ErrorCode);
+        early_debug_print("\r\n");
+    } else {
+        /* Debug: Print DMA registers ONLY first time (during init) */
+        if (first_dma_debug) {
+            first_dma_debug = false;
+            early_debug_print("[SPI] DMA started OK\r\n");
+        }
+        /* NO repeated debug prints - critical for SPI timing! */
+    }
 
     return (ret == HAL_OK);
 }
@@ -274,19 +377,59 @@ void bl_spi_stop_rx(void)
     spi_state = BL_SPI_STATE_IDLE;
 }
 
+/* Helper to print a single hex digit */
+static void spi_debug_hex_nibble(uint8_t nib)
+{
+    char c = (nib < 10) ? ('0' + nib) : ('A' + nib - 10);
+    while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+    LPUART1->TDR = c;
+}
+
+/* Helper to print a byte as hex */
+static void spi_debug_hex8(uint8_t val)
+{
+    spi_debug_hex_nibble((val >> 4) & 0xF);
+    spi_debug_hex_nibble(val & 0xF);
+}
+
 bool bl_spi_has_data(void)
 {
     /* Check for transaction end using polling */
     if (spi_state == BL_SPI_STATE_WAITING_RX) {
         uint16_t bytes_received = 0;
         if (bl_spi_check_transaction_end(&bytes_received)) {
+            /* NO DEBUG PRINT HERE - critical for SPI timing! */
+
+            /* IMPORTANT: Only accept transaction if first byte is valid protocol magic (0xAA)
+             * This filters out noise/glitches during app->bootloader transition.
+             * All 0xFF or 0x00 bytes indicate noise, not real data from master. */
+            if (bytes_received < 5 || rx_buffer[0] != BL_SPI_IDLE_PATTERN) {
+                /* Invalid frame - restart DMA without marking as complete */
+                HAL_SPI_Abort(&hspi);
+                hspi.State = HAL_SPI_STATE_READY;
+                /* Reset detection state and re-arm DMA */
+                last_rx_count = 0;
+                rx_stable_start_tick = 0;
+                rx_activity_detected = false;
+                bl_spi_start_dma_rx();
+                return false;
+            }
+
             rx_count = bytes_received;
             rx_complete = true;
 
-            /* Abort DMA to stop the transfer */
-            HAL_SPI_Abort(&hspi);
-            hspi.State = HAL_SPI_STATE_READY;
+            /* NEW APPROACH: Don't arm BUSY DMA here. Instead:
+             * 1. Keep current DMA completed (no new DMA armed yet)
+             * 2. Main loop will process command and call bl_spi_send_response()
+             * 3. bl_spi_send_response() will arm response DMA
+             *
+             * This avoids the race condition where BUSY DMA gets aborted
+             * mid-transaction when the master's NOP poll arrives.
+             *
+             * The callback won't fire again until we arm new DMA.
+             * Master's 30ms delay gives plenty of time to process PING. */
 
+            /* Don't abort - just mark state. The DMA is already done. */
             spi_state = BL_SPI_STATE_PROCESSING;
         }
     }
@@ -296,44 +439,55 @@ bool bl_spi_has_data(void)
 
 static bool bl_spi_check_transaction_end(uint16_t *bytes_received)
 {
-    /* Calculate bytes received from DMA NDTR register */
-    uint16_t total_requested = hspi.RxXferSize;
-    uint16_t remaining;
+    /* Use saved transfer size (HAL may modify RxXferSize after completion) */
+    uint16_t total = expected_transfer_size;
+    uint16_t remaining = 0;
 
-    /* Defensive null check for DMA handle */
+    /* Fast path: If DMA callback already fired, transaction is definitely complete */
+    if (dma_transfer_complete) {
+        /* NO DEBUG PRINT HERE - critical for SPI timing! */
+        *bytes_received = total;  /* Full transaction received */
+
+        /* Reset for next transaction */
+        last_rx_count = 0;
+        rx_stable_start_tick = 0;
+        rx_activity_detected = false;
+        dma_transfer_complete = false;
+
+        return true;
+    }
+
+    /* Get DMA counter - number of bytes remaining to transfer */
     if (hspi.hdmarx != NULL && hspi.hdmarx->Instance != NULL) {
         remaining = __HAL_DMA_GET_COUNTER(hspi.hdmarx);
     } else {
-        /* Fallback: no DMA, assume no data */
         return false;
     }
 
-    /* Protect against underflow */
-    uint16_t current_rx_count = (remaining <= total_requested) ?
-        (total_requested - remaining) : 0;
+    /* Calculate bytes received */
+    uint16_t current = (remaining <= total) ? (total - remaining) : 0;
 
     /* Check if new bytes received */
-    if (current_rx_count > last_rx_count) {
+    if (current > last_rx_count) {
         rx_activity_detected = true;
-        last_rx_count = current_rx_count;
+        last_rx_count = current;
         rx_stable_start_tick = HAL_GetTick();
         return false;
     }
 
-    /* No new bytes - check if transaction complete */
-    if (rx_activity_detected && current_rx_count > 0) {
-        if (rx_stable_start_tick == 0) {
-            rx_stable_start_tick = HAL_GetTick();
-        }
+    /* No new bytes - check if transaction complete (stable for timeout period) */
+    if (rx_activity_detected && current > 0) {
+        uint32_t now = HAL_GetTick();
+        uint32_t elapsed = now - rx_stable_start_tick;
 
-        /* Check stability timeout */
-        if ((HAL_GetTick() - rx_stable_start_tick) >= RX_STABLE_TIMEOUT_MS) {
-            *bytes_received = current_rx_count;
+        if (elapsed >= RX_STABLE_TIMEOUT_MS) {
+            *bytes_received = current;
 
             /* Reset for next transaction */
             last_rx_count = 0;
             rx_stable_start_tick = 0;
             rx_activity_detected = false;
+            dma_transfer_complete = false;
 
             return true;
         }
@@ -379,6 +533,21 @@ void bl_spi_flush_rx(void)
     rx_complete = false;
 }
 
+/**
+ * @brief Check if buffer contains a poll frame (all 0xAA)
+ * Poll frames are normal in the pipelined protocol - master sends them to read responses.
+ */
+static bool is_poll_frame(const uint8_t *data, uint16_t len)
+{
+    if (len < 5) return true;  /* Too short to be a real command */
+
+    /* Check if first 4 bytes are all 0xAA (poll/sync frame) */
+    return (data[0] == BL_SPI_IDLE_PATTERN &&
+            data[1] == BL_SPI_IDLE_PATTERN &&
+            data[2] == BL_SPI_IDLE_PATTERN &&
+            data[3] == BL_SPI_IDLE_PATTERN);
+}
+
 bool bl_spi_process(void)
 {
     /* First check for new data via polling */
@@ -392,18 +561,25 @@ bool bl_spi_process(void)
         return false;
     }
 
-    /* Process received data */
+    /* Process received data - NO DEBUG PRINTS IN CRITICAL PATH */
     rx_complete = false;
 
     if (rx_count < 1) {
-        /* No data, restart reception */
+        bl_spi_start_rx();
+        return false;
+    }
+
+    /* Check for poll/sync frame (all 0xAA) - this is NORMAL in pipelined protocol.
+     * Master sends this to read the response from the previous command.
+     * Just silently re-arm DMA. The response was already sent during this transaction. */
+    if (is_poll_frame(rx_buffer, rx_count)) {
         bl_spi_start_rx();
         return false;
     }
 
     /* Use protocol layer to parse frame (detects A+ vs legacy) */
     if (!bl_spi_protocol_process(rx_buffer, rx_count)) {
-        /* Invalid frame or sync issue - restart */
+        /* Invalid frame format - restart */
         bl_spi_start_rx();
         return false;
     }
@@ -422,6 +598,8 @@ bool bl_spi_process(void)
     /* Extract command and payload */
     current_cmd = request->command;
     payload_len = request->data_len;
+
+    /* NO debug print - critical for SPI timing */
 
     if (payload_len > 0 && payload_len <= BL_CHUNK_SIZE) {
         memcpy(payload_buffer, request->data, payload_len);
@@ -545,23 +723,51 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
     payload_len = 0;
     cmd_ready = false;
 
-    /* Clear errors and ensure ready state */
+    /* NEW APPROACH: Since we no longer arm BUSY DMA in bl_spi_has_data(),
+     * the previous DMA is already complete. We can safely prepare and arm
+     * the response DMA without aborting anything.
+     *
+     * The master waits 30ms before sending NOP, giving us plenty of time
+     * to process the command and arm the response. */
+
+    __disable_irq();
+
+    /* Ensure SPI and DMA are in a clean state */
     bl_spi_clear_errors();
     if (hspi.State != HAL_SPI_STATE_READY) {
         HAL_SPI_Abort(&hspi);
         hspi.State = HAL_SPI_STATE_READY;
     }
 
-    /* Setup DMA for response TX + next RX */
+    /* Clear any pending interrupts from previous transaction */
+    HAL_NVIC_ClearPendingIRQ(DMA1_Channel1_IRQn);
+    HAL_NVIC_ClearPendingIRQ(DMA1_Channel2_IRQn);
+    HAL_NVIC_ClearPendingIRQ(SPI1_IRQn);
+
+    /* Flush SPI FIFOs to ensure clean response transmission */
+    __HAL_SPI_DISABLE(&hspi);
+    while (__HAL_SPI_GET_FLAG(&hspi, SPI_FLAG_BSY));
+    while (__HAL_SPI_GET_FLAG(&hspi, SPI_FLAG_FRLVL)) {
+        volatile uint32_t dummy = hspi.Instance->DR;
+        (void)dummy;
+    }
+    __HAL_SPI_ENABLE(&hspi);
+
+    /* Update state and arm response DMA */
     spi_state = BL_SPI_STATE_WAITING_TX;
+    response_armed = true;
 
     /* Reset transaction detection for next command */
     last_rx_count = 0;
     rx_stable_start_tick = 0;
     rx_activity_detected = false;
+    dma_transfer_complete = false;
+    expected_transfer_size = SPI_TRANSACTION_SIZE;
 
-    /* Start combined TX/RX DMA - response goes out, ready for next command */
-    HAL_SPI_TransmitReceive_DMA(&hspi, tx_buffer, rx_buffer, SPI_MAX_FRAME_SIZE);
+    /* Start combined TX/RX DMA - response goes out when master clocks */
+    HAL_SPI_TransmitReceive_DMA(&hspi, tx_buffer, rx_buffer, SPI_TRANSACTION_SIZE);
+
+    __enable_irq();
 }
 
 void bl_spi_irq_handler(void)
@@ -569,15 +775,27 @@ void bl_spi_irq_handler(void)
     /* Handled by HAL */
 }
 
-/* HAL SPI callbacks - minimal processing, no logging */
+/* HAL SPI callbacks - NO BLOCKING PRINTS IN ISR! */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi_ptr)
 {
     if (hspi_ptr->Instance == SPI1) {
-        /* DMA transfer complete - but we use polling for transaction detection */
+        /* DMA transfer complete - flag it so polling doesn't wait extra 10ms */
+        dma_transfer_complete = true;
+
         if (spi_state == BL_SPI_STATE_WAITING_TX) {
-            /* Response sent, go back to idle/waiting */
+            /* Response sent, go back to waiting for next command */
+            response_armed = false;  /* Reset flag for next command cycle */
             spi_state = BL_SPI_STATE_WAITING_RX;
         }
+        /* NOTE: We no longer arm BUSY DMA in PROCESSING state.
+         * The new approach is:
+         * 1. bl_spi_has_data() detects command but doesn't arm new DMA
+         * 2. Main loop processes command quickly (PING takes <1ms)
+         * 3. bl_spi_send_response() arms response DMA directly
+         * 4. Master's NOP arrives 30ms later, gets the response
+         *
+         * This eliminates the race condition where BUSY DMA would be
+         * aborted mid-transaction, causing corrupted output. */
     }
 }
 

@@ -327,22 +327,60 @@ bl_flash_status_t bl_flash_set_dfu_request(bool request)
     return bl_flash_write_bl_state(&state);
 }
 
-/* DFU request flag at fixed address - shared with app
- * Address 0x2000FFF8 is NOT zeroed during startup, survives reset */
+/* DFU request flag locations - shared with app
+ * Primary: RTC backup registers (survives all resets except VBAT removal)
+ * Fallback: SRAM at 0x2000FFF8 (requires SRAM_RST option byte) */
 #define DFU_REQUEST_MAGIC       0x4446554DUL  /* "DFUM" - DFU Mode request */
-#define DFU_FLAG_ADDR           0x2000FFF8UL
-#define DFU_FLAG_PTR            (*((volatile uint32_t *)DFU_FLAG_ADDR))
+
+/* SRAM location (fallback) */
+#define SRAM_DFU_FLAG_ADDR      0x2000FFF8UL
+#define SRAM_DFU_FLAG_PTR       (*((volatile uint32_t *)SRAM_DFU_FLAG_ADDR))
+
+/* RTC backup register location (primary) */
+#define TAMP_BKP0R_ADDR         0x4000B100UL  /* TAMP_BASE + 0x100 */
+#define RTC_DFU_FLAG_PTR        (*((volatile uint32_t *)TAMP_BKP0R_ADDR))
+
+/* Enable backup domain access for RTC backup registers */
+static void enable_backup_access_bl(void)
+{
+    /* Enable RTC APB clock - required to access TAMP registers */
+    RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
+    __DSB();
+    /* Small delay for clock to settle */
+    for (volatile int i = 0; i < 100; i++);
+
+    /* Enable backup domain access (PWR is always accessible on STM32WL) */
+    PWR->CR1 |= PWR_CR1_DBP;
+    while ((PWR->CR1 & PWR_CR1_DBP) == 0);
+    __DSB();
+    /* Additional delay for backup domain to be fully accessible */
+    for (volatile int i = 0; i < 100; i++);
+}
 
 bool bl_flash_is_dfu_requested(void)
 {
-    /* Check DFU request flag in SRAM2 (backup RAM) */
-    return (DFU_FLAG_PTR == DFU_REQUEST_MAGIC);
+    /* Enable backup domain access first */
+    enable_backup_access_bl();
+
+    /* Check DFU request flag - first in RTC backup register, then SRAM */
+    if (RTC_DFU_FLAG_PTR == DFU_REQUEST_MAGIC) {
+        return true;
+    }
+    /* Fallback: check SRAM location */
+    if (SRAM_DFU_FLAG_PTR == DFU_REQUEST_MAGIC) {
+        return true;
+    }
+    return false;
 }
 
 bl_flash_status_t bl_flash_clear_dfu_request(void)
 {
-    /* Clear the DFU request flag in SRAM2 */
-    DFU_FLAG_PTR = 0;
+    /* Enable backup domain access first */
+    enable_backup_access_bl();
+
+    /* Clear the DFU request flag in both locations */
+    RTC_DFU_FLAG_PTR = 0;
+    SRAM_DFU_FLAG_PTR = 0;
 
     return BL_FLASH_OK;
 }

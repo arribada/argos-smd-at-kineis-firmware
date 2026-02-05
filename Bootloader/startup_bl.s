@@ -65,8 +65,8 @@ LoopFillZerobss:
   cmp r2, r4
   bcc FillZerobss
 
-/* Call static constructors */
-  bl __libc_init_array
+/* Skip __libc_init_array - not needed for bare-metal bootloader
+ * and can cause issues without proper heap/syscalls setup */
 
 /* Call the bootloader main */
   bl main

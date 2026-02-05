@@ -175,12 +175,11 @@ SECTIONS
     . = ALIGN(4);
   } >RAM_NOINIT
 
-  /* Remove debug info from libraries */
+  /* Discard debug sections to reduce binary size */
   /DISCARD/ :
   {
-    libc.a ( * )
-    libm.a ( * )
-    libgcc.a ( * )
+    *(.debug*)
+    *(.comment)
   }
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
