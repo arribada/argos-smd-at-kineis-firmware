@@ -86,10 +86,10 @@
 #define BL_UART_STOPBITS            UART_STOPBITS_1
 #define BL_UART_PARITY              UART_PARITY_NONE
 
-/* Communication buffers */
+/* Communication buffers - must be >= BL_SPI_TRANSACTION_SIZE (280) */
 #define BL_RX_BUFFER_SIZE           512
 #define BL_TX_BUFFER_SIZE           512
-#define BL_CHUNK_SIZE               256         /* Data chunk size for writes */
+#define BL_CHUNK_SIZE               248         /* Data chunk size for writes (31×8=248 for 64-bit flash alignment) */
 
 /* Timeouts */
 #define BL_CMD_TIMEOUT_MS           5000        /* Command timeout */
@@ -106,8 +106,11 @@
 #define BL_FLASH_WRITE_RETRIES      3
 #define BL_COMM_RETRIES             3
 
-/* SPI transaction size - MUST match Zephyr driver (64 bytes fixed) */
-#define BL_SPI_TRANSACTION_SIZE     64
+/* SPI transaction size - MUST match Zephyr driver
+ * Small commands use 64 bytes, but WRITE_DATA with 256-byte payload needs:
+ * Header (4) + Payload (256) + CRC (1) = 261 bytes
+ * Use 280 to match Zephyr's DFU_LARGE_TX_SIZE */
+#define BL_SPI_TRANSACTION_SIZE     280
 
 /* SPI idle pattern - sent on MISO when no response data
  * 0xAA (10101010) is easy to identify on scope and distinguishes from 0x00/0xFF */

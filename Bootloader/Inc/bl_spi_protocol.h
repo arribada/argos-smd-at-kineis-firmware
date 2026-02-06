@@ -33,7 +33,7 @@
 #define BL_SPI_FRAME_HEADER_SIZE    4   /**< Magic + Seq + Cmd/Status + Len */
 #define BL_SPI_FRAME_CRC_SIZE       1   /**< CRC-8 */
 #define BL_SPI_FRAME_MIN_SIZE       (BL_SPI_FRAME_HEADER_SIZE + BL_SPI_FRAME_CRC_SIZE)
-#define BL_SPI_FRAME_MAX_DATA       250 /**< Maximum data payload size */
+#define BL_SPI_FRAME_MAX_DATA       255 /**< Maximum data payload size (1-byte LEN field) */
 #define BL_SPI_FRAME_MAX_SIZE       (BL_SPI_FRAME_MIN_SIZE + BL_SPI_FRAME_MAX_DATA)
 
 /** Frame field offsets */
