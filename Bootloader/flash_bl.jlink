@@ -1,6 +1,6 @@
-h
-erase 0x08033000 0x0803B000
-loadfile Bootloader/build/bootloader.hex
 r
-g
-exit
+h
+loadbin Bootloader/build/bootloader.bin 0x08033000
+verifybin Bootloader/build/bootloader.bin 0x08033000
+r
+q

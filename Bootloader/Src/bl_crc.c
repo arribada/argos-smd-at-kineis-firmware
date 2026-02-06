@@ -3,15 +3,16 @@
  * @brief   Software CRC32 implementation for bootloader
  * @date    2025
  *
- * Uses STM32-compatible CRC32 polynomial (0x04C11DB7)
- * Same algorithm as STM32 hardware CRC peripheral
+ * Uses standard CRC-32 (IEEE 802.3 / ZIP / PNG / GZIP)
+ * Polynomial: 0xEDB88320 (reflected form of 0x04C11DB7)
+ * This matches the Zephyr argos_dfu_crc32() implementation
  */
 
 #include "bl_crc.h"
 #include <stddef.h>
 
-/* CRC32 polynomial (same as STM32 hardware CRC) */
-#define CRC32_POLYNOMIAL    0x04C11DB7UL
+/* Standard CRC-32 polynomial (reflected form) */
+#define CRC32_POLYNOMIAL    0xEDB88320UL
 #define CRC32_INIT_VALUE    0xFFFFFFFFUL
 
 /* Current CRC state for accumulate operations */
@@ -37,16 +38,17 @@ void bl_crc_reset(void)
 
 /**
  * @brief Calculate CRC32 for a single byte (internal)
+ * Standard CRC-32 (reflected/LSB-first)
  */
 static uint32_t crc32_byte(uint32_t crc, uint8_t byte)
 {
-    crc ^= ((uint32_t)byte << 24);
+    crc ^= byte;
 
     for (int i = 0; i < 8; i++) {
-        if (crc & 0x80000000UL) {
-            crc = (crc << 1) ^ CRC32_POLYNOMIAL;
+        if (crc & 1) {
+            crc = (crc >> 1) ^ CRC32_POLYNOMIAL;
         } else {
-            crc <<= 1;
+            crc >>= 1;
         }
     }
 
@@ -66,13 +68,13 @@ uint32_t bl_crc32_calculate(const void* data, uint32_t length_bytes)
         crc = crc32_byte(crc, ptr[i]);
     }
 
-    return crc;
+    return ~crc;  /* Final XOR */
 }
 
 uint32_t bl_crc32_accumulate(const void* data, uint32_t length_bytes)
 {
     if (data == NULL || length_bytes == 0) {
-        return crc_state;
+        return ~crc_state;  /* Return finalized CRC */
     }
 
     const uint8_t* ptr = (const uint8_t*)data;
@@ -81,12 +83,12 @@ uint32_t bl_crc32_accumulate(const void* data, uint32_t length_bytes)
         crc_state = crc32_byte(crc_state, ptr[i]);
     }
 
-    return crc_state;
+    return ~crc_state;  /* Return finalized CRC */
 }
 
 uint32_t bl_crc32_get(void)
 {
-    return crc_state;
+    return ~crc_state;  /* Final XOR */
 }
 
 uint32_t bl_crc32_flash(uint32_t start_addr, uint32_t length_bytes)

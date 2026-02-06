@@ -41,6 +41,7 @@ void Error_Handler(void);
 
 /* Forward declaration for early debug - exported for use by other modules */
 void early_debug_print(const char *str);
+static void early_debug_update_baudrate(void);
 
 void bl_init(void)
 {
@@ -49,9 +50,13 @@ void bl_init(void)
     HAL_Init();
 
     early_debug_print("[BL] bl_init: bl_hw_init...\r\n");
-    /* Configure system clock */
+    /* Configure system clock to 32 MHz PLL (same as application) */
     bl_hw_init();
 
+    /* Update LPUART1 baud rate for new 32 MHz clock */
+    early_debug_update_baudrate();
+
+    early_debug_print("[BL] bl_init: clock now 32MHz PLL\r\n");
     early_debug_print("[BL] bl_init: bl_flash_init...\r\n");
     /* Initialize subsystems */
     bl_flash_init();
@@ -353,12 +358,20 @@ static void bl_state_dfu_spi(void)
     if (first_call) {
         first_call = false;
         early_debug_print("[BL] DFU_SPI state entered\r\n");
+        /* CRITICAL: Do NOT flush RX here! The detect_protocol phase already
+         * received the first command that triggered SPI detection.
+         * Flushing would lose that command and cause communication failure.
+         *
+         * The first command that triggered detection is already in the RX buffer
+         * and will be processed on the first call to bl_spi_process() below.
+         */
     }
 
     /* Process SPI commands */
     if (bl_spi_process()) {
         uint8_t spi_cmd = bl_spi_get_command();
-        uint8_t payload[BL_CHUNK_SIZE];
+        /* Buffer must be BL_CHUNK_SIZE + 4 for WRITE_DATA (address prepended) */
+        uint8_t payload[BL_CHUNK_SIZE + 4];
         uint16_t payload_len = bl_spi_get_payload(payload, sizeof(payload));
 
         uint8_t response[BL_TX_BUFFER_SIZE];
@@ -656,29 +669,34 @@ static void bl_hw_init(void)
     /* Configure the main internal regulator output voltage */
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-    /* Initialize HSI oscillator (16 MHz internal)
-     * HSI is used for bootloader because:
-     * - Always available (no external crystal dependency)
-     * - Immediate startup (~2µs vs ms for HSE)
-     * - Sufficient precision for UART 9600 baud (±1%)
-     * - Maximum reliability for critical boot code */
+    /* Initialize HSI oscillator with PLL to match application clock (32 MHz)
+     * This ensures SPI/DMA timing is identical to the working application.
+     * PLL configuration: HSI 16MHz / 4 * 32 / 4 = 32 MHz */
     RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
     RCC_OscInitStruct.HSIState = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+    RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV4;
+    RCC_OscInitStruct.PLL.PLLN = 32;
+    RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+    RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV4;
+    RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-        /* HSI failure is critical - should never happen */
+        /* Clock failure is critical */
         Error_Handler();
     }
 
-    /* Configure system clock: SYSCLK = HSI = 16 MHz */
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                                  RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    /* Configure system clock: SYSCLK = PLL = 32 MHz (same as application) */
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3 | RCC_CLOCKTYPE_HCLK |
+                                  RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
+                                  RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
     RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
     RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) {
+    RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) {
         Error_Handler();
     }
 
@@ -739,6 +757,34 @@ static void early_debug_init(void)
      * At 16MHz HSI: BRR = 256 * 16000000 / 115200 = 35556 (0x8AE4) */
     LPUART1->BRR = 35556;
     LPUART1->CR1 = USART_CR1_TE | USART_CR1_UE;
+
+    /* Wait for USART to be ready */
+    while (!(LPUART1->ISR & USART_ISR_TEACK));
+}
+
+/**
+ * @brief Reconfigure LPUART1 clock source after bl_hw_init() switches to PLL
+ *
+ * The application uses HSI (16 MHz) as LPUART1 clock source, not PCLK.
+ * This ensures the baud rate stays at 115200 regardless of SYSCLK.
+ * We must do the same in bootloader to match the application behavior.
+ */
+static void early_debug_update_baudrate(void)
+{
+    /* Disable UART to modify clock source */
+    LPUART1->CR1 &= ~USART_CR1_UE;
+
+    /* Configure LPUART1 clock source to HSI (16 MHz) - same as application
+     * RCC_CCIPR register: LPUART1SEL bits [11:10]
+     * 00: PCLK, 01: SYSCLK, 10: HSI16, 11: LSE */
+    RCC->CCIPR = (RCC->CCIPR & ~RCC_CCIPR_LPUART1SEL_Msk) |
+                 (2UL << RCC_CCIPR_LPUART1SEL_Pos);  /* HSI16 */
+
+    /* BRR stays at 35556 for 115200 baud @ 16MHz HSI */
+    /* (already configured in early_debug_init) */
+
+    /* Re-enable UART */
+    LPUART1->CR1 |= USART_CR1_UE;
 
     /* Wait for USART to be ready */
     while (!(LPUART1->ISR & USART_ISR_TEACK));
