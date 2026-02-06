@@ -31,16 +31,20 @@
 
 /** @brief Ring buffer size for non-blocking logging.
  *  Larger buffer = more messages can be queued before overflow
- *  Must be power of 2 for efficient modulo operation
- *  Note: With 115200 baud (12x faster than 9600), 4KB buffer
- *  provides equivalent capacity to 48KB at 9600 baud */
+ *  Must be power of 2 for efficient modulo operation */
 #define LOG_RING_BUFFER_SIZE 4096
 
-/** @brief Maximum bytes to send per flush call to avoid blocking too long */
+/** @brief Maximum bytes to send per flush call to avoid blocking too long
+ *  At 115200 baud: 1024 bytes takes ~90ms
+ *  At 9600 baud: 128 bytes takes ~130ms (keep blocks short for AT responsiveness)
+ */
+#ifdef USE_SPI_DRIVER
 #define LOG_FLUSH_MAX_BYTES 1024
-
-/** @brief UART transmit timeout per flush (short to avoid blocking) */
-#define LOG_FLUSH_TIMEOUT_MS 50
+#define LOG_FLUSH_TIMEOUT_MS 100    /* 100ms timeout for 1KB at 115200 */
+#else
+#define LOG_FLUSH_MAX_BYTES 128     /* Smaller blocks at 9600 baud */
+#define LOG_FLUSH_TIMEOUT_MS 200    /* 200ms timeout for 128 bytes at 9600 */
+#endif
 
 /* Critical section macros */
 #define LOG_ENTER_CRITICAL()  uint32_t primask = __get_PRIMASK(); __disable_irq()
@@ -54,6 +58,8 @@ static volatile uint16_t log_ring_head = 0;  /* Write position */
 static volatile uint16_t log_ring_tail = 0;  /* Read position */
 static volatile uint32_t log_overflow_count = 0;  /* Overflow counter for diagnostics */
 static volatile bool log_in_use = false;  /* Mutex for formatting buffer */
+static volatile bool log_paused = false;  /* Pause flag for AT console priority */
+static volatile bool log_uart_busy = false;  /* UART transmission in progress */
 
 /* Private functions ---------------------------------------------------------*/
 
@@ -222,12 +228,29 @@ void vMGR_LOG_printf(const char *format, ...)
  * It sends up to LOG_FLUSH_MAX_BYTES per call to avoid blocking too long.
  * Should be called regularly from the main loop.
  *
+ * NOTE: If log_paused is true, returns immediately without sending.
+ * This gives AT console absolute priority over debug logs.
+ *
  * @return Number of bytes sent
  */
 uint16_t MGR_LOG_flush(void)
 {
 	static uint8_t flush_buf[LOG_FLUSH_MAX_BYTES];
 	uint16_t count;
+
+	/* If paused, don't flush - AT console has priority */
+	if (log_paused) {
+		return 0;
+	}
+
+	/* Mark UART as busy BEFORE getting data - prevents race with pause() */
+	log_uart_busy = true;
+
+	/* Double-check pause flag - may have been set while we were starting */
+	if (log_paused) {
+		log_uart_busy = false;
+		return 0;
+	}
 
 	/* Get characters from ring buffer atomically */
 	count = log_ring_get_string(flush_buf, LOG_FLUSH_MAX_BYTES);
@@ -237,6 +260,7 @@ uint16_t MGR_LOG_flush(void)
 		HAL_UART_Transmit(&log_uart, flush_buf, count, LOG_FLUSH_TIMEOUT_MS);
 	}
 
+	log_uart_busy = false;
 	return count;
 }
 
@@ -271,6 +295,66 @@ bool MGR_LOG_has_pending(void)
 	bool pending = (log_ring_head != log_ring_tail);
 	LOG_EXIT_CRITICAL();
 	return pending;
+}
+
+/**
+ * @brief Pause log flushing (for AT console priority)
+ *
+ * While paused, MGR_LOG_flush() returns immediately without sending.
+ * Logs are still buffered in the ring buffer.
+ * Also waits for any ongoing UART transmission to complete.
+ */
+void MGR_LOG_pause(void)
+{
+	log_paused = true;
+
+	/* Wait for our log_uart_busy flag to clear with timeout.
+	 * This indicates MGR_LOG_flush() has finished its HAL_UART_Transmit call.
+	 * Timeout depends on baudrate:
+	 * - 115200 baud: 1KB in ~90ms, timeout ~120ms (600000 iterations at 48MHz)
+	 * - 9600 baud: 128 bytes in ~130ms, timeout ~200ms (1000000 iterations)
+	 */
+#ifdef USE_SPI_DRIVER
+	volatile uint32_t timeout = 600000;   /* ~120ms at 48MHz for 115200 baud */
+#else
+	volatile uint32_t timeout = 1000000;  /* ~200ms at 48MHz for 9600 baud */
+#endif
+	while (timeout > 0 && log_uart_busy) {
+		timeout--;
+	}
+
+	/* Small delay to ensure any ongoing HAL transmission completes.
+	 * HAL_UART_Transmit is blocking, so if log_uart_busy is false,
+	 * the transmission should already be complete. This is just extra safety. */
+	for (volatile uint32_t i = 0; i < 1000; i++) {
+		__NOP();
+	}
+}
+
+/**
+ * @brief Resume log flushing after pause
+ */
+void MGR_LOG_resume(void)
+{
+	log_paused = false;
+}
+
+/**
+ * @brief Check if log flushing is paused
+ * @return true if paused
+ */
+bool MGR_LOG_is_paused(void)
+{
+	return log_paused;
+}
+
+/**
+ * @brief Check if log UART transmission is in progress
+ * @return true if UART is busy transmitting logs
+ */
+bool MGR_LOG_is_uart_busy(void)
+{
+	return log_uart_busy;
 }
 
 #endif // end USE_LOCAL_PRINTF

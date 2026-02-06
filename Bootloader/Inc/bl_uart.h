@@ -106,4 +106,10 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
  */
 void bl_uart_rx_irq_handler(void);
 
+/**
+ * @brief Get RX interrupt count (for debugging)
+ * @return Number of RX interrupts triggered
+ */
+uint32_t bl_uart_get_irq_count(void);
+
 #endif /* BL_UART_H */

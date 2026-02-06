@@ -35,7 +35,7 @@ USE_BAREMETAL = 1
 APP = GUI
 
 # Select output port
-COMM = SPI
+COMM = UART
 
 # Select Kineis stack MAC profile. Can be:
 # * BASIC: basic profile, sending message once immediately
@@ -503,14 +503,14 @@ DFU_LEGACY = $(BUILD_DIR)/$(TARGET)_dfu_legacy.bin
 # DFU with full header (recommended for production)
 $(DFU_OUTPUT): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary with header --"
-	python3 $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
+	python $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
 	@echo "DFU file: $@"
 	@echo "Flash address: 0x08008000 (header + code)"
 
 # DFU without header (legacy mode - for testing)
 $(DFU_LEGACY): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary (legacy mode, no header) --"
-	python3 $(DFU_SCRIPT) $< $@ --no-header
+	python $(DFU_SCRIPT) $< $@ --no-header
 	@echo "DFU file: $@"
 	@echo "Flash address: 0x08008100 (code only)"
 
@@ -535,11 +535,124 @@ $(KINEIS_DIR) $(BUILD_DIR) $(DOC_DIR):
 	mkdir -p $@
 
 #######################################
+# Bootloader build
+#######################################
+BOOTLOADER_DIR = Bootloader
+BOOTLOADER_BUILD = $(BOOTLOADER_DIR)/build
+BOOTLOADER_HEX = $(BOOTLOADER_BUILD)/bootloader.hex
+BOOTLOADER_BIN = $(BOOTLOADER_BUILD)/bootloader.bin
+
+# Build bootloader only
+bootloader:
+	@echo "=== Building Bootloader ==="
+	$(MAKE) -C $(BOOTLOADER_DIR) PROTOCOL=$(COMM)
+	@if [ ! -f $(BOOTLOADER_BIN) ]; then \
+		echo "ERROR: Bootloader build failed - $(BOOTLOADER_BIN) not found"; \
+		exit 1; \
+	fi
+	@echo "Bootloader ready: $(BOOTLOADER_HEX)"
+
+bootloader-clean:
+	$(MAKE) -C $(BOOTLOADER_DIR) clean
+
+#######################################
+# Combined firmware (App + Bootloader)
+#######################################
+COMBINED_HEX = $(BUILD_DIR)/$(TARGET)_full.hex
+COMBINED_BIN = $(BUILD_DIR)/$(TARGET)_full.bin
+MERGE_SCRIPT = Tools/merge_firmware.py
+
+# Build combined firmware (app + bootloader)
+# Note: Dependencies are checked sequentially to fail fast on errors
+full: check-app check-bootloader $(COMBINED_BIN)
+	@echo ""
+	@echo "=== Combined Firmware Ready ==="
+	@echo "HEX: $(COMBINED_HEX)"
+	@echo "BIN: $(COMBINED_BIN)"
+	@echo ""
+	@echo "Memory layout:"
+	@echo "  App: 0x08000000 - 0x08032FFF (204KB)"
+	@echo "  BL:  0x08033000 - 0x0803AFFF (32KB)"
+	@echo ""
+	@echo "Flash with: make flash-full"
+
+# Check that app binary exists
+check-app: $(BUILD_DIR)/$(TARGET).bin
+	@if [ ! -f $(BUILD_DIR)/$(TARGET).bin ]; then \
+		echo "ERROR: Application build failed - $(BUILD_DIR)/$(TARGET).bin not found"; \
+		exit 1; \
+	fi
+
+# Check that bootloader binary exists (builds it if needed)
+check-bootloader: bootloader
+	@if [ ! -f $(BOOTLOADER_BIN) ]; then \
+		echo "ERROR: Bootloader build failed - $(BOOTLOADER_BIN) not found"; \
+		exit 1; \
+	fi
+
+$(COMBINED_BIN): $(BUILD_DIR)/$(TARGET).bin $(BOOTLOADER_BIN) $(MERGE_SCRIPT) | $(BUILD_DIR)
+	@echo "=== Merging App + Bootloader ==="
+	python $(MERGE_SCRIPT) \
+		--app $(BUILD_DIR)/$(TARGET).bin \
+		--bootloader $(BOOTLOADER_BIN) \
+		--output-bin $(COMBINED_BIN) \
+		--output-hex $(COMBINED_HEX) \
+		--app-addr 0x08000000 \
+		--bl-addr 0x08033000
+
+$(BOOTLOADER_BIN): bootloader
+
+#######################################
+# Flash targets
+#######################################
+# JLink executable path - adjust to your installation
+JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe"
+JLINK_SERIAL ?= 801035790
+JLINK_SPEED ?= 4000
+JLINK_SCRIPT = $(BUILD_DIR)/flash.jlink
+
+# Flash app only (assumes bootloader already present)
+flash-app: $(BUILD_DIR)/$(TARGET).hex
+	@echo "Flashing application to 0x08000000..."
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase 0x08000000 0x08033000" >> $(JLINK_SCRIPT)
+	@echo "loadfile $(BUILD_DIR)/$(TARGET).hex" >> $(JLINK_SCRIPT)
+	@echo "r" >> $(JLINK_SCRIPT)
+	@echo "g" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
+
+# Flash bootloader only
+flash-bl: $(BOOTLOADER_HEX)
+	@echo "Flashing bootloader to 0x08033000..."
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase 0x08033000 0x0803B000" >> $(JLINK_SCRIPT)
+	@echo "loadfile $(BOOTLOADER_HEX)" >> $(JLINK_SCRIPT)
+	@echo "r" >> $(JLINK_SCRIPT)
+	@echo "g" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
+
+# Flash combined firmware (app + bootloader)
+flash-full: $(COMBINED_HEX)
+	@echo "Flashing full firmware (App + Bootloader)..."
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase 0x08000000 0x0803B000" >> $(JLINK_SCRIPT)
+	@echo "loadfile $(COMBINED_HEX)" >> $(JLINK_SCRIPT)
+	@echo "r" >> $(JLINK_SCRIPT)
+	@echo "g" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
+
+#######################################
 # clean up
 #######################################
 clean: #libknsrf_wl_clean
 	-rm -fR $(BUILD_INFO_FILE)
 	-rm -fR $(BUILD_DIR)
+
+clean-all: clean bootloader-clean
+	@echo "All build directories cleaned"
 
 doc_clean:
 	-rm -fR $(DOC_DIR)
@@ -550,7 +663,7 @@ doc_clean:
 #######################################
 -include $(wildcard $(BUILD_DIR)/*.d)
 
-.PHONY: doc doc_clean dfu dfu-legacy
+.PHONY: doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash-app flash-bl flash-full clean-all check-app check-bootloader
 
 #######################################
 # force empty target

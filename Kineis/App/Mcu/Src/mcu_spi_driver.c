@@ -303,24 +303,6 @@ bool MCU_SPI_DRIVER_register(void *handle, int8_t (*rx_spi_evt_cb)(SPI_Buffer *r
 
     if (handle != NULL && hspi_handle == NULL) {
         hspi_handle = (SPI_HandleTypeDef *)handle;
-
-        MGR_LOG_DEBUG("\r\n========================================\r\n");
-        MGR_LOG_DEBUG("SPI DRIVER - Pipelined Protocol\r\n");
-        MGR_LOG_DEBUG("========================================\r\n");
-        MGR_LOG_DEBUG("Transaction size: %u bytes\r\n", SPI_TRANSACTION_SIZE);
-        MGR_LOG_DEBUG("Mode: %s\r\n",
-                      (hspi_handle->Init.Mode == SPI_MODE_SLAVE) ? "SLAVE" : "MASTER");
-        MGR_LOG_DEBUG("CPOL: %s, CPHA: %s\r\n",
-                      (hspi_handle->Init.CLKPolarity == SPI_POLARITY_LOW) ? "LOW" : "HIGH",
-                      (hspi_handle->Init.CLKPhase == SPI_PHASE_1EDGE) ? "1EDGE" : "2EDGE");
-        MGR_LOG_DEBUG("NSS: %s\r\n",
-                      (hspi_handle->Init.NSS == SPI_NSS_HARD_INPUT) ? "HARD_INPUT" :
-                      (hspi_handle->Init.NSS == SPI_NSS_SOFT) ? "SOFT" : "OTHER");
-        MGR_LOG_DEBUG("DMA RX: %s, DMA TX: %s\r\n",
-                      (hspi_handle->hdmarx != NULL) ? "YES" : "NO",
-                      (hspi_handle->hdmatx != NULL) ? "YES" : "NO");
-        MGR_LOG_DEBUG("HAL_GetTick at init: %lu\r\n", (unsigned long)HAL_GetTick());
-        MGR_LOG_DEBUG("========================================\r\n");
     } else if (handle == NULL && hspi_handle == NULL) {
         MGR_LOG_DEBUG("%s:: ERROR: invalid hspi ptr\r\n", __func__);
         kns_assert(0);

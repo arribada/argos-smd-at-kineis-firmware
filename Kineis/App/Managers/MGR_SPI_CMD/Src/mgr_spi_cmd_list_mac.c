@@ -52,10 +52,14 @@ bool bMGR_SPI_CMD_READKMAC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_WRITEKMACREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
+	(void)rx;  /* Unused in pipelined protocol */
 	HAL_StatusTypeDef ret = HAL_OK;
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITEKMAC_WAIT_LEN; // Only waiting profile id for the moment
-	ret = bMGR_SPI_DRIVER_read();
+
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;

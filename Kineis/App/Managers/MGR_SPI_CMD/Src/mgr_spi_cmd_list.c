@@ -68,8 +68,8 @@ const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {
 	{ CMD_READ_TCXO_WU, CMD_NONE,         		    bMGR_SPI_CMD_READTCXO_cmd},
 	{ CMD_WRITE_TCXOWU_REQ, CMD_WRITE_TCXOWU, 	    bMGR_SPI_CMD_WRITETCXOREQ_cmd},
 	{ CMD_WRITE_TCXOWU, CMD_NONE,     				bMGR_SPI_CMD_WRITETCXO_cmd},
-	/* Reserved commands 0x2B - 0x3E (gap for future use and alignment with bootloader DFU range) */
-	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2B */
+	/* Reserved commands 0x2C - 0x3E (gap for future use and alignment with bootloader DFU range) */
+	{ CMD_READ_RCONF_RAW, CMD_NONE, bMGR_SPI_CMD_READRCONFRAW_cmd},  /* 0x2B - Read raw RCONF from flash */
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2C */
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2D */
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2E */

@@ -25,6 +25,7 @@
 #include STM32_HAL_H
 #include "kineis_sw_conf.h" // for assert include below
 #include KINEIS_SW_ASSERT_H
+#include "mgr_log.h"  /* For unified UART output through ring buffer */
 
 /* Defines -------------------------------------------------------------------*/
 #if defined(STM32WLE5xx) || defined(STM32WL55xx)
@@ -239,8 +240,11 @@ void MCU_AT_CONSOLE_send(const char *format, ...)
 	if (written < 0) {
 		/* Encoding error - send error message instead */
 		const char *err_msg = "+ERROR=FORMAT\r\n";
-		if (huart_handle != NULL)
+		if (huart_handle != NULL) {
+			MGR_LOG_pause();  /* Pause debug logs - AT has priority */
 			HAL_UART_Transmit(huart_handle, (uint8_t *)err_msg, strlen(err_msg), 500);
+			MGR_LOG_resume();
+		}
 		return;
 	}
 	if ((size_t)written >= sizeof(uartTxBuf)) {
@@ -249,10 +253,17 @@ void MCU_AT_CONSOLE_send(const char *format, ...)
 		written = sizeof(uartTxBuf) - 1;
 	}
 
-	/* Send log message via UART */
+	/* AT UART PRIORITY: Pause debug logs while sending AT response.
+	 * This ensures AT responses are never interrupted by debug logs.
+	 * Debug logs remain in the ring buffer and will be sent later. */
+	MGR_LOG_pause();
+
+	/* Send AT response via UART - has absolute priority */
 	if (huart_handle != NULL) {
 		HAL_UART_Transmit(huart_handle, (uint8_t *)uartTxBuf, (uint16_t)written, 500);
 	}
+
+	MGR_LOG_resume();
 	/* Note: Removed assert for NULL handle - silent fail is safer than crash */
 }
 
@@ -267,6 +278,12 @@ void MCU_AT_CONSOLE_send_dataBuf(uint8_t *pu8_inDataBuff, uint16_t u16_dataLenBi
 	 * treated per nibble
 	 */
 
+	/* Pause logs once for the entire data buffer transfer */
+	bool was_paused = MGR_LOG_is_paused();
+	if (!was_paused) {
+		MGR_LOG_pause();
+	}
+
 	for (pu8_hex = pu8_inDataBuff;
 			(pu8_hex < (pu8_inDataBuff + u16_dataLenByte_trunc));
 			pu8_hex++)
@@ -278,6 +295,11 @@ void MCU_AT_CONSOLE_send_dataBuf(uint8_t *pu8_inDataBuff, uint16_t u16_dataLenBi
 	else if (u16_remainingBits > 0)
 		MCU_AT_CONSOLE_send("%01X", *pu8_hex);
 	/* else no additional bits */
+
+	/* Resume logs only if we paused them */
+	if (!was_paused) {
+		MGR_LOG_resume();
+	}
 }
 
 /**

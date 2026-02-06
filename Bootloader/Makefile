@@ -13,6 +13,10 @@ TARGET = bootloader
 DEBUG = 1
 OPT = -Os
 
+# Protocol mode: SPI (default) or UART
+# Usage: make PROTOCOL=UART  or  make PROTOCOL=SPI
+PROTOCOL ?= SPI
+
 #######################################
 # paths
 #######################################
@@ -76,12 +80,23 @@ CPU = -mcpu=cortex-m4
 MCU = $(CPU) -mthumb
 
 # C defines
+# USE_SPI_DRIVER is always defined to enable HAL SPI module (both modes use SPI)
 C_DEFS =  \
 -DCORE_CM4 \
 -DUSE_HAL_DRIVER \
 -DSTM32WL55xx \
 -DBL_BUILD \
 -DUSE_SPI_DRIVER
+
+# Protocol-specific defines
+# Both UART and SPI are always supported, but the default baudrate changes
+ifeq ($(PROTOCOL), UART)
+C_DEFS += -DBL_PROTOCOL_UART
+$(info Building bootloader for UART mode (9600 baud for UART, SPI still enabled))
+else
+C_DEFS += -DBL_PROTOCOL_SPI
+$(info Building bootloader for SPI mode (115200 baud for UART debug))
+endif
 
 ifeq ($(DEBUG), 1)
 C_DEFS += -DDEBUG

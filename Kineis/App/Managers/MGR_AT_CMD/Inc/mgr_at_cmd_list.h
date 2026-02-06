@@ -33,6 +33,7 @@ enum  atcmd_idx_t {
 	AT_SN,           /**< Get device serial number command */
 	AT_RCONF,        /**< Get/Set radio configuration command */
 	AT_SAVE_RCONF,   /**< Save radio configuration into Flash command */
+	AT_RCONFRAW,     /**< Get raw radio configuration from flash (16 bytes hex) */
 	AT_LPM,          /**< Get/Set low power mode command */
 	AT_MC,           /**< Get the message counter that will be used for next frame TX request */
 	AT_TCXO_WU,      /**< Get/Set TCXO Warm up in ms */
@@ -54,6 +55,9 @@ enum  atcmd_idx_t {
 
 	// Prepass command
 	AT_PREPASS_EN,        /**< Enable prepass, not implemented */
+
+	// DFU command
+	AT_BOOT,         /**< Enter bootloader/DFU mode */
 
 	ATCMD_MAX_COUNT,
 	ATCMD_UNKNOWN_COMMAND = ATCMD_MAX_COUNT

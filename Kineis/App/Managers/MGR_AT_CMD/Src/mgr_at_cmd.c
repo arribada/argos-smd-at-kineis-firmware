@@ -274,7 +274,11 @@ bool MGR_AT_CMD_decodeAt(uint8_t *pu8_atcmd)
 	struct atcmd_info_t atcmdInfo;
 
 	if (pu8_atcmd != NULL) {
+		/* Debug: log received AT command */
+		MGR_LOG_DEBUG("[AT_CMD] Received: %s\r\n", pu8_atcmd);
+
 		atcmdInfo = MGR_AT_CMD_getAtType(pu8_atcmd);
+		MGR_LOG_DEBUG("[AT_CMD] Index=%d, Type=%d\r\n", atcmdInfo.ATcmdIndex, atcmdInfo.ATcmdExecType);
 
 		if ((atcmdInfo.ATcmdIndex < ATCMD_UNKNOWN_COMMAND) &&
 		    (cas_atcmd_list_array[atcmdInfo.ATcmdIndex].f_ht_cmd_fun_proc != NULL))

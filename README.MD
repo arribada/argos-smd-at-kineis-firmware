@@ -69,6 +69,94 @@ Note: Currently, the ID must be changed at build time. A command to modify it wi
 
 - Adjust log levels, LPM levels, and board types in the `Makefile` as needed.
 
+### Build Options
+
+#### Application Only (Default)
+```bash
+# Debug UART mode
+make DEBUG=1 VERBOSE=1 -j20
+
+# Release UART mode
+make DEBUG=0 VERBOSE=0 -j20
+
+# Debug SPI mode
+make DEBUG=1 VERBOSE=1 COMM=SPI -j20
+
+# Release SPI mode
+make DEBUG=0 VERBOSE=0 COMM=SPI -j20
+```
+
+#### Bootloader Only
+```bash
+# Build bootloader for SPI mode (default)
+make bootloader COMM=SPI
+
+# Build bootloader for UART mode
+make bootloader COMM=UART
+```
+
+#### Combined Firmware (App + Bootloader)
+Build both application and bootloader, then merge them into a single flashable image:
+```bash
+# Debug SPI mode
+make full COMM=SPI DEBUG=1 VERBOSE=1 -j20
+
+# Release SPI mode
+make full COMM=SPI DEBUG=0 VERBOSE=0 -j20
+```
+
+Output files:
+- `build/argos-smd-at-kineis-firmware_full.bin` - Binary for flashing
+- `build/argos-smd-at-kineis-firmware_full.hex` - Intel HEX format
+
+#### DFU Binary (For OTA Updates)
+Generate a binary file for Device Firmware Update via the bootloader:
+```bash
+make dfu COMM=SPI -j20
+```
+
+Output: `build/argos-smd-at-kineis-firmware_dfu.bin`
+
+### Flashing
+
+#### Using Make (JLink)
+```bash
+# Flash application only
+make flash-app
+
+# Flash bootloader only
+make flash-bl
+
+# Flash combined firmware (app + bootloader)
+make flash-full
+```
+
+#### Using VS Code Tasks
+- **Build Full (App + Bootloader)** - Compile everything
+- **Flash Full (App + Bootloader)** - Build and flash combined image
+- **Generate DFU Binary** - Create DFU update file
+
+### Memory Layout
+
+| Region | Address Range | Size |
+|--------|---------------|------|
+| Application | 0x08000000 - 0x08032FFF | 204 KB |
+| Bootloader | 0x08033000 - 0x0803AFFF | 32 KB |
+| Flash User (Kineis config) | 0x0803B000 - 0x0803FFFF | 20 KB |
+
+### Clean
+
+```bash
+# Clean application only
+make clean
+
+# Clean bootloader only
+make bootloader-clean
+
+# Clean everything
+make clean-all
+```
+
 ## AT Commands
 
 The available AT commands for the GUI application are managed by the AT command manager. Key commands include:
@@ -111,6 +199,6 @@ This project is licensed under the GNU General Public License v3. See the `LICEN
 
 # Todo / in progress
 
-- SPI driver instead of UART
+- ~~SPI driver instead of UART~~ ✅ Done
 - Add and manage CLS ID
-- Programming firmware by SPI
+- ~~Programming firmware by SPI~~ ✅ Done (DFU bootloader)

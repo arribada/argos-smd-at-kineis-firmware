@@ -211,6 +211,38 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
  */
 bool bMGR_AT_CMD_TCXO_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief Get the raw radio configuration from flash (16 bytes in hex)
+ *
+ * Only status mode is authorized.
+ *
+ * "AT+RCONFRAW=?" returns the raw 16-byte radio configuration data from flash
+ * in hexadecimal format (32 hex characters).
+ *
+ * Response format: "+RCONFRAW=<32 hex chars>"
+ *
+ * @param[in] pu8_cmdParamString: string containing AT command
+ * @param[in] e_exec_mode: type of the command (status command or action command)
+ *
+ * @return true if command is correctly received and processed, false if error
+ */
+bool bMGR_AT_CMD_RCONFRAW_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief Enter bootloader/DFU mode
+ *
+ * Only action mode is authorized.
+ *
+ * "AT+BOOT" or "AT+BOOT=" triggers a jump to the bootloader for firmware update.
+ * The device will reboot into DFU mode and accept AT+DFU=... commands.
+ *
+ * Response format: "+OK" followed by reboot (no further response expected)
+ *
+ * @param[in] pu8_cmdParamString: string containing AT command
+ * @param[in] e_exec_mode: type of the command (status command or action command)
+ *
+ * @return true if command is correctly received and processed, false if error
+ */
+bool bMGR_AT_CMD_BOOT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_GENERAL_H */
 /**
  * @}

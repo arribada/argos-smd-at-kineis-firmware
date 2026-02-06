@@ -93,6 +93,7 @@ typedef enum {
     CMD_READ_TCXO_WU     = 0x28, /**< Read TCXO wake-up identifier. */
     CMD_WRITE_TCXOWU_REQ = 0x29, /**< Write TCXO wake-up request. */
     CMD_WRITE_TCXOWU     = 0x2A, /**< Write TCXO wake-up value. */
+    CMD_READ_RCONF_RAW   = 0x2B, /**< Read raw radio configuration (16 bytes from flash). */
     /* DFU commands - aligned with bootloader (0x30-0x3F range) */
     CMD_DFU_ENTER        = 0x3F, /**< Enter DFU/bootloader mode. */
     SPICMD_MAX_COUNT     = 0x40  /**< Maximum number of SPI commands. */
