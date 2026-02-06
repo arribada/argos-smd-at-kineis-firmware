@@ -33,6 +33,7 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+SN",            5, bMGR_AT_CMD_SN_cmd},
 	{ "AT+RCONF",         8, bMGR_AT_CMD_RCONF_cmd},
 	{ "AT+SAVE_RCONF",   13, bMGR_AT_CMD_SAVE_RCONF_cmd},
+	{ "AT+RCONFRAW",     11, bMGR_AT_CMD_RCONFRAW_cmd},
 	{ "AT+LPM",           6, bMGR_AT_CMD_LPM_cmd},
 	{ "AT+MC",            5, bMGR_AT_CMD_MC_cmd},
 	{ "AT+TCXO_WU",      10, bMGR_AT_CMD_TCXO_cmd},
@@ -51,6 +52,9 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 
 	/**< MAC commands (not functionnal, only to avoid GUI to crash) */
 	{ "AT+KMAC",          7, bMGR_AT_CMD_KMAC_cmd},
+
+	/**< DFU command - enter bootloader mode */
+	{ "AT+BOOT",          7, bMGR_AT_CMD_BOOT_cmd},
 };
 
 /**

@@ -80,8 +80,15 @@
 #define BL_DETECTION_TIMEOUT_MS     3000        /* 3 seconds */
 #define BL_DEFAULT_PROTOCOL         BL_PROTO_UART
 
-/* UART configuration - 115200 to match app's LPUART1 settings */
+/* UART configuration - baudrate depends on protocol mode
+ * UART mode: 9600 baud (for UART DFU communication)
+ * SPI mode: 115200 baud (for debug output while SPI handles DFU)
+ */
+#ifdef BL_PROTOCOL_UART
+#define BL_UART_BAUDRATE            9600
+#else
 #define BL_UART_BAUDRATE            115200
+#endif
 #define BL_UART_WORDLENGTH          UART_WORDLENGTH_8B
 #define BL_UART_STOPBITS            UART_STOPBITS_1
 #define BL_UART_PARITY              UART_PARITY_NONE

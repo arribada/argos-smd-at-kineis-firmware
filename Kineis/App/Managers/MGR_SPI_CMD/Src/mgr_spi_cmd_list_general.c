@@ -37,6 +37,7 @@
 #include "lpm.h"
 #include "mcu_nvm.h"
 #include "mcu_misc.h"
+#include "mcu_flash.h"
 #include "stm32wlxx_hal.h"
 
 /* DFU request function (defined in main.c) - uses RTC backup register */
@@ -178,13 +179,15 @@ bool bMGR_SPI_CMD_READADDRESS_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 }
 bool bMGR_SPI_CMD_WRITEADDRESSREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
-	// Give size
+	(void)rx;  /* Unused in pipelined protocol - command has no payload */
 	HAL_StatusTypeDef ret = HAL_OK;
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITEADDRESS_WAIT_LEN;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send ACK response (OK with no data) for pipelined protocol
+	 * This tells master that slave is ready to receive data in next phase */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -263,12 +266,14 @@ bool bMGR_SPI_CMD_READSECKEY_cmd(SPI_Buffer *rx, SPI_Buffer *tx) {
 }
 
 bool bMGR_SPI_CMD_WRITESECKEYREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx) {
+	(void)rx;  /* Unused in pipelined protocol */
 	HAL_StatusTypeDef ret = HAL_OK;
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITESECKEY_WAIT_LEN;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -399,13 +404,14 @@ bool bMGR_SPI_CMD_READID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_WRITEIDREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
-	// Give size
+	(void)rx;  /* Unused in pipelined protocol */
 	HAL_StatusTypeDef ret = HAL_OK;
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITEID_WAIT_LEN;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -509,13 +515,14 @@ bool bMGR_SPI_CMD_READRCONF_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_WRITERCONFREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
-	// Give size
+	(void)rx;  /* Unused in pipelined protocol */
 	HAL_StatusTypeDef ret = HAL_OK;
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITERCONF_WAIT_LEN;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -617,12 +624,14 @@ bool bMGR_SPI_CMD_READLPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_WRITELPMREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
-	(void)tx;  /* Unused parameter - uses global txBuf */
+	(void)rx;  /* Unused in pipelined protocol */
 	HAL_StatusTypeDef ret = HAL_OK;
-	txBuf.data[0] = rx->data[0];
-	rxBuf.next_req = CMD_WRITELPM_WAIT_LEN; // Only waiting profile id for the moment
-	ret = bMGR_SPI_DRIVER_read();
-	//Reset tx/rx state if MAC_OK
+
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -685,13 +694,14 @@ bool bMGR_SPI_CMD_READTCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 bool bMGR_SPI_CMD_WRITETCXOREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
-	// Give size
+	(void)rx;  /* Unused in pipelined protocol */
 	HAL_StatusTypeDef ret = HAL_OK;
-	tx->data[0] = rx->data[0];
-	rx->next_req = CMD_WRITETCXO_WAIT_LEN;
-	ret = bMGR_SPI_DRIVER_read();
 
-	//Reset tx/rx state if MAC_OK
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
 	if (ret == HAL_OK)
 	{
 		return true;
@@ -756,4 +766,34 @@ bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 
 	/* Should never reach here */
 	return true;
+}
+
+bool bMGR_SPI_CMD_READRCONFRAW_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	(void)rx;  /* Unused parameter - command only returns data */
+	HAL_StatusTypeDef ret = HAL_OK;
+
+	uint8_t raw_rconf[FLASH_RADIOCONF_BYTE_SIZE];
+
+	/* Read raw bytes directly from flash */
+	enum KNS_status_t status = MCU_FLASH_read(
+		FLASH_USER_START_ADDR + FLASH_RADIOCONF_OFFSET,
+		raw_rconf,
+		FLASH_RADIOCONF_BYTE_SIZE);
+
+	if (status != KNS_STATUS_OK) {
+		return bMGR_SPI_CMD_logFailedMsg((enum ERROR_RETURN_T)status, tx);
+	}
+
+	/* Copy raw bytes to TX buffer */
+	memcpy(&tx->data[0], raw_rconf, FLASH_RADIOCONF_BYTE_SIZE);
+	tx->next_req = FLASH_RADIOCONF_BYTE_SIZE;
+
+	ret = bMGR_SPI_DRIVER_writeread();
+
+	if (ret == HAL_OK) {
+		return true;
+	} else {
+		return false;
+	}
 }

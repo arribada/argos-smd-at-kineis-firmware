@@ -379,6 +379,19 @@ bool bMGR_SPI_CMD_READTCXO_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
  */
 bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
 
+/**
+ * @brief Read the raw radio configuration from flash.
+ *
+ * This function reads the raw 16-byte radio configuration directly from flash memory,
+ * without decoding it. This is useful for debugging and verifying flash contents.
+ *
+ * @param rx Pointer to the SPI receive buffer containing the command.
+ * @param tx Pointer to the SPI transmit buffer where the raw data will be sent (16 bytes).
+ *
+ * @return true if the command is correctly received and processed, false otherwise.
+ */
+bool bMGR_SPI_CMD_READRCONFRAW_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
 #endif /* __MGR_SPI_CMD_LIST_GENERAL_H */
 
 /** @} */

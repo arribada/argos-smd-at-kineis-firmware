@@ -13,6 +13,12 @@
 #include <string.h>
 #include <stdio.h>
 
+/* External debug function (defined in bl_main.c) */
+extern void early_debug_print(const char *str);
+
+/* Progress counter for write operations */
+static uint16_t write_progress_counter = 0;
+
 /* DFU context */
 static dfu_context_t dfu_ctx;
 
@@ -97,6 +103,8 @@ dfu_response_t bl_dfu_process_cmd(dfu_cmd_t cmd, const uint8_t* data,
 
 dfu_response_t bl_dfu_cmd_ping(uint8_t* response, uint16_t* response_len)
 {
+    early_debug_print("[DFU] PING received\r\n");
+
     /* Return bootloader version string */
     const char* version = bl_get_version_string();
 
@@ -167,10 +175,13 @@ dfu_response_t bl_dfu_cmd_erase(void)
 {
     bl_flash_status_t status;
 
+    early_debug_print("[DFU] ERASE start...\r\n");
+
     /* Erase application flash region */
     status = bl_flash_erase_app();
 
     if (status != BL_FLASH_OK) {
+        early_debug_print("[DFU] ERASE FAILED!\r\n");
         return DFU_RSP_FLASH_ERROR;
     }
 
@@ -182,6 +193,11 @@ dfu_response_t bl_dfu_cmd_erase(void)
 
     /* Reset CRC calculation */
     bl_crc_reset();
+
+    /* Reset progress counter */
+    write_progress_counter = 0;
+
+    early_debug_print("[DFU] ERASE OK, ready for data\r\n");
 
     return DFU_RSP_OK;
 }
@@ -252,6 +268,17 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
     /* Accumulate CRC */
     bl_crc32_accumulate(payload, payload_len);
 
+    /* Progress indicator: print info every 64 writes (~16KB) */
+    write_progress_counter++;
+    if ((write_progress_counter % 64) == 0) {
+        char progress_msg[48];
+        snprintf(progress_msg, sizeof(progress_msg), "[DFU] %luKB written\r\n",
+                 (unsigned long)(dfu_ctx.received_size / 1024));
+        early_debug_print(progress_msg);
+    } else if ((write_progress_counter % 16) == 0) {
+        early_debug_print(".");
+    }
+
     return DFU_RSP_OK;
 }
 
@@ -289,13 +316,18 @@ dfu_response_t bl_dfu_cmd_read(const uint8_t* data, uint16_t data_len,
 dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
 {
     uint32_t expected_crc;
+    char msg[64];
+
+    early_debug_print("\r\n[DFU] VERIFY start...\r\n");
 
     /* Check if session is active */
     if (!dfu_ctx.session_active) {
+        early_debug_print("[DFU] VERIFY failed: no session\r\n");
         return DFU_RSP_NOT_READY;
     }
 
     if (data_len < 4) {
+        early_debug_print("[DFU] VERIFY failed: size error\r\n");
         return DFU_RSP_SIZE_ERROR;
     }
 
@@ -305,14 +337,22 @@ dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
     /* Get calculated CRC */
     dfu_ctx.calculated_crc = bl_crc32_get();
 
+    snprintf(msg, sizeof(msg), "[DFU] CRC exp=0x%08lX calc=0x%08lX\r\n",
+             (unsigned long)expected_crc, (unsigned long)dfu_ctx.calculated_crc);
+    early_debug_print(msg);
+
     /* Compare CRCs */
     if (dfu_ctx.calculated_crc != dfu_ctx.expected_crc) {
         dfu_ctx.verify_passed = false;  /* Explicitly mark as failed */
+        early_debug_print("[DFU] VERIFY FAILED: CRC mismatch!\r\n");
         return DFU_RSP_CRC_ERROR;
     }
 
     /* CRC verified successfully */
     dfu_ctx.verify_passed = true;
+    snprintf(msg, sizeof(msg), "[DFU] VERIFY OK! Total: %luKB\r\n",
+             (unsigned long)(dfu_ctx.received_size / 1024));
+    early_debug_print(msg);
     return DFU_RSP_OK;
 }
 

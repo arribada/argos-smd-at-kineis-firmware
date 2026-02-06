@@ -636,47 +636,6 @@ int main(void)
   MX_GPIO_Init();
   MX_LPUART1_UART_Init();
 
-  /* Direct UART test - blocking transmission to verify UART is working */
-  {
-    uint8_t test_msg[] = "\r\n==== UART TEST OK ====\r\n";
-    HAL_UART_Transmit(&hlpuart1, test_msg, sizeof(test_msg)-1, 1000);
-
-    /* Print DFU debug info captured at startup (before HAL_Init) */
-    char dbg[128];
-    snprintf(dbg, sizeof(dbg),
-             "[BOOT] DFU check: TAMP=0x%08lX SRAM=0x%08lX reason=%lu\r\n",
-             (unsigned long)g_dfu_debug_val,
-             (unsigned long)g_dfu_debug_sram,
-             (unsigned long)g_dfu_debug_reason);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
-
-    /* Show RCC_BDCR at time of check (before HAL_Init) vs now (after) */
-    snprintf(dbg, sizeof(dbg),
-             "[BOOT] BDCR@check=0x%08lX BDCR@now=0x%08lX\r\n",
-             (unsigned long)g_dfu_debug_bdcr,
-             (unsigned long)RCC->BDCR);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
-
-    snprintf(dbg, sizeof(dbg),
-             "[BOOT] BL check: stack=0x%08lX entry=0x%08lX\r\n",
-             (unsigned long)g_dfu_debug_bl_stack,
-             (unsigned long)g_dfu_debug_bl_entry);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
-
-    /* Check PWR_CR1 for DBP bit */
-    snprintf(dbg, sizeof(dbg),
-             "[BOOT] PWR_CR1=0x%08lX (DBP=%d)\r\n",
-             (unsigned long)PWR->CR1,
-             (int)((PWR->CR1 >> 8) & 1));   /* DBP bit 8 */
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
-
-    /* Also print current TAMP register values (after HAL_Init/clocks configured) */
-    snprintf(dbg, sizeof(dbg),
-             "[BOOT] Current TAMP: BKP0=0x%08lX BKP1=0x%08lX\r\n",
-             (unsigned long)(*(volatile uint32_t*)0x4000B100UL),
-             (unsigned long)(*(volatile uint32_t*)0x4000B104UL));
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)dbg, strlen(dbg), 100);
-  }
 
   MX_SUBGHZ_Init();
   MX_TIM16_Init();
@@ -783,19 +742,22 @@ int main(void)
 #elif defined (USE_GUI_APP)
 
 #if defined(USE_SPI_DRIVER)
-  MGR_LOG_DEBUG("Running SPI version\r\n");
-  /* DEBUG: Print FLASH_OPTR and DFU flag info */
-  MGR_LOG_DEBUG("FLASH_OPTR=0x%08X (SRAM_RST bit25=%u, 1=preserved)\r\n",
-                (unsigned int)FLASH->OPTR,
-                (unsigned int)((FLASH->OPTR & FLASH_OPTR_SRAM_RST) ? 1 : 0));
-  MGR_LOG_DEBUG("DFU flag at 0x%08X = 0x%08X (expected magic: 0x%08X)\r\n",
-                g_dfu_debug_addr, g_dfu_debug_val, DFU_REQUEST_MAGIC);
-  MGR_LOG_DEBUG("BL @0x08033000: stack=0x%08X entry=0x%08X\r\n",
-                g_dfu_debug_bl_stack, g_dfu_debug_bl_entry);
-  MGR_LOG_DEBUG("DFU reason: %u (0=no flag, 1=BL invalid, 2=jumped)\r\n",
-                g_dfu_debug_reason);
+  #if defined(DEBUG) && defined(VERBOSE)
+  MGR_LOG_DEBUG("Build: GUI/SPI [DEBUG,VERBOSE]\r\n");
+  #elif defined(DEBUG)
+  MGR_LOG_DEBUG("Build: GUI/SPI [DEBUG]\r\n");
+  #else
+  MGR_LOG_DEBUG("Build: GUI/SPI\r\n");
+  #endif
   KNS_APP_gui_init(&hspi1);
 #else
+  #if defined(DEBUG) && defined(VERBOSE)
+  MGR_LOG_DEBUG("Build: GUI/UART [DEBUG,VERBOSE]\r\n");
+  #elif defined(DEBUG)
+  MGR_LOG_DEBUG("Build: GUI/UART [DEBUG]\r\n");
+  #else
+  MGR_LOG_DEBUG("Build: GUI/UART\r\n");
+  #endif
   KNS_APP_gui_init(&hlpuart1);
 #endif
 

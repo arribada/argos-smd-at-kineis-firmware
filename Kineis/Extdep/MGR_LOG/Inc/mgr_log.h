@@ -135,6 +135,32 @@ uint32_t MGR_LOG_get_overflow_count(void);
  */
 bool MGR_LOG_has_pending(void);
 
+/**
+ * @brief Pause log flushing (for AT console priority)
+ *
+ * While paused, MGR_LOG_flush() returns immediately without sending.
+ * Logs are still buffered in the ring buffer.
+ * Use this to give AT UART responses absolute priority.
+ */
+void MGR_LOG_pause(void);
+
+/**
+ * @brief Resume log flushing after pause
+ */
+void MGR_LOG_resume(void);
+
+/**
+ * @brief Check if log flushing is paused
+ * @return true if paused
+ */
+bool MGR_LOG_is_paused(void);
+
+/**
+ * @brief Check if log UART transmission is in progress
+ * @return true if UART is busy transmitting logs
+ */
+bool MGR_LOG_is_uart_busy(void);
+
 #else // not USE_LOCAL_PRINTF
 
 #define vMGR_LOG_printf			printf
@@ -142,6 +168,10 @@ bool MGR_LOG_has_pending(void);
 #define MGR_LOG_flush_all()		do {} while(0)
 #define MGR_LOG_get_overflow_count()	(0)
 #define MGR_LOG_has_pending()		(false)
+#define MGR_LOG_pause()			do {} while(0)
+#define MGR_LOG_resume()		do {} while(0)
+#define MGR_LOG_is_paused()		(false)
+#define MGR_LOG_is_uart_busy()		(false)
 
 #endif // end USE_LOCAL_PRINTF
 

@@ -16,7 +16,7 @@ _estack = ORIGIN(RAM1) + LENGTH(RAM1);
 
 /* Bootloader uses minimal heap/stack */
 _Min_Heap_Size = 0x200;     /* 512 bytes heap */
-_Min_Stack_Size = 0x800;    /* 2KB stack */
+_Min_Stack_Size = 0x1000;   /* 4KB stack - increased for UART DFU processing */
 
 /* Application address for jump */
 _app_addr = 0x08000000;

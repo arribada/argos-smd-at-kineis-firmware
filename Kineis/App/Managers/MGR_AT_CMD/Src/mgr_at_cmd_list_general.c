@@ -30,6 +30,8 @@
 #include "mgr_log.h"
 #include "mcu_nvm.h"
 #include "mcu_aes.h"
+#include "mcu_flash.h"
+#include "main.h"  /* For request_dfu_mode() */
 
 /* TCXO warmup limits - MEDIUM FIX: Replace magic number with constant */
 #define TCXO_MAX_WARMUP_MS      30000UL
@@ -427,6 +429,59 @@ bool bMGR_AT_CMD_TCXO_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	} else {
 		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 	}
+}
+
+bool bMGR_AT_CMD_RCONFRAW_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint8_t raw_rconf[FLASH_RADIOCONF_BYTE_SIZE];
+
+		/* Read raw bytes directly from flash */
+		enum KNS_status_t status = MCU_FLASH_read(
+			FLASH_USER_START_ADDR + FLASH_RADIOCONF_OFFSET,
+			raw_rconf,
+			FLASH_RADIOCONF_BYTE_SIZE);
+
+		if (status != KNS_STATUS_OK) {
+			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		}
+
+		/* Convert to hex string and send */
+		char hex_str[33];  /* 16 bytes * 2 chars + null terminator */
+		for (int i = 0; i < FLASH_RADIOCONF_BYTE_SIZE; i++) {
+			sprintf(&hex_str[i * 2], "%02x", raw_rconf[i]);
+		}
+		hex_str[32] = '\0';
+
+		MCU_AT_CONSOLE_send("+RCONFRAW=%s\r\n", hex_str);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	MGR_LOG_VERBOSE("[ERROR] Action mode is unauthorized for this AT cmd\r\n");
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
+bool bMGR_AT_CMD_BOOT_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
+	enum atcmd_type_t e_exec_mode)
+{
+	/* Accept both action mode (AT+BOOT=) and status mode (AT+BOOT=?) for flexibility */
+	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
+		/* Send OK response before jumping to bootloader */
+		MCU_AT_CONSOLE_send("+BOOT=OK\r\n");
+
+		/* Small delay to ensure response is transmitted */
+		HAL_Delay(50);
+
+		/* Jump to bootloader - this function does not return */
+		request_dfu_mode();
+
+		/* Should never reach here */
+		return true;
+	}
+
+	MGR_LOG_VERBOSE("[ERROR] Invalid mode for AT+BOOT command\r\n");
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
 /**

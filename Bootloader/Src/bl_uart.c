@@ -30,13 +30,36 @@ static volatile bool cmd_ready = false;
 /* Single byte for interrupt reception */
 static uint8_t rx_byte;
 
+/* External debug function */
+extern void early_debug_print(const char *str);
+
 bool bl_uart_init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+    early_debug_print("[UART] Init...\r\n");
 
     /* Enable clocks */
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_LPUART1_CLK_ENABLE();
+
+    /* Disable LPUART1 before reconfiguring (in case early_debug_init used it) */
+    LPUART1->CR1 = 0;
+
+    /* Reset LPUART1 to clear any previous state */
+    __HAL_RCC_LPUART1_FORCE_RESET();
+    for (volatile int i = 0; i < 100; i++);
+    __HAL_RCC_LPUART1_RELEASE_RESET();
+    for (volatile int i = 0; i < 100; i++);
+
+    /* Configure LPUART1 clock source to HSI (16MHz) for proper baudrate calculation */
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_LPUART1;
+    PeriphClkInit.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_HSI;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
+        early_debug_print("[UART] Clock config FAILED\r\n");
+        return false;
+    }
 
     /* Configure LPUART1 GPIO: PA2 (TX), PA3 (RX) */
     GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
@@ -59,6 +82,7 @@ bool bl_uart_init(void)
     huart.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
 
     if (HAL_UART_Init(&huart) != HAL_OK) {
+        early_debug_print("[UART] HAL Init FAILED\r\n");
         return false;
     }
 
@@ -72,6 +96,12 @@ bool bl_uart_init(void)
     rx_overflow = false;
     cmd_len = 0;
     cmd_ready = false;
+
+#if BL_UART_BAUDRATE == 9600
+    early_debug_print("[UART] Init OK @9600\r\n");
+#else
+    early_debug_print("[UART] Init OK @115200\r\n");
+#endif
 
     return true;
 }
@@ -88,7 +118,10 @@ void bl_uart_deinit(void)
 void bl_uart_start_rx(void)
 {
     /* Start interrupt-based reception */
-    HAL_UART_Receive_IT(&huart, &rx_byte, 1);
+    HAL_StatusTypeDef status = HAL_UART_Receive_IT(&huart, &rx_byte, 1);
+    if (status != HAL_OK) {
+        early_debug_print("[UART] RX IT FAIL\r\n");
+    }
 }
 
 void bl_uart_stop_rx(void)
@@ -288,8 +321,12 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
     bl_uart_transmit((uint8_t*)response, len);
 }
 
+static volatile uint32_t rx_irq_count = 0;
+
 void bl_uart_rx_irq_handler(void)
 {
+    rx_irq_count++;
+
     /* Store received byte in circular buffer */
     uint16_t next_head = (rx_head + 1) % BL_RX_BUFFER_SIZE;
 
@@ -302,6 +339,11 @@ void bl_uart_rx_irq_handler(void)
 
     /* Continue reception */
     HAL_UART_Receive_IT(&huart, &rx_byte, 1);
+}
+
+uint32_t bl_uart_get_irq_count(void)
+{
+    return rx_irq_count;
 }
 
 /* HAL UART callbacks */
