@@ -45,9 +45,16 @@ static void early_debug_update_baudrate(void);
 
 void bl_init(void)
 {
+    early_debug_print("[BL] HAL_Init...\r\n");
     HAL_Init();
+    early_debug_print("[BL] HAL_Init done\r\n");
+
+    early_debug_print("[BL] hw_init...\r\n");
     bl_hw_init();
+    early_debug_print("[BL] hw_init done\r\n");
+
     early_debug_update_baudrate();
+    early_debug_print("[BL] baudrate updated\r\n");
 
     bl_flash_init();
     bl_crc_init();
@@ -113,10 +120,15 @@ bl_protocol_t bl_get_protocol(void)
     return detected_protocol;
 }
 
+/* Track if DFU was explicitly requested (don't jump back to app after timeout) */
+static bool g_dfu_explicitly_requested = false;
+
 static void bl_state_init(void)
 {
     if (g_early_dfu_flag_detected || bl_flash_is_dfu_requested()) {
         bl_flash_clear_dfu_request();
+        g_dfu_explicitly_requested = true;  /* Remember DFU was requested */
+        early_debug_print("[BL] DFU mode requested\r\n");
         current_state = BL_STATE_DETECT_PROTOCOL;
     } else {
         current_state = BL_STATE_CHECK_APP;
@@ -135,55 +147,36 @@ static void bl_state_check_app(void)
 static void bl_state_detect_protocol(void)
 {
     uint32_t start_tick = HAL_GetTick();
-    uint32_t last_debug = 0;
-
-    early_debug_print("[BL] Waiting for DFU...\r\n");
 
     bl_uart_init();
-    bl_spi_init();
+
+    /* Skip SPI when DFU was explicitly requested (came from UART AT+BOOT) */
+    if (!g_dfu_explicitly_requested) {
+        bl_spi_init();
+    }
+
     bl_uart_start_rx();
-    bl_spi_start_rx();
 
-    early_debug_print("[BL] RX started, waiting...\r\n");
+    if (!g_dfu_explicitly_requested) {
+        bl_spi_start_rx();
+    }
 
-    while ((HAL_GetTick() - start_tick) < BL_DETECTION_TIMEOUT_MS) {
-        /* Print status every second for activity indication */
-        uint32_t elapsed = HAL_GetTick() - start_tick;
-        if (elapsed / 1000 > last_debug) {
-            last_debug = elapsed / 1000;
-            /* Print IRQ count to verify interrupts are being triggered */
-            char dbg[32];
-            uint32_t irq = bl_uart_get_irq_count();
-            int pos = 0;
-            dbg[pos++] = '[';
-            if (irq == 0) {
-                dbg[pos++] = '0';
-            } else {
-                char tmp[10];
-                int n = 0;
-                while (irq > 0) {
-                    tmp[n++] = '0' + (irq % 10);
-                    irq /= 10;
-                }
-                while (n > 0) dbg[pos++] = tmp[--n];
-            }
-            dbg[pos++] = ']';
-            dbg[pos++] = '.';
-            dbg[pos] = 0;
-            early_debug_print(dbg);
-        }
+    /* Use shorter timeout if DFU was explicitly requested (we know it's UART) */
+    uint32_t timeout = g_dfu_explicitly_requested ? 500 : BL_DETECTION_TIMEOUT_MS;
 
+    while ((HAL_GetTick() - start_tick) < timeout) {
         if (bl_uart_has_data()) {
-            early_debug_print("\r\n[BL] UART DFU\r\n");
             detected_protocol = BL_PROTO_UART;
-            bl_spi_stop_rx();
-            bl_spi_deinit();
+            if (!g_dfu_explicitly_requested) {
+                bl_spi_stop_rx();
+                bl_spi_deinit();
+            }
             current_state = BL_STATE_DFU_UART;
             return;
         }
 
-        if (bl_spi_has_data()) {
-            early_debug_print("\r\n[BL] SPI DFU\r\n");
+        /* Only check SPI if not in explicit UART DFU mode */
+        if (!g_dfu_explicitly_requested && bl_spi_has_data()) {
             detected_protocol = BL_PROTO_SPI;
             bl_uart_stop_rx();
             current_state = BL_STATE_DFU_SPI;
@@ -191,16 +184,16 @@ static void bl_state_detect_protocol(void)
         }
     }
 
-    early_debug_print("\r\n[BL] Timeout!\r\n");
-
-    /* Timeout */
-    if (bl_check_app_valid()) {
-        early_debug_print("[BL] App valid, jumping\r\n");
+    /* Timeout - check if we should stay in DFU mode */
+    if (g_dfu_explicitly_requested) {
+        /* DFU was explicitly requested - stay in UART DFU mode */
+        detected_protocol = BL_PROTO_UART;
+        current_state = BL_STATE_DFU_UART;
+    } else if (bl_check_app_valid()) {
         bl_uart_stop_rx();
         bl_spi_stop_rx();
         current_state = BL_STATE_JUMP_APP;
     } else {
-        early_debug_print("[BL] No app, stay UART DFU\r\n");
         detected_protocol = BL_PROTO_UART;
         bl_spi_stop_rx();
         bl_spi_deinit();
@@ -611,6 +604,7 @@ static void bl_hw_init(void)
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
+    early_debug_print("[HW] voltage...\r\n");
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
     /* Configure PLL: HSI 16MHz / 4 * 32 / 4 = 32 MHz */
@@ -624,9 +618,12 @@ static void bl_hw_init(void)
     RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
     RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV4;
     RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+    early_debug_print("[HW] OscConfig...\r\n");
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+        early_debug_print("[HW] OscConfig FAIL\r\n");
         Error_Handler();
     }
+    early_debug_print("[HW] OscConfig OK\r\n");
 
     RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3 | RCC_CLOCKTYPE_HCLK |
                                   RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
@@ -636,9 +633,12 @@ static void bl_hw_init(void)
     RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
     RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
+    early_debug_print("[HW] ClockConfig...\r\n");
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) {
+        early_debug_print("[HW] ClockConfig FAIL\r\n");
         Error_Handler();
     }
+    early_debug_print("[HW] ClockConfig OK\r\n");
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -671,15 +671,43 @@ static void __attribute__((unused)) bl_hw_deinit(void)
 #define EARLY_DEBUG_BRR     BRR_115200_HSI16
 #endif
 
+/* Send a single char using current LPUART1 config (no setup needed) */
+static void raw_uart_char(char c)
+{
+    if (LPUART1->CR1 & USART_CR1_UE) {
+        /* UART is enabled, use it */
+        volatile uint32_t timeout = 100000;
+        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF) && --timeout);
+        if (timeout) LPUART1->TDR = c;
+    }
+}
+
 static void early_debug_init(void)
 {
+    volatile uint32_t timeout;
+
+    /* Try to use existing UART config from app to send early marker */
+    raw_uart_char('$');
+
     /* Enable HSI */
     RCC->CR |= RCC_CR_HSION;
-    while (!(RCC->CR & RCC_CR_HSIRDY));
+    timeout = 1000000;
+    while (!(RCC->CR & RCC_CR_HSIRDY) && --timeout);
+    if (!timeout) {
+        raw_uart_char('H'); raw_uart_char('!'); /* HSI timeout */
+        return;
+    }
+    raw_uart_char('1');
 
     /* Switch to HSI */
     RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | (0x01UL << RCC_CFGR_SW_Pos);
-    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != (0x01UL << RCC_CFGR_SWS_Pos));
+    timeout = 1000000;
+    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != (0x01UL << RCC_CFGR_SWS_Pos) && --timeout);
+    if (!timeout) {
+        raw_uart_char('S'); raw_uart_char('!'); /* Switch timeout */
+        return;
+    }
+    raw_uart_char('2');
 
     RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
     RCC->APB1ENR2 |= RCC_APB1ENR2_LPUART1EN;
@@ -687,8 +715,10 @@ static void early_debug_init(void)
 
     /* Wait for any pending TX to complete before resetting */
     if (LPUART1->CR1 & USART_CR1_UE) {
-        while (!(LPUART1->ISR & USART_ISR_TC));
+        timeout = 100000;
+        while (!(LPUART1->ISR & USART_ISR_TC) && --timeout);
     }
+    raw_uart_char('3');
 
     /* Disable UART before reset */
     LPUART1->CR1 = 0;
@@ -708,11 +738,17 @@ static void early_debug_init(void)
     GPIOA->AFR[0] &= ~(0xFUL << (2 * 4));
     GPIOA->AFR[0] |= (8UL << (2 * 4));
 
-    /* Set baudrate based on protocol mode */
+    /* CRITICAL: Set LPUART1 clock source to HSI16 (value 2) */
+    /* This must be done BEFORE setting BRR, as BRR depends on clock frequency */
+    RCC->CCIPR = (RCC->CCIPR & ~RCC_CCIPR_LPUART1SEL_Msk) |
+                 (2UL << RCC_CCIPR_LPUART1SEL_Pos);
+
+    /* Set baudrate based on protocol mode (BRR calc assumes HSI16) */
     LPUART1->BRR = EARLY_DEBUG_BRR;
     LPUART1->CR1 = USART_CR1_TE | USART_CR1_UE;
 
-    while (!(LPUART1->ISR & USART_ISR_TEACK));
+    timeout = 100000;
+    while (!(LPUART1->ISR & USART_ISR_TEACK) && --timeout);
 }
 
 static void early_debug_update_baudrate(void)
@@ -782,7 +818,9 @@ int main(void)
         __DSB();
     }
 
+    early_debug_print("[BL] Starting init...\r\n");
     bl_init();
+    early_debug_print("[BL] Init complete\r\n");
     bl_run();
 
     while (1);

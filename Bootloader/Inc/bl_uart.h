@@ -112,4 +112,10 @@ void bl_uart_rx_irq_handler(void);
  */
 uint32_t bl_uart_get_irq_count(void);
 
+/**
+ * @brief Get HAL UART RX state (for debugging)
+ * @return HAL RxState value
+ */
+uint32_t huart_state_debug(void);
+
 #endif /* BL_UART_H */
