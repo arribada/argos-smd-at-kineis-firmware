@@ -327,7 +327,7 @@ void bl_uart_rx_irq_handler(void)
 {
     rx_irq_count++;
 
-    /* Store received byte in circular buffer */
+    /* Store received byte in circular buffer - NO debug here (too slow) */
     uint16_t next_head = (rx_head + 1) % BL_RX_BUFFER_SIZE;
 
     if (next_head != rx_tail) {
@@ -344,6 +344,11 @@ void bl_uart_rx_irq_handler(void)
 uint32_t bl_uart_get_irq_count(void)
 {
     return rx_irq_count;
+}
+
+uint32_t huart_state_debug(void)
+{
+    return (uint32_t)huart.RxState;
 }
 
 /* HAL UART callbacks */

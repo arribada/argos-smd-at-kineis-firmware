@@ -28,6 +28,9 @@ DEBUG = 1
 VERBOSE = 1
 USE_BAREMETAL = 1
 
+# Python executable (use python3 or python depending on your system)
+PYTHON ?= python3
+
 
 # Select APPlication. Can be:
 # * STDLN: for the standalone application sending one message at startup
@@ -503,14 +506,14 @@ DFU_LEGACY = $(BUILD_DIR)/$(TARGET)_dfu_legacy.bin
 # DFU with full header (recommended for production)
 $(DFU_OUTPUT): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary with header --"
-	python $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
+	$(PYTHON) $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
 	@echo "DFU file: $@"
 	@echo "Flash address: 0x08008000 (header + code)"
 
 # DFU without header (legacy mode - for testing)
 $(DFU_LEGACY): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary (legacy mode, no header) --"
-	python $(DFU_SCRIPT) $< $@ --no-header
+	$(PYTHON) $(DFU_SCRIPT) $< $@ --no-header
 	@echo "DFU file: $@"
 	@echo "Flash address: 0x08008100 (code only)"
 
@@ -592,7 +595,7 @@ check-bootloader: bootloader
 
 $(COMBINED_BIN): $(BUILD_DIR)/$(TARGET).bin $(BOOTLOADER_BIN) $(MERGE_SCRIPT) | $(BUILD_DIR)
 	@echo "=== Merging App + Bootloader ==="
-	python $(MERGE_SCRIPT) \
+	$(PYTHON) $(MERGE_SCRIPT) \
 		--app $(BUILD_DIR)/$(TARGET).bin \
 		--bootloader $(BOOTLOADER_BIN) \
 		--output-bin $(COMBINED_BIN) \
@@ -605,8 +608,8 @@ $(BOOTLOADER_BIN): bootloader
 #######################################
 # Flash targets
 #######################################
-# JLink executable path - adjust to your installation
-JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe"
+# JLink executable - uses JLinkExe from PATH (install J-Link software)
+JLINK_EXE ?= JLinkExe
 JLINK_SERIAL ?= 801035790
 JLINK_SPEED ?= 4000
 JLINK_SCRIPT = $(BUILD_DIR)/flash.jlink
@@ -634,7 +637,8 @@ flash-bl: $(BOOTLOADER_HEX)
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
 
 # Flash combined firmware (app + bootloader)
-flash-full: $(COMBINED_HEX)
+# Depends on COMBINED_BIN which triggers the merge script that creates both BIN and HEX
+flash-full: $(COMBINED_BIN)
 	@echo "Flashing full firmware (App + Bootloader)..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08000000 0x0803B000" >> $(JLINK_SCRIPT)
