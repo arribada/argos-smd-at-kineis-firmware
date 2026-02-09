@@ -1,7 +1,21 @@
 /**
  * @file    bl_flash.h
- * @brief   Flash memory operations for bootloader
+ * @brief   Flash memory operations - erase, write, read, verify
  * @date    2025
+ *
+ * @defgroup BL_FLASH Flash Operations
+ * @ingroup  BOOTLOADER
+ * @brief    STM32WL55 flash erase/write/read/verify for DFU
+ *
+ * Provides flash memory operations for the DFU process:
+ * - Page-level erase (2 KB pages)
+ * - 64-bit aligned writes (STM32WL55 requirement)
+ * - Read-back verification
+ * - Bootloader persistent state storage
+ *
+ * Flash page size: @ref BL_FLASH_PAGE_SIZE (2 KB).
+ * Application region: @ref APP_FLASH_BASE to @ref APP_FLASH_END (204 KB).
+ * @{
  */
 
 #ifndef BL_FLASH_H
@@ -151,5 +165,7 @@ bool bl_flash_is_dfu_requested(void);
  * @return BL_FLASH_OK if successful
  */
 bl_flash_status_t bl_flash_clear_dfu_request(void);
+
+/** @} */ /* end of BL_FLASH group */
 
 #endif /* BL_FLASH_H */

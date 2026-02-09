@@ -2,6 +2,82 @@
  * @file    bl_config.h
  * @brief   Bootloader configuration and memory layout definitions
  * @date    2025
+ *
+ * @defgroup BOOTLOADER Bootloader
+ * @brief    DFU bootloader for STM32WL55 firmware updates
+ *
+ * The bootloader provides firmware update (DFU) capability via UART or SPI.
+ * It is located at 0x08033000 (32 KB), after the main application (204 KB at 0x08000000).
+ *
+ * @defgroup BL_CONFIG Bootloader Configuration
+ * @ingroup  BOOTLOADER
+ * @brief    Memory layout, DFU commands, response codes, and state machine definitions
+ * @{
+ *
+ * @page bootloader_page Bootloader Architecture
+ *
+ * @section bl_memory_layout Flash Memory Layout (256 KB)
+ *
+ * | Region        | Address Range             | Size   |
+ * |---------------|---------------------------|--------|
+ * | Application   | 0x08000000 - 0x08032FFF   | 204 KB |
+ * | Bootloader    | 0x08033000 - 0x0803AFFF   | 32 KB  |
+ * | NVM (Kineis)  | 0x0803B000 - 0x0803FFFF   | 20 KB  |
+ *
+ * @section bl_boot_flow Boot Flow
+ *
+ * @verbatim
+ *   MCU Reset (0x08000000)
+ *       |
+ *       v
+ *   Application starts
+ *       |
+ *       +-- Normal operation (no DFU flag)
+ *       |
+ *       +-- AT+BOOT received --> Set DFU flag in SRAM + TAMP register
+ *                                  |
+ *                                  v
+ *                              NVIC_SystemReset()
+ *                                  |
+ *                                  v
+ *                              Application restarts, detects DFU flag
+ *                                  |
+ *                                  v
+ *                              Jump to bootloader (0x08033000)
+ *                                  |
+ *                                  v
+ *                              Bootloader runs DFU mode
+ *                                  |
+ *                                  +-- UART mode (AT+DFU= commands, 9600 baud)
+ *                                  |
+ *                                  +-- SPI mode (A+ protocol, command IDs 0x30-0x3F)
+ *                                  |
+ *                                  v
+ *                              Firmware written + CRC verified
+ *                                  |
+ *                                  v
+ *                              JUMP command --> MCU Reset --> New app runs
+ * @endverbatim
+ *
+ * @section bl_dfu_request DFU Request Mechanism
+ *
+ * The application requests DFU mode via:
+ * - SRAM flag at 0x2000FFF8 (magic value 0x4446554D = "DFUM")
+ * - TAMP backup register at 0x4000B100 (same magic, survives reset)
+ *
+ * @section bl_project_structure Bootloader Source Files
+ *
+ * | File                | Description                              |
+ * |---------------------|------------------------------------------|
+ * | bl_config.h         | Configuration, memory layout, commands   |
+ * | bl_main.c/h         | Init, state machine, jump-to-app         |
+ * | bl_dfu.c/h          | DFU command processing                   |
+ * | bl_flash.c/h        | Flash erase/write/read/verify            |
+ * | bl_uart.c/h         | UART DFU driver (AT+DFU= commands)       |
+ * | bl_spi.c/h          | SPI slave DFU driver                     |
+ * | bl_spi_protocol.c/h | A+ protocol framing for SPI              |
+ * | bl_crc.c/h          | CRC-32/MPEG-2 calculation                |
+ * | bl_app_header.c/h   | Application header validation            |
  */
 
 #ifndef BL_CONFIG_H
@@ -152,19 +228,28 @@
 /*******************************************************************************
  * DFU COMMAND IDs (Unified for UART and SPI)
  ******************************************************************************/
+/**
+ * @brief DFU command identifiers
+ *
+ * These command IDs are shared between UART and SPI protocols.
+ * In UART mode, they are sent as @c AT+DFU=<cmd_id>,<hex_data>.
+ * In SPI mode, add @ref SPI_CMD_DFU_BASE (0x30) offset to get the SPI command byte.
+ *
+ * See @ref dfu_protocol_page for full protocol details.
+ */
 typedef enum {
-    DFU_CMD_PING        = 0x01,
-    DFU_CMD_GET_INFO    = 0x02,
-    DFU_CMD_ERASE       = 0x03,
-    DFU_CMD_WRITE       = 0x04,
-    DFU_CMD_READ        = 0x05,
-    DFU_CMD_VERIFY      = 0x06,
-    DFU_CMD_RESET       = 0x07,
-    DFU_CMD_JUMP        = 0x08,
-    DFU_CMD_GET_STATUS  = 0x09,
-    DFU_CMD_ABORT       = 0x0A,
-    DFU_CMD_SET_HEADER  = 0x0B,
-    DFU_CMD_ENTER       = 0x0F,     /* Enter DFU mode (from app) */
+    DFU_CMD_PING        = 0x01,     /**< Ping bootloader, returns version string */
+    DFU_CMD_GET_INFO    = 0x02,     /**< Get bootloader info (version, app address, max size, page size) */
+    DFU_CMD_ERASE       = 0x03,     /**< Erase application flash region, starts DFU session */
+    DFU_CMD_WRITE       = 0x04,     /**< Write data chunk: [address(4B)][data(nB)] */
+    DFU_CMD_READ        = 0x05,     /**< Read flash data: [address(4B)][length(2B)] */
+    DFU_CMD_VERIFY      = 0x06,     /**< Verify CRC-32: [expected_crc(4B)] */
+    DFU_CMD_RESET       = 0x07,     /**< System reset (MCU reboot) */
+    DFU_CMD_JUMP        = 0x08,     /**< Jump to application (only if CRC verified) */
+    DFU_CMD_GET_STATUS  = 0x09,     /**< Get DFU transfer status and progress */
+    DFU_CMD_ABORT       = 0x0A,     /**< Abort current DFU session */
+    DFU_CMD_SET_HEADER  = 0x0B,     /**< Write application header (256 bytes) */
+    DFU_CMD_ENTER       = 0x0F,     /**< Enter DFU mode (sent from app before jump) */
     DFU_CMD_MAX
 } dfu_cmd_t;
 
@@ -188,46 +273,61 @@ typedef enum {
 /*******************************************************************************
  * DFU RESPONSE CODES
  ******************************************************************************/
+/**
+ * @brief DFU response/error codes
+ *
+ * Returned by all DFU commands. In UART mode, sent as @c +DFU:<status>.
+ * In SPI A+ protocol, sent in the STATUS field of the response frame.
+ *
+ * See @ref error_codes_page for descriptions of each error condition.
+ */
 typedef enum {
-    DFU_RSP_OK              = 0x00,
-    DFU_RSP_ERROR           = 0x01,
-    DFU_RSP_CRC_ERROR       = 0x02,
-    DFU_RSP_ADDR_ERROR      = 0x03,
-    DFU_RSP_SIZE_ERROR      = 0x04,
-    DFU_RSP_FLASH_ERROR     = 0x05,
-    DFU_RSP_BUSY            = 0x06,
-    DFU_RSP_INVALID_CMD     = 0x07,
-    DFU_RSP_TIMEOUT         = 0x08,
-    DFU_RSP_NOT_READY       = 0x09,
-    DFU_RSP_INVALID_HEADER  = 0x0A,
-    DFU_RSP_VERIFY_ERROR    = 0x0B
+    DFU_RSP_OK              = 0x00, /**< Success */
+    DFU_RSP_ERROR           = 0x01, /**< Generic error */
+    DFU_RSP_CRC_ERROR       = 0x02, /**< CRC-32 mismatch during VERIFY */
+    DFU_RSP_ADDR_ERROR      = 0x03, /**< Address out of range or not aligned */
+    DFU_RSP_SIZE_ERROR      = 0x04, /**< Invalid data size */
+    DFU_RSP_FLASH_ERROR     = 0x05, /**< Flash erase/write/read failure */
+    DFU_RSP_BUSY            = 0x06, /**< Device busy, retry later */
+    DFU_RSP_INVALID_CMD     = 0x07, /**< Unknown or unsupported command */
+    DFU_RSP_TIMEOUT         = 0x08, /**< Operation timed out */
+    DFU_RSP_NOT_READY       = 0x09, /**< Prerequisite not met (ERASE required first) */
+    DFU_RSP_INVALID_HEADER  = 0x0A, /**< Application header magic invalid */
+    DFU_RSP_VERIFY_ERROR    = 0x0B  /**< Flash write verification failed */
 } dfu_response_t;
 
 /*******************************************************************************
  * BOOTLOADER STATE MACHINE
  ******************************************************************************/
+/**
+ * @brief Bootloader state machine states
+ *
+ * The bootloader progresses through these states during initialization and DFU:
+ * INIT -> CHECK_APP -> DETECT_PROTOCOL -> DFU_IDLE -> DFU_UART/DFU_SPI -> JUMP_APP
+ */
 typedef enum {
-    BL_STATE_INIT = 0,
-    BL_STATE_CHECK_APP,
-    BL_STATE_DETECT_PROTOCOL,
-    BL_STATE_DFU_IDLE,
-    BL_STATE_DFU_UART,
-    BL_STATE_DFU_SPI,
-    BL_STATE_ERASING,
-    BL_STATE_RECEIVING,
-    BL_STATE_WRITING,
-    BL_STATE_VALIDATE,
-    BL_STATE_JUMP_APP,
-    BL_STATE_ERROR
+    BL_STATE_INIT = 0,          /**< Hardware initialization */
+    BL_STATE_CHECK_APP,         /**< Checking application validity */
+    BL_STATE_DETECT_PROTOCOL,   /**< Detecting UART or SPI protocol */
+    BL_STATE_DFU_IDLE,          /**< DFU idle, waiting for commands */
+    BL_STATE_DFU_UART,          /**< Processing UART DFU commands */
+    BL_STATE_DFU_SPI,           /**< Processing SPI DFU commands */
+    BL_STATE_ERASING,           /**< Erasing application flash */
+    BL_STATE_RECEIVING,         /**< Receiving firmware data */
+    BL_STATE_WRITING,           /**< Writing firmware to flash */
+    BL_STATE_VALIDATE,          /**< Validating firmware CRC */
+    BL_STATE_JUMP_APP,          /**< Jumping to application */
+    BL_STATE_ERROR              /**< Error state */
 } bl_state_t;
 
 /*******************************************************************************
  * PROTOCOL TYPE
  ******************************************************************************/
+/** @brief DFU communication protocol type */
 typedef enum {
-    BL_PROTO_NONE = 0,
-    BL_PROTO_UART,
-    BL_PROTO_SPI
+    BL_PROTO_NONE = 0,  /**< No protocol detected yet */
+    BL_PROTO_UART,      /**< UART AT command protocol (9600 baud) */
+    BL_PROTO_SPI        /**< SPI A+ protocol */
 } bl_protocol_t;
 
 /*******************************************************************************
@@ -238,12 +338,15 @@ typedef enum {
 #define BL_FLAG_APP_VALID       0x00000002UL    /* App CRC validated */
 #define BL_FLAG_UPDATE_PENDING  0x00000004UL    /* Update in progress */
 
+/** @brief Bootloader persistent state stored in flash at @ref BL_STATE_FLASH_ADDR */
 typedef struct __attribute__((packed)) {
-    uint32_t magic;             /* BL_FLAG_MAGIC */
-    uint32_t flags;             /* BL_FLAG_xxx */
-    uint32_t last_error;        /* Last error code */
-    uint32_t update_count;      /* Number of successful updates */
-    uint32_t reserved[12];      /* Reserved for future use */
+    uint32_t magic;             /**< Magic value (@ref BL_FLAG_MAGIC) */
+    uint32_t flags;             /**< Status flags (BL_FLAG_xxx) */
+    uint32_t last_error;        /**< Last DFU error code */
+    uint32_t update_count;      /**< Number of successful firmware updates */
+    uint32_t reserved[12];      /**< Reserved for future use */
 } bl_state_flash_t;
+
+/** @} */ /* end of BL_CONFIG group */
 
 #endif /* BL_CONFIG_H */

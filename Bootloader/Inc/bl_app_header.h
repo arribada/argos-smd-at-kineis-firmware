@@ -1,7 +1,18 @@
 /**
  * @file    bl_app_header.h
- * @brief   Application header structure for bootloader validation
+ * @brief   Application header structure for bootloader validation (256 bytes)
  * @date    2025
+ *
+ * @defgroup BL_APP_HEADER Application Header
+ * @ingroup  BOOTLOADER
+ * @brief    Application header format and validation for DFU
+ *
+ * Defines the optional 256-byte application header (@ref app_header_t) used by
+ * the bootloader to validate firmware before jumping. Contains magic number,
+ * version info, CRC-32, flash layout, and hardware compatibility flags.
+ *
+ * Magic: @ref APP_HEADER_MAGIC (0x4B494E45 = "KINE")
+ * @{
  */
 
 #ifndef BL_APP_HEADER_H
@@ -140,5 +151,7 @@ bool bl_validate_app_header(const app_header_t* header);
  * @return true if CRC matches, false otherwise
  */
 bool bl_validate_app_crc(const app_header_t* header);
+
+/** @} */ /* end of BL_APP_HEADER group */
 
 #endif /* BL_APP_HEADER_H */

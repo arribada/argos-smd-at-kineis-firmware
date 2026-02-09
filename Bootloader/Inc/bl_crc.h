@@ -1,7 +1,20 @@
 /**
  * @file    bl_crc.h
- * @brief   Software CRC32 implementation for bootloader
+ * @brief   CRC-32/MPEG-2 implementation for firmware integrity verification
  * @date    2025
+ *
+ * @defgroup BL_CRC CRC Calculation
+ * @ingroup  BOOTLOADER
+ * @brief    CRC-32/MPEG-2 for DFU firmware integrity checks
+ *
+ * Software CRC-32 implementation using MPEG-2 parameters:
+ * - Polynomial: 0x04C11DB7
+ * - Initial value: 0xFFFFFFFF
+ * - No final XOR
+ *
+ * Supports both single-shot and accumulative (chunked) calculation.
+ * Used during DFU WRITE to accumulate CRC, then compared in VERIFY command.
+ * @{
  */
 
 #ifndef BL_CRC_H
@@ -55,5 +68,7 @@ uint32_t bl_crc32_get(void);
  * @return Calculated CRC32 value
  */
 uint32_t bl_crc32_flash(uint32_t start_addr, uint32_t length_bytes);
+
+/** @} */ /* end of BL_CRC group */
 
 #endif /* BL_CRC_H */

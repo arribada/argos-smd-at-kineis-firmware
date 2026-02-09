@@ -31,12 +31,23 @@
  * * Creating all the queues used for communication between tasks
  * * Starting the OS then \ref kns_os_page
  *
+ * The application supports two host communication interfaces:
+ * * **UART** - AT command interface for host communication (default, @c USE_UART_DRIVER)
+ * * **SPI** - SPI slave interface with A+ protocol framing (@c USE_SPI_DRIVER)
+ *
+ * A DFU bootloader is located after the application in flash (0x08033000) and supports
+ * firmware updates via both UART and SPI. See @ref bootloader_page for details.
+ *
  * @section kns_main_subpages Sub-pages
  *
  * * @subpage kns_app_page
  * * @subpage kns_mac_page
  * * @subpage idle_task_page
  * * @subpage kns_os_page
+ * * @subpage bootloader_page
+ * * @subpage at_commands_page
+ * * @subpage dfu_protocol_page
+ * * @subpage error_codes_page
  */
 
 /* USER CODE END Header */

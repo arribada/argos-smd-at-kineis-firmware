@@ -428,7 +428,7 @@ doc: Doxyfile $(DOC_DIR)
 echo $(CFLAGS) | xargs -n1 echo | grep "^-D" | sed 's/-D//' | xargs echo PREDEFINED= ; \
 echo PROJECT_NUMBER= $(KINEIS_VERSION); \
 echo OUTPUT_DIRECTORY=$(DOC_DIR) ; \
-echo INPUT= Core/Src/main.c $(KINEIS_DIR)/README.md $(subst -I,,$(C_INCLUDES)) ; \
+echo INPUT= Core/Src/main.c $(KINEIS_DIR)/README.md $(subst -I,,$(C_INCLUDES)) Bootloader/Inc Bootloader/Src Bootloader/bootloader_doc.dox ; \
 echo EXCLUDE=$(DOC_DIR) ; \
 echo EXCLUDE_PATTERNS=*/UnitTest*/* */IntegrationTest*/* */extra_inc/* */extra_src/* */FreeRTOS/*; \
 echo EXCLUDE_PATTERNS+=*/Tools/*; \
