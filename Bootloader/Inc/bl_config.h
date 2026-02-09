@@ -12,8 +12,10 @@
 /*******************************************************************************
  * DEBUG CONTROL
  ******************************************************************************/
-/** @brief Enable bootloader debug prints (comment out to disable for release) */
+/** @brief Enable bootloader debug prints (controlled by Makefile DEBUG=1) */
+#ifdef DEBUG
 #define BL_DEBUG
+#endif
 
 /** @brief Command buffer size for UART DFU parsing */
 #define BL_CMD_BUFFER_SIZE      256

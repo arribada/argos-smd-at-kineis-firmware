@@ -51,6 +51,7 @@ static volatile bl_spi_state_t spi_state = BL_SPI_STATE_IDLE;
 /* Debug output (declared in bl_main.h) */
 #include "bl_main.h"
 
+#ifdef BL_DEBUG
 static void spi_debug_hex8(uint8_t val)
 {
     char hex[3];
@@ -59,8 +60,9 @@ static void spi_debug_hex8(uint8_t val)
     nib = val & 0xF;
     hex[1] = (nib < 10) ? ('0' + nib) : ('A' + nib - 10);
     hex[2] = '\0';
-    BL_DBG(hex);
+    early_debug_print(hex);
 }
+#endif
 
 /**
  * @brief SPI MSP Initialization - Called by HAL_SPI_Init()
@@ -271,11 +273,6 @@ static void bl_spi_handle_tx_poll(void)
         return;
     }
 
-    /* Fill TX FIFO with remaining bytes */
-    // while (tx_index < tx_len && (SPI1->SR & SPI_SR_TXE)) {
-    //     *(__IO uint8_t *)&SPI1->DR = tx_buffer[tx_index++];
-    // }
-
     timeout_start = HAL_GetTick();
 
     while (rx_idx < BL_SPI_TRANSACTION_SIZE && (HAL_GetTick() - timeout_start < 100)) {
@@ -402,10 +399,12 @@ bool bl_spi_process(void)
         return false;
     }
 
+#ifdef BL_DEBUG
     /* Debug: show command header */
-    BL_DBG("[CMD:");
-    spi_debug_hex8(rx_buffer[2]);  /* Command byte */
-    BL_DBG("]\r\n");
+    early_debug_print("[CMD:");
+    spi_debug_hex8(rx_buffer[2]);
+    early_debug_print("]\r\n");
+#endif
 
     /* Parse with protocol layer */
     if (!bl_spi_protocol_process(rx_buffer, rx_count)) {
