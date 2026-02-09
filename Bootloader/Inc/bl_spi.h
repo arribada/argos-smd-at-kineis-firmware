@@ -1,7 +1,18 @@
 /**
  * @file    bl_spi.h
- * @brief   SPI communication driver for bootloader DFU
+ * @brief   SPI slave communication driver for bootloader DFU
  * @date    2025
+ *
+ * @defgroup BL_SPI SPI DFU Driver
+ * @ingroup  BOOTLOADER
+ * @brief    SPI slave driver for DFU communication
+ *
+ * Low-level SPI slave driver handling DMA-based reception and transmission.
+ * Uses fixed-size transactions of @ref BL_SPI_TRANSACTION_SIZE (280 bytes)
+ * to match the Zephyr host driver.
+ *
+ * The protocol layer (@ref BL_SPI_PROTOCOL) handles frame parsing on top of this driver.
+ * @{
  */
 
 #ifndef BL_SPI_H
@@ -133,5 +144,7 @@ void bl_spi_wait_tx_done(void);
  * @brief SPI interrupt handler (called from IRQ)
  */
 void bl_spi_irq_handler(void);
+
+/** @} */ /* end of BL_SPI group */
 
 #endif /* BL_SPI_H */

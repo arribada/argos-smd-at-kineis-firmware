@@ -1,7 +1,21 @@
 /**
  * @file    bl_dfu.h
- * @brief   DFU protocol handler for bootloader
+ * @brief   DFU protocol handler - processes firmware update commands
  * @date    2025
+ *
+ * @defgroup BL_DFU DFU Protocol Handler
+ * @ingroup  BOOTLOADER
+ * @brief    Firmware update command processing (ERASE, WRITE, VERIFY, JUMP)
+ *
+ * Handles all DFU commands defined in @ref dfu_cmd_t. The typical DFU flow is:
+ * 1. ERASE - Erase application flash region, start session
+ * 2. WRITE - Send firmware data in chunks (address + payload)
+ * 3. VERIFY - Send expected CRC-32, compare with calculated
+ * 4. SET_HEADER - Write application header (optional)
+ * 5. JUMP - Jump to new application (only if CRC verified)
+ *
+ * See @ref dfu_protocol_page for full protocol details.
+ * @{
  */
 
 #ifndef BL_DFU_H
@@ -144,5 +158,7 @@ bool bl_dfu_can_jump(void);
  * @return true if ERASE was called and session not aborted
  */
 bool bl_dfu_session_active(void);
+
+/** @} */ /* end of BL_DFU group */
 
 #endif /* BL_DFU_H */

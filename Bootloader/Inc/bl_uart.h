@@ -1,7 +1,18 @@
 /**
  * @file    bl_uart.h
- * @brief   UART communication driver for bootloader DFU
+ * @brief   UART communication driver for bootloader DFU (AT+DFU= commands)
  * @date    2025
+ *
+ * @defgroup BL_UART UART DFU Driver
+ * @ingroup  BOOTLOADER
+ * @brief    UART AT command interface for DFU (9600 baud in UART mode)
+ *
+ * In UART DFU mode, firmware updates use AT-style commands:
+ * - @c AT+DFU=<cmd_id>,<hex_data>\\r\\n (host to bootloader)
+ * - @c +DFU:<status>,<hex_data>\\r\\n (bootloader response)
+ *
+ * Baudrate: 9600 in UART protocol mode, 115200 in SPI mode (debug only).
+ * @{
  */
 
 #ifndef BL_UART_H
@@ -105,5 +116,7 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
  * @brief UART RX interrupt handler (called from IRQ)
  */
 void bl_uart_rx_irq_handler(void);
+
+/** @} */ /* end of BL_UART group */
 
 #endif /* BL_UART_H */

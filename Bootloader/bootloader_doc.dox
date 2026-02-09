@@ -1,0 +1,354 @@
+/**
+ * @page dfu_protocol_page DFU Protocol Reference
+ *
+ * @section dfu_overview Overview
+ *
+ * The DFU (Device Firmware Update) protocol allows firmware updates via UART or SPI.
+ * Both interfaces share the same command set (@ref dfu_cmd_t) and response codes
+ * (@ref dfu_response_t).
+ *
+ * @section dfu_uart_protocol UART DFU Protocol
+ *
+ * @subsection dfu_uart_format Command Format
+ *
+ * UART DFU uses AT-style commands at 9600 baud (8N1):
+ *
+ * | Direction       | Format                                    |
+ * |-----------------|-------------------------------------------|
+ * | Host -> BL      | @c AT+DFU=<cmd_id>,<hex_data>\\r\\n       |
+ * | BL -> Host      | @c +DFU:<status>,<hex_data>\\r\\n          |
+ *
+ * - @c cmd_id: Decimal command ID (see @ref dfu_cmd_t)
+ * - @c hex_data: Hexadecimal payload (optional, depends on command)
+ * - @c status: Decimal response code (see @ref dfu_response_t)
+ *
+ * @subsection dfu_uart_examples UART Examples
+ *
+ * @verbatim
+ *   Host:  AT+DFU=1\r\n              (PING)
+ *   BL:    +DFU:0,424C5F56312E302E30  (OK, "BL_V1.0.0")
+ *
+ *   Host:  AT+DFU=3\r\n              (ERASE)
+ *   BL:    +DFU:0                     (OK)
+ *
+ *   Host:  AT+DFU=4,00000008<data>    (WRITE to 0x08000000)
+ *   BL:    +DFU:0                     (OK)
+ *
+ *   Host:  AT+DFU=6,<crc32_hex>       (VERIFY)
+ *   BL:    +DFU:0                     (OK - CRC match)
+ *
+ *   Host:  AT+DFU=8\r\n              (JUMP to app)
+ * @endverbatim
+ *
+ * @section dfu_spi_protocol SPI DFU Protocol
+ *
+ * @subsection dfu_spi_format A+ Protocol Frame Format
+ *
+ * SPI DFU uses the A+ protocol with fixed-size transactions of @ref BL_SPI_TRANSACTION_SIZE
+ * (280 bytes). Unused bytes are padded with @ref BL_SPI_IDLE_PATTERN (0xAA).
+ *
+ * **Request frame** (master to slave):
+ * | Byte | Field  | Description                |
+ * |------|--------|----------------------------|
+ * | 0    | Magic  | 0xAA (request marker)      |
+ * | 1    | SEQ    | Sequence number             |
+ * | 2    | CMD    | Command ID (0x30-0x3F)      |
+ * | 3    | LEN    | Payload length (0-255)      |
+ * | 4..  | DATA   | Payload bytes               |
+ * | last | CRC8   | CRC-8 CCITT (poly 0x07)     |
+ *
+ * **Response frame** (slave to master):
+ * | Byte | Field  | Description                |
+ * |------|--------|----------------------------|
+ * | 0    | Magic  | 0x55 (response marker)     |
+ * | 1    | SEQ    | Echo of request sequence    |
+ * | 2    | STATUS | Response code               |
+ * | 3    | LEN    | Response data length        |
+ * | 4..  | DATA   | Response data               |
+ * | last | CRC8   | CRC-8 CCITT (poly 0x07)     |
+ *
+ * @subsection dfu_spi_cmd_ids SPI Command IDs
+ *
+ * SPI command IDs are offset by @ref SPI_CMD_DFU_BASE (0x30) from the base @ref dfu_cmd_t values:
+ *
+ * | SPI ID | Base ID | Command      | Description                       |
+ * |--------|---------|-------------|-----------------------------------|
+ * | 0x30   | 0x01    | PING        | Returns bootloader version string |
+ * | 0x31   | 0x02    | GET_INFO    | Returns BL version, app address, max size, page size |
+ * | 0x32   | 0x03    | ERASE       | Erases app flash, starts DFU session |
+ * | 0x33   | 0x03    | WRITE_REQ   | Write request with address         |
+ * | 0x34   | 0x04    | WRITE_DATA  | Write data payload (up to 248B)    |
+ * | 0x35   | 0x05    | READ_REQ    | Read request with address + length |
+ * | 0x36   | 0x06    | READ_DATA   | Retrieve previously requested data |
+ * | 0x37   | 0x06    | VERIFY      | Send expected CRC-32 for comparison |
+ * | 0x38   | 0x07    | RESET       | System reset (MCU reboot)          |
+ * | 0x39   | 0x08    | JUMP        | Jump to app (if CRC verified)      |
+ * | 0x3A   | 0x09    | GET_STATUS  | Get extended DFU status            |
+ * | 0x3B   | 0x0A    | ABORT       | Abort current DFU session          |
+ * | 0x3C   | 0x0B    | SET_HEADER  | Write 256-byte app header          |
+ * | 0x3F   | 0x0F    | ENTER       | Enter DFU mode (from app)          |
+ *
+ * @section dfu_commands DFU Command Details
+ *
+ * @subsection dfu_cmd_ping PING (0x01)
+ * Returns the bootloader version string (e.g., "BL_V1.0.0").
+ * No payload required.
+ *
+ * @subsection dfu_cmd_get_info GET_INFO (0x02)
+ * Returns 15 bytes:
+ * - Bytes 0-2: BL version (major, minor, patch)
+ * - Bytes 3-6: App start address (little-endian, 0x08000000)
+ * - Bytes 7-10: App max size (little-endian, 0x33000 = 204 KB)
+ * - Bytes 11-14: Flash page size (little-endian, 0x800 = 2 KB)
+ *
+ * @subsection dfu_cmd_erase ERASE (0x03)
+ * Erases the entire application flash region (204 KB, 102 pages).
+ * Starts a DFU session and resets the CRC accumulator.
+ * Must be called before any WRITE commands.
+ *
+ * @subsection dfu_cmd_write WRITE (0x04)
+ * Writes a chunk of firmware data.
+ * Payload: [address(4 bytes LE)][data(up to @ref BL_CHUNK_SIZE bytes)]
+ * - Address must be 64-bit aligned
+ * - Data is padded to 8-byte boundary with 0xFF
+ * - CRC-32 is accumulated for each chunk
+ *
+ * @subsection dfu_cmd_read READ (0x05)
+ * Reads data from flash.
+ * Payload: [address(4 bytes LE)][length(2 bytes LE)]
+ * Response contains the requested flash data.
+ *
+ * @subsection dfu_cmd_verify VERIFY (0x06)
+ * Verifies firmware integrity by comparing CRC-32.
+ * Payload: [expected_crc(4 bytes LE)]
+ * The bootloader compares the expected CRC with the accumulated CRC from WRITE commands.
+ * Returns @ref DFU_RSP_CRC_ERROR if mismatch.
+ *
+ * CRC algorithm: CRC-32/MPEG-2
+ * - Polynomial: 0x04C11DB7
+ * - Initial value: 0xFFFFFFFF
+ * - No final XOR
+ *
+ * @subsection dfu_cmd_jump JUMP (0x08)
+ * Jumps to the application. Only allowed after successful VERIFY.
+ * Returns @ref DFU_RSP_NOT_READY if CRC not verified.
+ * Performs MCU reset and boots into the new application.
+ *
+ * @subsection dfu_cmd_get_status GET_STATUS (0x09)
+ * Returns extended DFU status (@ref bl_extended_status_t, 28 bytes):
+ * - Protocol version, bootloader state, DFU operation state
+ * - Session flags, received bytes, write address
+ * - Expected/calculated CRC, frame/error counters
+ *
+ * @subsection dfu_cmd_set_header SET_HEADER (0x0B)
+ * Writes the 256-byte application header (@ref app_header_t).
+ * Must contain valid magic (@ref APP_HEADER_MAGIC = 0x4B494E45).
+ *
+ * @section dfu_update_flow Typical DFU Update Flow
+ *
+ * @verbatim
+ *   1. Host sends AT+BOOT (or SPI ENTER command)
+ *   2. Device resets into bootloader
+ *   3. Host sends PING to verify bootloader is running
+ *   4. Host sends GET_INFO to get flash layout
+ *   5. Host sends ERASE to prepare flash
+ *   6. Host sends WRITE commands for each chunk (248 bytes max)
+ *   7. Host sends VERIFY with expected CRC-32
+ *   8. (Optional) Host sends SET_HEADER
+ *   9. Host sends JUMP to boot new firmware
+ * @endverbatim
+ *
+ * @section dfu_timeout Timeout Behavior
+ *
+ * | Timeout                 | Value  | Description                              |
+ * |-------------------------|--------|------------------------------------------|
+ * | Command timeout         | 5 sec  | Max time to wait for complete command     |
+ * | Flash write timeout     | 500 ms | Per-write operation timeout               |
+ * | Flash erase timeout     | 500 ms | Per-page erase timeout                   |
+ * | SPI stable timeout      | 3 ms   | SPI transaction completion detection      |
+ * | Protocol detection      | 3 sec  | Auto-detect UART vs SPI at startup        |
+ */
+
+/**
+ * @page at_commands_page AT Commands Reference
+ *
+ * @section at_overview Overview
+ *
+ * The firmware uses AT-style commands for host communication via UART (or SPI with A+ framing).
+ * Commands follow the format:
+ *
+ * | Direction    | Format                           |
+ * |-------------|----------------------------------|
+ * | Host -> FW  | @c AT+<CMD>=<params>\\r\\n (set)  |
+ * | Host -> FW  | @c AT+<CMD>=?\\r\\n (query)       |
+ * | FW -> Host  | @c +OK=<data>\\r\\n (success)     |
+ * | FW -> Host  | @c +ERR=<code>\\r\\n (error)      |
+ *
+ * @section at_cmd_list Command List
+ *
+ * @subsection at_general General Commands
+ *
+ * | Command        | Mode    | Description                                 |
+ * |----------------|---------|---------------------------------------------|
+ * | AT+PING        | Query   | Test communication, returns +OK              |
+ * | AT+VERSION     | Query   | Get AT command version and supported commands |
+ * | AT+FW          | Query   | Get firmware version string                  |
+ * | AT+SN          | Query   | Get device serial number (14 digits)         |
+ * | AT+ID          | Get/Set | Device ID (6-digit decimal)                  |
+ * | AT+ADDR        | Get/Set | Device network address (8 hex digits)        |
+ * | AT+SECKEY      | Get/Set | 16-byte secret key (hex)                     |
+ *
+ * @subsection at_radio Radio Configuration Commands
+ *
+ * | Command        | Mode    | Description                                 |
+ * |----------------|---------|---------------------------------------------|
+ * | AT+RCONF       | Get/Set | Radio configuration (freq, power, modulation)|
+ * | AT+RCONFRAW    | Query   | Raw 16-byte radio config from flash (hex)    |
+ * | AT+SAVE_RCONF  | Execute | Save radio configuration to flash            |
+ * | AT+TCXO_WU     | Get/Set | TCXO warm-up time in ms (max 30000)          |
+ *
+ * @subsection at_data Data Commands
+ *
+ * | Command        | Mode    | Description                                 |
+ * |----------------|---------|---------------------------------------------|
+ * | AT+TX          | Set     | Transmit data: AT+TX=<hex_data>,0x<attr>     |
+ * | AT+RX          | Set     | Enable/disable receive (0/1)                 |
+ *
+ * @subsection at_config Configuration Commands
+ *
+ * | Command        | Mode    | Description                                 |
+ * |----------------|---------|---------------------------------------------|
+ * | AT+LPM         | Get/Set | Low power mode bitmap (NONE/SLEEP/STOP/STANDBY/SHUTDOWN) |
+ * | AT+MC          | Get/Set | Message counter for anti-replay              |
+ * | AT+KMAC        | Get/Set | MAC profile selection                        |
+ * | AT+UDATE       | Set     | Set UTC date/time                            |
+ * | AT+PREPASS_EN  | Set     | Enable/disable satellite pass prediction     |
+ *
+ * @subsection at_test Test/Certification Commands
+ *
+ * | Command        | Mode    | Description                                 |
+ * |----------------|---------|---------------------------------------------|
+ * | AT+CW          | Set     | Continuous/modulated wave test               |
+ *
+ * @subsection at_bootloader Bootloader Commands
+ *
+ * | Command        | Mode    | Description                                 |
+ * |----------------|---------|---------------------------------------------|
+ * | AT+BOOT        | Execute | Enter DFU bootloader mode                    |
+ *
+ * @section at_cmd_details Command Details
+ *
+ * @subsection at_tx AT+TX - Transmit Data
+ *
+ * Format: @c AT+TX=<hex_data>,0x<attributes>
+ *
+ * - hex_data: Up to 49 hex chars (standard) or 1265 hex chars (HDA4 mode)
+ * - attributes: Transmission control flags
+ *
+ * @subsection at_rconf AT+RCONF - Radio Configuration
+ *
+ * Query: @c AT+RCONF=?
+ * Returns: frequency range, RF level, modulation type
+ *
+ * Modulation types: LDA2, LDA2L, VLDA4, HDA4, LDK
+ *
+ * @subsection at_rconfraw AT+RCONFRAW - Raw Radio Configuration
+ *
+ * Query only: @c AT+RCONFRAW=?
+ * Returns: 32 hex characters (16 bytes raw radio config from flash)
+ *
+ * @subsection at_boot AT+BOOT - Enter Bootloader
+ *
+ * Execute: @c AT+BOOT
+ *
+ * Mechanism:
+ * 1. Sets DFU magic (0x4446554D) in SRAM at 0x2000FFF8
+ * 2. Sets same magic in TAMP backup register (0x4000B100)
+ * 3. Triggers NVIC_SystemReset()
+ * 4. On restart, application detects the flag and jumps to bootloader
+ *
+ * @subsection at_cw AT+CW - Continuous Wave Test
+ *
+ * Format: @c AT+CW=<mode>,<frequency>,<power>[,<repeat_period_s>]
+ *
+ * Modes:
+ * - 0: Stop CW/MW
+ * - 1: Continuous Wave (unmodulated carrier)
+ * - 2: LDA2 modulated wave
+ * - 3: LDA2L modulated wave
+ * - 4: VLDA4 modulated wave
+ * - 5: LDK modulated wave
+ * - 6: HDA4 modulated wave
+ *
+ * @subsection at_lpm AT+LPM - Low Power Mode
+ *
+ * Get/Set the deepest low power mode allowed:
+ *
+ * | Value | Mode     | Current  | RAM          | Wake Sources       |
+ * |-------|----------|----------|--------------|--------------------|
+ * | 0     | NONE     | ~5 mA    | Full         | -                  |
+ * | 1     | SLEEP    | ~1 mA    | Full         | Any IRQ            |
+ * | 2     | STOP     | ~10 uA   | Full         | RTC, GPIO          |
+ * | 3     | STANDBY  | ~1 uA    | SRAM2 only   | RTC, WKUP pin      |
+ * | 4     | SHUTDOWN | ~100 nA  | None         | WKUP pin only      |
+ */
+
+/**
+ * @page error_codes_page Error Codes Reference
+ *
+ * @section err_dfu_codes DFU Response Codes
+ *
+ * These codes are returned by all DFU commands (see @ref dfu_response_t):
+ *
+ * | Code | Name             | Description                                         |
+ * |------|------------------|-----------------------------------------------------|
+ * | 0x00 | OK               | Command executed successfully                       |
+ * | 0x01 | ERROR            | Generic/unspecified error                            |
+ * | 0x02 | CRC_ERROR        | CRC-32 mismatch during VERIFY command                |
+ * | 0x03 | ADDR_ERROR       | Address out of application range or not 64-bit aligned |
+ * | 0x04 | SIZE_ERROR       | Invalid payload size (too small or exceeds BL_CHUNK_SIZE) |
+ * | 0x05 | FLASH_ERROR      | Flash erase, write, or read operation failed          |
+ * | 0x06 | BUSY             | Device busy processing previous command, retry later  |
+ * | 0x07 | INVALID_CMD      | Unknown or unsupported command ID                    |
+ * | 0x08 | TIMEOUT          | Operation timed out                                  |
+ * | 0x09 | NOT_READY        | Prerequisite not met (e.g., ERASE required before WRITE, VERIFY required before JUMP) |
+ * | 0x0A | INVALID_HEADER   | Application header magic number invalid               |
+ * | 0x0B | VERIFY_ERROR     | Flash write-back verification failed (data mismatch)  |
+ *
+ * @section err_spi_protocol_codes SPI Protocol Status Codes
+ *
+ * Extended codes for the A+ SPI protocol layer (see @ref bl_prot_status_t):
+ *
+ * | Code | Name             | Description                                         |
+ * |------|------------------|-----------------------------------------------------|
+ * | 0x00-0x0B | (same as DFU) | Standard DFU response codes                     |
+ * | 0x10 | FRAME_CRC_ERROR  | SPI frame CRC-8 mismatch (protocol layer error)     |
+ * | 0x11 | SEQ_ERROR        | Sequence number error (unexpected sequence)          |
+ * | 0x12 | FRAME_ERROR      | Malformed frame (wrong magic, invalid length, etc.)  |
+ *
+ * @section err_flash_codes Flash Operation Codes
+ *
+ * Internal flash operation status codes (see @ref bl_flash_status_t):
+ *
+ * | Code | Name             | Description                                         |
+ * |------|------------------|-----------------------------------------------------|
+ * | 0    | OK               | Flash operation completed successfully               |
+ * | 1    | ERROR            | Generic flash error                                  |
+ * | 2    | BUSY             | Flash peripheral busy                                |
+ * | 3    | TIMEOUT          | Flash operation timed out                            |
+ * | 4    | ADDR_ERROR       | Address outside valid flash range                    |
+ * | 5    | SIZE_ERROR       | Invalid data size for flash operation                |
+ * | 6    | PROTECTED        | Flash region is write-protected                      |
+ *
+ * @section err_at_codes AT Command Error Codes
+ *
+ * AT command responses:
+ *
+ * | Response    | Description                                              |
+ * |-------------|----------------------------------------------------------|
+ * | +OK         | Command executed successfully                             |
+ * | +OK=<data>  | Command executed, data returned                           |
+ * | +ERR=<code> | Command failed with error code                            |
+ * | +RX=<data>  | Asynchronous received data notification                   |
+ * | +EVT=<data> | Asynchronous event notification                           |
+ */

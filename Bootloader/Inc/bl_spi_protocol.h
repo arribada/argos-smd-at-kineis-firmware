@@ -3,15 +3,30 @@
  * @brief   SPI Protocol A+ for bootloader DFU - Compatible with application protocol
  * @date    2025
  *
- * This module implements the A+ protocol for SPI communication with:
+ * @defgroup BL_SPI_PROTOCOL SPI A+ Protocol
+ * @ingroup  BOOTLOADER
+ * @brief    A+ protocol framing layer for SPI DFU communication
+ *
+ * Implements the A+ protocol for SPI communication with:
  * - Magic byte framing (0xAA request, 0x55 response)
  * - Sequence numbers for transaction tracking
  * - CRC-8 integrity checking (CCITT polynomial 0x07)
  * - Backward compatibility with legacy protocol (direct command byte)
  *
- * Frame structure:
- *   Request:  [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
- *   Response: [0x55][SEQ][STATUS][LEN][DATA...][CRC8]
+ * @par Frame Structures
+ *
+ * **Request frame** (master to slave):
+ * @verbatim
+ *   [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
+ * @endverbatim
+ *
+ * **Response frame** (slave to master):
+ * @verbatim
+ *   [0x55][SEQ][STATUS][LEN][DATA...][CRC8]
+ * @endverbatim
+ *
+ * SPI command IDs use @ref SPI_CMD_DFU_BASE (0x30) offset from the base @ref dfu_cmd_t values.
+ * @{
  */
 
 #ifndef BL_SPI_PROTOCOL_H
@@ -256,5 +271,7 @@ void bl_spi_protocol_build_extended_status(bl_extended_status_t *status);
  * @return true if valid DFU command
  */
 bool bl_spi_protocol_is_valid_dfu_cmd(uint8_t cmd);
+
+/** @} */ /* end of BL_SPI_PROTOCOL group */
 
 #endif /* BL_SPI_PROTOCOL_H */

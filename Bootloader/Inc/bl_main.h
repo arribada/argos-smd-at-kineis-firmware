@@ -1,7 +1,15 @@
 /**
  * @file    bl_main.h
- * @brief   Main bootloader header
+ * @brief   Main bootloader header - initialization, state machine, and jump-to-app
  * @date    2025
+ *
+ * @defgroup BL_MAIN Bootloader Main
+ * @ingroup  BOOTLOADER
+ * @brief    Bootloader entry point, state machine, and application jump
+ *
+ * Handles bootloader initialization, protocol detection, DFU state machine,
+ * and validated jump to the application at @ref APP_FLASH_BASE.
+ * @{
  */
 
 #ifndef BL_MAIN_H
@@ -85,5 +93,7 @@ uint32_t bl_get_version(void);
  * @return Version string (e.g., "BL_V1.0.0")
  */
 const char* bl_get_version_string(void);
+
+/** @} */ /* end of BL_MAIN group */
 
 #endif /* BL_MAIN_H */
