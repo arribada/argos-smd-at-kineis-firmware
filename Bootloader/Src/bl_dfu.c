@@ -11,10 +11,9 @@
 #include "bl_app_header.h"
 #include "bl_spi_protocol.h"
 #include <string.h>
-#include <stdio.h>
-
-/* External debug function (defined in bl_main.c) */
-extern void early_debug_print(const char *str);
+#ifdef BL_DEBUG
+#include <stdio.h>  /* snprintf for CRC debug output */
+#endif
 
 /* DFU context */
 static dfu_context_t dfu_ctx;
@@ -226,7 +225,7 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
     }
 
     /* Pad payload to 8-byte boundary if needed */
-    uint8_t aligned_data[BL_CHUNK_SIZE + 8];
+    static uint8_t aligned_data[BL_CHUNK_SIZE + 8];
     uint16_t aligned_len = payload_len;
 
     memcpy(aligned_data, payload, payload_len);
@@ -292,7 +291,6 @@ dfu_response_t bl_dfu_cmd_read(const uint8_t* data, uint16_t data_len,
 dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
 {
     uint32_t expected_crc;
-    char msg[64];
 
     /* Check if session is active */
     if (!dfu_ctx.session_active) {
@@ -309,11 +307,14 @@ dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
     /* Get calculated CRC */
     dfu_ctx.calculated_crc = bl_crc32_get();
 
+#ifdef BL_DEBUG
     /* Debug: show CRC values */
+    char msg[64];
     snprintf(msg, sizeof(msg), "[CRC] exp=0x%08lX calc=0x%08lX size=%lu\r\n",
              (unsigned long)expected_crc, (unsigned long)dfu_ctx.calculated_crc,
              (unsigned long)dfu_ctx.received_size);
     early_debug_print(msg);
+#endif
 
     /* Compare CRCs */
     if (dfu_ctx.calculated_crc != dfu_ctx.expected_crc) {

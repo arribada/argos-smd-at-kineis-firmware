@@ -56,7 +56,7 @@ typedef enum {
     MAC_RF_ABORTED      = 0x0E, /**< RF operation aborted. */
 } MACStatus;
 
-extern MACStatus macStatus;
+extern volatile MACStatus macStatus;
 
 /* Functions prototypes -----------------------------------------------------*/
 

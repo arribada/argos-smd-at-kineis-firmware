@@ -344,11 +344,11 @@ bool bMGR_AT_CMD_CW_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
 #ifdef SUPPORT_MW_WITH_DELAYED_RETX
 	repPeriod_s = 0;
 	scan_param_res = sscanf((const char *)pu8_cmdParamString,
-			(const char *)"AT+CW=%hx,%ld,%hd,%hd",
+			(const char *)"AT+CW=%hx,%ld,%hu,%hu",
 			&cwMode, &cwFrq, &cwPwr, &repPeriod_s);
 #else
 	scan_param_res = sscanf((const char *)pu8_cmdParamString,
-			(const char *)"AT+CW=%hx,%ld,%hd",
+			(const char *)"AT+CW=%hx,%ld,%hu",
 			&cwMode, &cwFrq, &cwPwr);
 #endif
 

@@ -49,8 +49,8 @@
 /* Structure Declaration ------------------------------------------------------------------------*/
 struct atcmdfifo_t {
 	uint8_t au8_fifo[FIFO_MAX_SIZE][FRAME_MAX_LEN];
-	uint8_t u8_widx;
-	uint8_t u8_ridx;
+	volatile uint8_t u8_widx; /* Modified in ISR context (parseStreamCb) */
+	volatile uint8_t u8_ridx; /* Modified in main context (popNextAt) */
 };
 
 struct atcmd_info_t {
@@ -106,8 +106,8 @@ static bool MGR_AT_CMD_parseStreamCb(uint8_t *pu8_RxBuffer, int16_t *pi16_nbRxVa
 	}
 
 	/* Search beginning of AT cmd from the end of the buffer */
-	/* MISRA C:2012 Rule 15.6 - Loop body shall be a compound statement */
-	for (idxStart = *pi16_nbRxValidChar - 1; idxStart >= 0; idxStart--) {
+	/* Stop at index allowing safe access to [idxStart+1] and [idxStart+2] */
+	for (idxStart = *pi16_nbRxValidChar - 3; idxStart >= 0; idxStart--) {
 		if ((pu8_RxBuffer[idxStart] == (uint8_t)'A') &&
 		    (pu8_RxBuffer[idxStart + 1] == (uint8_t)'T') &&
 		    (pu8_RxBuffer[idxStart + 2] == (uint8_t)'+')) {

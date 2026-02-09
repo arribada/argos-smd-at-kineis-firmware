@@ -48,8 +48,8 @@ typedef enum {
 
 static volatile bl_spi_state_t spi_state = BL_SPI_STATE_IDLE;
 
-/* External debug function */
-extern void early_debug_print(const char *str);
+/* Debug output (declared in bl_main.h) */
+#include "bl_main.h"
 
 static void spi_debug_hex8(uint8_t val)
 {
@@ -59,7 +59,7 @@ static void spi_debug_hex8(uint8_t val)
     nib = val & 0xF;
     hex[1] = (nib < 10) ? ('0' + nib) : ('A' + nib - 10);
     hex[2] = '\0';
-    early_debug_print(hex);
+    BL_DBG(hex);
 }
 
 /**
@@ -111,11 +111,11 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
 
 bool bl_spi_init(void)
 {
-    early_debug_print("[SPI] Init\r\n");
+    BL_DBG("[SPI] Init\r\n");
 
     /* Reset SPI1 peripheral */
     __HAL_RCC_SPI1_FORCE_RESET();
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
     __HAL_RCC_SPI1_RELEASE_RESET();
 
     /* Configure SPI1 as slave */
@@ -154,7 +154,7 @@ bool bl_spi_init(void)
     read_data_pending = false;
     spi_state = BL_SPI_STATE_IDLE;
 
-    early_debug_print("[SPI] Init OK\r\n");
+    BL_DBG("[SPI] Init OK\r\n");
     return true;
 }
 
@@ -403,9 +403,9 @@ bool bl_spi_process(void)
     }
 
     /* Debug: show command header */
-    early_debug_print("[CMD:");
+    BL_DBG("[CMD:");
     spi_debug_hex8(rx_buffer[2]);  /* Command byte */
-    early_debug_print("]\r\n");
+    BL_DBG("]\r\n");
 
     /* Parse with protocol layer */
     if (!bl_spi_protocol_process(rx_buffer, rx_count)) {
@@ -562,6 +562,23 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
     }
 
     spi_state = BL_SPI_STATE_WAITING_TX;
+}
+
+/**
+ * @brief Wait for pending TX response to be clocked out by master
+ *
+ * Must be called after bl_spi_send_response() and before any state
+ * transition (VALIDATE, JUMP, RESET) that would prevent the normal
+ * bl_spi_has_data() -> bl_spi_handle_tx_poll() path from running.
+ *
+ * Without this, only the first 4 pre-filled FIFO bytes are sent;
+ * remaining bytes (including CRC) never reach the master.
+ */
+void bl_spi_wait_tx_done(void)
+{
+    if (spi_state == BL_SPI_STATE_WAITING_TX) {
+        bl_spi_handle_tx_poll();
+    }
 }
 
 void bl_spi_irq_handler(void)

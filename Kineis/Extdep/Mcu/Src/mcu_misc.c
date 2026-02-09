@@ -38,7 +38,7 @@ extern uint32_t SystemCoreClock;
 #define DELAY_MS(time_ms) \
 { \
 	uint32_t _nb_for_loop_per_ms = SystemCoreClock / 1000 / FOR_LOOP_CYCLE_NB; \
-	for (uint32_t _count = time_ms * _nb_for_loop_per_ms; \
+	for (uint32_t _count = (uint32_t)((uint64_t)(time_ms) * _nb_for_loop_per_ms); \
 		_count > 0 ; \
 		_count--) __NOP(); \
 }

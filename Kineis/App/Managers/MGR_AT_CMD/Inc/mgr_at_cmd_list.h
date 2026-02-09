@@ -31,9 +31,9 @@ enum  atcmd_idx_t {
 	AT_ID,           /**< Get/set device ID command */
 	AT_SECKEY,       /**< Get/set device secret key */
 	AT_SN,           /**< Get device serial number command */
-	AT_RCONF,        /**< Get/Set radio configuration command */
-	AT_SAVE_RCONF,   /**< Save radio configuration into Flash command */
 	AT_RCONFRAW,     /**< Get raw radio configuration from flash (16 bytes hex) */
+	AT_SAVE_RCONF,   /**< Save radio configuration into Flash command */
+	AT_RCONF,        /**< Get/Set radio configuration command */
 	AT_LPM,          /**< Get/Set low power mode command */
 	AT_MC,           /**< Get the message counter that will be used for next frame TX request */
 	AT_TCXO_WU,      /**< Get/Set TCXO Warm up in ms */

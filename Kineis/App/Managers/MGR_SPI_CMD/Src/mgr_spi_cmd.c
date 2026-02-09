@@ -46,8 +46,8 @@
 
 /* Private variables ----------------------------------------------------------------------------*/
 volatile SpiState spiState = SPICMD_INIT;
-MACStatus macStatus = MAC_OK;
-CmdValue cmdInProgress = CMD_NONE;
+volatile MACStatus macStatus = MAC_OK;
+volatile CmdValue cmdInProgress = CMD_NONE;
 
 /** @brief Flag to track if terminal MAC status (TX_DONE, TX_TIMEOUT, etc.) has been acknowledged
  *  Terminal statuses are only cleared when:
@@ -68,12 +68,14 @@ static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
 {
     bool ret = true;
 
+#ifdef DEBUG
     /* Direct UART output for DFU_ENTER command (0x3F) */
     if (cmd == 0x3F) {
         extern UART_HandleTypeDef hlpuart1;
         const char msg[] = "\r\n>>> PROCESSING CMD 0x3F <<<\r\n";
         HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
     }
+#endif
 
     SPI_LOG_VERBOSE("%s:: Processing cmd=%u\r\n", __func__, cmd);
 
