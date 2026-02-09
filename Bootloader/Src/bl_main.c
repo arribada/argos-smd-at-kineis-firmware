@@ -204,7 +204,8 @@ static void bl_state_detect_protocol(void)
 static void bl_state_dfu_uart(void)
 {
     /* Use static buffers to reduce stack usage (was causing stack overflow) */
-    static char cmd_buffer[128];
+    /* Buffer must hold: AT+DFU=WRITE,<8 addr>,<128 hex data>\r\n (~160 chars) */
+    static char cmd_buffer[256];
     static uint8_t response[BL_TX_BUFFER_SIZE];
     static uint8_t payload[BL_CHUNK_SIZE];
 

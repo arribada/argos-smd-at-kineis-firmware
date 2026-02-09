@@ -23,7 +23,8 @@ static volatile bool rx_overflow = false;
 static uint8_t tx_buffer[BL_TX_BUFFER_SIZE];
 
 /* Command parsing state */
-static char cmd_buffer[128];
+/* Buffer must hold: AT+DFU=WRITE,<8 addr>,<128 hex data>\r\n (~160 chars) */
+static char cmd_buffer[256];
 static uint16_t cmd_len = 0;
 static volatile bool cmd_ready = false;
 
