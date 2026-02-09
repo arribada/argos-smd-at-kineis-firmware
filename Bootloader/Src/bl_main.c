@@ -668,43 +668,25 @@ static void bl_hw_init(void)
 #define EARLY_DEBUG_BRR     BRR_115200_HSI16
 #endif
 
-/* Send a single char using current LPUART1 config (no setup needed) */
-static void raw_uart_char(char c)
-{
-    if (LPUART1->CR1 & USART_CR1_UE) {
-        /* UART is enabled, use it */
-        volatile uint32_t timeout = 100000;
-        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF) && --timeout);
-        if (timeout) LPUART1->TDR = c;
-    }
-}
-
 static void early_debug_init(void)
 {
     volatile uint32_t timeout;
-
-    /* Try to use existing UART config from app to send early marker */
-    raw_uart_char('$');
 
     /* Enable HSI */
     RCC->CR |= RCC_CR_HSION;
     timeout = 1000000;
     while (!(RCC->CR & RCC_CR_HSIRDY) && --timeout);
     if (!timeout) {
-        raw_uart_char('H'); raw_uart_char('!'); /* HSI timeout */
         return;
     }
-    raw_uart_char('1');
 
     /* Switch to HSI */
     RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | (0x01UL << RCC_CFGR_SW_Pos);
     timeout = 1000000;
     while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != (0x01UL << RCC_CFGR_SWS_Pos) && --timeout);
     if (!timeout) {
-        raw_uart_char('S'); raw_uart_char('!'); /* Switch timeout */
         return;
     }
-    raw_uart_char('2');
 
     RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
     RCC->APB1ENR2 |= RCC_APB1ENR2_LPUART1EN;
@@ -715,7 +697,6 @@ static void early_debug_init(void)
         timeout = 100000;
         while (!(LPUART1->ISR & USART_ISR_TC) && --timeout);
     }
-    raw_uart_char('3');
 
     /* Disable UART before reset */
     LPUART1->CR1 = 0;
@@ -838,14 +819,15 @@ void assert_failed(uint8_t *file, uint32_t line)
 void HardFault_Handler(void)
 {
     const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
-    for (int i = 0; msg[i]; i++) {
-        if (LPUART1->CR1 & USART_CR1_UE) {
-            while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+    if (LPUART1->CR1 & USART_CR1_UE) {
+        for (int i = 0; msg[i]; i++) {
+            volatile uint32_t tout = 100000;
+            while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF) && --tout);
+            if (!tout) break;
             LPUART1->TDR = msg[i];
         }
-    }
-    if (LPUART1->CR1 & USART_CR1_UE) {
-        while (!(LPUART1->ISR & USART_ISR_TC));
+        volatile uint32_t tout = 100000;
+        while (!(LPUART1->ISR & USART_ISR_TC) && --tout);
     }
 
     while (1);

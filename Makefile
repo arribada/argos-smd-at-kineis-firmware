@@ -29,7 +29,7 @@ VERBOSE = 1
 USE_BAREMETAL = 1
 
 # Python executable (use python3 or python depending on your system)
-PYTHON ?= python3
+PYTHON ?= python
 
 
 # Select APPlication. Can be:
@@ -609,7 +609,7 @@ $(BOOTLOADER_BIN): bootloader
 # Flash targets
 #######################################
 # JLink executable - uses JLinkExe from PATH (install J-Link software)
-JLINK_EXE ?= JLinkExe
+JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe" # JLinkExe
 JLINK_SERIAL ?= 801035790
 JLINK_SPEED ?= 4000
 JLINK_SCRIPT = $(BUILD_DIR)/flash.jlink

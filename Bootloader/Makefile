@@ -10,7 +10,10 @@ TARGET = bootloader
 ######################################
 # building variables
 ######################################
-DEBUG = 1
+# Debug mode: set DEBUG=1 on command line to enable debug prints
+# Release: make PROTOCOL=SPI (or UART) - no debug output
+# Debug:   make PROTOCOL=SPI DEBUG=1   - with debug output
+DEBUG ?= 0
 OPT = -Os
 
 # Protocol mode: SPI (default) or UART
@@ -112,9 +115,9 @@ C_INCLUDES =  \
 -I$(ROOT_DIR)/Drivers/CMSIS/Include
 
 # compile gcc flags
-ASFLAGS = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections
+ASFLAGS = $(MCU) $(OPT) -pipe -Wall -fdata-sections -ffunction-sections
 
-CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wextra -fdata-sections -ffunction-sections
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -pipe -Wall -Wextra -fdata-sections -ffunction-sections
 CFLAGS += -Wno-unused-parameter
 
 ifeq ($(DEBUG), 1)
@@ -130,7 +133,7 @@ CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
 LDSCRIPT = $(BL_DIR)/STM32WL55XX_BL.ld
 
 LIBS = -lc -lm -lnosys
-LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
+LDFLAGS = $(MCU) -pipe -specs=nano.specs -T$(LDSCRIPT) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
 
 #######################################
 # build the bootloader
@@ -153,7 +156,7 @@ $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 	$(AS) -c $(ASFLAGS) $< -o $@
 
 $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
-	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+	TMPDIR=/tmp TMP=/tmp TEMP=/tmp $(CC) $(OBJECTS) $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/%.hex: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 	$(HEX) $< $@

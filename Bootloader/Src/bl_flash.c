@@ -376,6 +376,7 @@ bl_flash_status_t bl_flash_clear_dfu_request(void)
     /* Clear the DFU request flag in both locations */
     RTC_DFU_FLAG_PTR = 0;
     SRAM_DFU_FLAG_PTR = 0;
+    __DSB();
 
     return BL_FLASH_OK;
 }

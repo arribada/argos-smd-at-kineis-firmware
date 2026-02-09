@@ -15,8 +15,9 @@
 /*******************************************************************************
  * APPLICATION HEADER STRUCTURE
  *
- * This structure is placed at APP_HEADER_ADDR (0x08008000) and contains
- * metadata about the application firmware for validation by the bootloader.
+ * This structure defines the optional application header format.
+ * Currently APP_HEADER_ADDR == APP_FLASH_BASE (0x08000000) with no
+ * separate header region. Validation falls back to legacy vector table check.
  *
  * Total size: 256 bytes (64-bit aligned)
  ******************************************************************************/
@@ -139,11 +140,5 @@ bool bl_validate_app_header(const app_header_t* header);
  * @return true if CRC matches, false otherwise
  */
 bool bl_validate_app_crc(const app_header_t* header);
-
-/**
- * @brief Full application validation (header + CRC)
- * @return true if application is valid, false otherwise
- */
-bool bl_app_is_valid(void);
 
 #endif /* BL_APP_HEADER_H */
