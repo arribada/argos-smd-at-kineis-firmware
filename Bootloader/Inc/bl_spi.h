@@ -123,6 +123,13 @@ uint16_t bl_spi_get_read_data(uint8_t* buffer, uint16_t max_len);
 bool bl_spi_has_read_data(void);
 
 /**
+ * @brief Wait for pending TX response to be fully clocked out by master
+ *
+ * Call after bl_spi_send_response() before changing bootloader state.
+ */
+void bl_spi_wait_tx_done(void);
+
+/**
  * @brief SPI interrupt handler (called from IRQ)
  */
 void bl_spi_irq_handler(void);

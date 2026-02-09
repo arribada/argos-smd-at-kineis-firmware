@@ -24,22 +24,22 @@ static uint8_t tx_buffer[BL_TX_BUFFER_SIZE];
 
 /* Command parsing state */
 /* Buffer must hold: AT+DFU=WRITE,<8 addr>,<128 hex data>\r\n (~160 chars) */
-static char cmd_buffer[256];
+static char cmd_buffer[BL_CMD_BUFFER_SIZE];
 static uint16_t cmd_len = 0;
 static volatile bool cmd_ready = false;
 
 /* Single byte for interrupt reception */
 static uint8_t rx_byte;
 
-/* External debug function */
-extern void early_debug_print(const char *str);
+/* Debug output (declared in bl_main.h, included via bl_uart.h -> bl_config.h chain) */
+#include "bl_main.h"
 
 bool bl_uart_init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-    early_debug_print("[UART] Init...\r\n");
+    BL_DBG("[UART] Init...\r\n");
 
     /* Enable clocks */
     __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -50,9 +50,9 @@ bool bl_uart_init(void)
 
     /* Reset LPUART1 to clear any previous state */
     __HAL_RCC_LPUART1_FORCE_RESET();
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
     __HAL_RCC_LPUART1_RELEASE_RESET();
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
 
     /* Configure LPUART1 clock source to HSI (16MHz) for proper baudrate calculation */
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_LPUART1;
@@ -99,9 +99,9 @@ bool bl_uart_init(void)
     cmd_ready = false;
 
 #if BL_UART_BAUDRATE == 9600
-    early_debug_print("[UART] Init OK @9600\r\n");
+    BL_DBG("[UART] Init OK @9600\r\n");
 #else
-    early_debug_print("[UART] Init OK @115200\r\n");
+    BL_DBG("[UART] Init OK @115200\r\n");
 #endif
 
     return true;
@@ -187,9 +187,11 @@ bool bl_uart_print(const char* str)
 
 void bl_uart_flush_rx(void)
 {
+    __disable_irq();
     rx_head = 0;
     rx_tail = 0;
     rx_overflow = false;
+    __enable_irq();
 }
 
 bool bl_uart_process(void)
@@ -319,15 +321,14 @@ void bl_uart_send_response(dfu_response_t status, const uint8_t* data, uint16_t 
         len = snprintf(response, response_size, "+DFU=ERR,%s\r\n", err_str);
     }
 
-    bl_uart_transmit((uint8_t*)response, len);
+    /* Guard against snprintf error (negative return) */
+    if (len > 0 && (size_t)len <= response_size) {
+        bl_uart_transmit((uint8_t*)response, (uint16_t)len);
+    }
 }
-
-static volatile uint32_t rx_irq_count = 0;
 
 void bl_uart_rx_irq_handler(void)
 {
-    rx_irq_count++;
-
     /* Store received byte in circular buffer - NO debug here (too slow) */
     uint16_t next_head = (rx_head + 1) % BL_RX_BUFFER_SIZE;
 
@@ -340,16 +341,6 @@ void bl_uart_rx_irq_handler(void)
 
     /* Continue reception */
     HAL_UART_Receive_IT(&huart, &rx_byte, 1);
-}
-
-uint32_t bl_uart_get_irq_count(void)
-{
-    return rx_irq_count;
-}
-
-uint32_t huart_state_debug(void)
-{
-    return (uint32_t)huart.RxState;
 }
 
 /* HAL UART callbacks */

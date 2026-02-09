@@ -10,6 +10,18 @@
 #include <stdint.h>
 
 /*******************************************************************************
+ * DEBUG CONTROL
+ ******************************************************************************/
+/** @brief Enable bootloader debug prints (comment out to disable for release) */
+#define BL_DEBUG
+
+/** @brief Command buffer size for UART DFU parsing */
+#define BL_CMD_BUFFER_SIZE      256
+
+/** @brief Peripheral settle delay (short busy-wait after reset, ~3us at 32MHz) */
+#define BL_SETTLE_DELAY(n) do { for (volatile int _i = 0; _i < (n); _i++); } while(0)
+
+/*******************************************************************************
  * BOOTLOADER VERSION
  ******************************************************************************/
 #define BL_VERSION_MAJOR        1
@@ -65,6 +77,15 @@
 /* Flash parameters - use BL_ prefix to avoid conflict with HAL */
 #define BL_FLASH_PAGE_SIZE      0x800UL         /* 2 KB per page */
 #define BL_FLASH_TOTAL_SIZE     (256 * 1024UL)  /* 256 KB */
+
+/*******************************************************************************
+ * RAM AND DFU FLAG ADDRESSES (shared between bl_main.c and bl_flash.c)
+ ******************************************************************************/
+#define SRAM_BASE_ADDR          0x20000000UL
+#define SRAM_END_ADDR           0x20010000UL    /* 64 KB SRAM */
+#define SRAM_DFU_FLAG_ADDR      0x2000FFF8UL    /* DFU flag location in SRAM */
+#define TAMP_BKP0R_ADDR         0x4000B100UL    /* TAMP backup register 0 */
+#define DFU_REQUEST_MAGIC       0x4446554DUL    /* "DFUM" - DFU Mode request */
 
 /*******************************************************************************
  * APPLICATION HEADER MAGIC AND VERSION

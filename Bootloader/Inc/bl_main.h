@@ -12,6 +12,23 @@
 #include "bl_config.h"
 #include "bl_app_header.h"
 
+/*******************************************************************************
+ * DEBUG OUTPUT
+ ******************************************************************************/
+
+/**
+ * @brief Low-level debug print via LPUART1 (available before HAL init)
+ * @param str Null-terminated string to print
+ */
+void early_debug_print(const char *str);
+
+/** @brief Bootloader debug print - disabled when BL_DEBUG is not defined */
+#ifdef BL_DEBUG
+#define BL_DBG(str) early_debug_print(str)
+#else
+#define BL_DBG(str) ((void)0)
+#endif
+
 /**
  * @brief Initialize the bootloader
  */

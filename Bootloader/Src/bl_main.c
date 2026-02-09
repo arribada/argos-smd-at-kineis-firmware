@@ -15,14 +15,14 @@
 #include "bl_app_header.h"
 #include "stm32wlxx_hal.h"
 #include <string.h>
-#include <stdlib.h>
+#include <stdlib.h>  /* strtoul for UART hex parsing */
 
 /* Current bootloader state */
 static bl_state_t current_state = BL_STATE_INIT;
 static bl_protocol_t detected_protocol = BL_PROTO_NONE;
 
 /* Early DFU flag detection */
-static volatile bool g_early_dfu_flag_detected = false;
+static volatile bool early_dfu_flag_detected = false;
 
 /* Application jump function pointer type */
 typedef void (*pFunction)(void);
@@ -36,25 +36,23 @@ static void bl_state_dfu_spi(void);
 static void bl_state_validate(void);
 static void bl_state_error(void);
 static void bl_hw_init(void);
-static void bl_hw_deinit(void);
 void Error_Handler(void);
 
-/* Debug output functions */
-void early_debug_print(const char *str);
+/* early_debug_print is declared in bl_main.h */
 static void early_debug_update_baudrate(void);
 
 void bl_init(void)
 {
-    early_debug_print("[BL] HAL_Init...\r\n");
+    BL_DBG("[BL] HAL_Init...\r\n");
     HAL_Init();
-    early_debug_print("[BL] HAL_Init done\r\n");
+    BL_DBG("[BL] HAL_Init done\r\n");
 
-    early_debug_print("[BL] hw_init...\r\n");
+    BL_DBG("[BL] hw_init...\r\n");
     bl_hw_init();
-    early_debug_print("[BL] hw_init done\r\n");
+    BL_DBG("[BL] hw_init done\r\n");
 
     early_debug_update_baudrate();
-    early_debug_print("[BL] baudrate updated\r\n");
+    BL_DBG("[BL] baudrate updated\r\n");
 
     bl_flash_init();
     bl_crc_init();
@@ -121,13 +119,13 @@ bl_protocol_t bl_get_protocol(void)
 }
 
 /* Track if DFU was explicitly requested (don't jump back to app after timeout) */
-static bool g_dfu_explicitly_requested = false;
+static bool dfu_explicitly_requested = false;
 
 static void bl_state_init(void)
 {
-    if (g_early_dfu_flag_detected || bl_flash_is_dfu_requested()) {
+    if (early_dfu_flag_detected || bl_flash_is_dfu_requested()) {
         bl_flash_clear_dfu_request();
-        g_dfu_explicitly_requested = true;  /* Remember DFU was requested */
+        dfu_explicitly_requested = true;  /* Remember DFU was requested */
         early_debug_print("[BL] DFU mode requested\r\n");
         current_state = BL_STATE_DETECT_PROTOCOL;
     } else {
@@ -148,50 +146,51 @@ static void bl_state_detect_protocol(void)
 {
     uint32_t start_tick = HAL_GetTick();
 
+    /* Always initialize both interfaces - DFU can be requested from either */
     bl_uart_init();
-
-    /* Skip SPI when DFU was explicitly requested (came from UART AT+BOOT) */
-    if (!g_dfu_explicitly_requested) {
-        bl_spi_init();
-    }
+    bl_spi_init();
 
     bl_uart_start_rx();
+    bl_spi_start_rx();
 
-    if (!g_dfu_explicitly_requested) {
-        bl_spi_start_rx();
-    }
+    /* Always use full timeout - DFU request can come from SPI or UART,
+     * and the master may need time to re-sync after STM32 reset/jump */
+    uint32_t timeout = BL_DETECTION_TIMEOUT_MS;
 
-    /* Use shorter timeout if DFU was explicitly requested (we know it's UART) */
-    uint32_t timeout = g_dfu_explicitly_requested ? 500 : BL_DETECTION_TIMEOUT_MS;
+    BL_DBG("[BL] Detecting protocol...\r\n");
 
     while ((HAL_GetTick() - start_tick) < timeout) {
         if (bl_uart_has_data()) {
             detected_protocol = BL_PROTO_UART;
-            if (!g_dfu_explicitly_requested) {
-                bl_spi_stop_rx();
-                bl_spi_deinit();
-            }
+            bl_spi_stop_rx();
+            bl_spi_deinit();
+            BL_DBG("[BL] UART detected\r\n");
             current_state = BL_STATE_DFU_UART;
             return;
         }
 
-        /* Only check SPI if not in explicit UART DFU mode */
-        if (!g_dfu_explicitly_requested && bl_spi_has_data()) {
+        if (bl_spi_has_data()) {
             detected_protocol = BL_PROTO_SPI;
             bl_uart_stop_rx();
+            BL_DBG("[BL] SPI detected\r\n");
             current_state = BL_STATE_DFU_SPI;
             return;
         }
     }
 
     /* Timeout - check if we should stay in DFU mode */
-    if (g_dfu_explicitly_requested) {
-        /* DFU was explicitly requested - stay in UART DFU mode */
+    if (dfu_explicitly_requested) {
+        /* DFU was explicitly requested but no data on either interface.
+         * Default to UART for manual recovery. */
         detected_protocol = BL_PROTO_UART;
+        bl_spi_stop_rx();
+        bl_spi_deinit();
+        BL_DBG("[BL] Timeout, defaulting to UART\r\n");
         current_state = BL_STATE_DFU_UART;
     } else if (bl_check_app_valid()) {
         bl_uart_stop_rx();
         bl_spi_stop_rx();
+        bl_spi_deinit();
         current_state = BL_STATE_JUMP_APP;
     } else {
         detected_protocol = BL_PROTO_UART;
@@ -205,7 +204,7 @@ static void bl_state_dfu_uart(void)
 {
     /* Use static buffers to reduce stack usage (was causing stack overflow) */
     /* Buffer must hold: AT+DFU=WRITE,<8 addr>,<128 hex data>\r\n (~160 chars) */
-    static char cmd_buffer[256];
+    static char cmd_buffer[BL_CMD_BUFFER_SIZE];
     static uint8_t response[BL_TX_BUFFER_SIZE];
     static uint8_t payload[BL_CHUNK_SIZE];
 
@@ -328,12 +327,14 @@ static void bl_state_dfu_uart(void)
 
 static void bl_state_dfu_spi(void)
 {
+    /* Use static buffers to reduce stack usage (same approach as UART handler) */
+    static uint8_t payload[BL_CHUNK_SIZE + 4];
+    static uint8_t response[BL_TX_BUFFER_SIZE];
+
     if (bl_spi_process()) {
         uint8_t spi_cmd = bl_spi_get_command();
-        uint8_t payload[BL_CHUNK_SIZE + 4];
         uint16_t payload_len = bl_spi_get_payload(payload, sizeof(payload));
 
-        uint8_t response[BL_TX_BUFFER_SIZE];
         uint16_t response_len = sizeof(response);
         dfu_response_t status;
 
@@ -350,7 +351,7 @@ static void bl_state_dfu_spi(void)
                 case SPI_CMD_DFU_WRITE_DATA:dfu_cmd = DFU_CMD_WRITE; break;
                 case SPI_CMD_DFU_READ_REQ:
                     {
-                        uint8_t read_buf[BL_CHUNK_SIZE];
+                        static uint8_t read_buf[BL_CHUNK_SIZE];
                         uint16_t read_len = sizeof(read_buf);
                         dfu_response_t read_status = bl_dfu_process_cmd(DFU_CMD_READ,
                             payload, payload_len, read_buf, &read_len);
@@ -362,7 +363,7 @@ static void bl_state_dfu_spi(void)
                     return;
                 case SPI_CMD_DFU_READ_DATA:
                     if (bl_spi_has_read_data()) {
-                        uint8_t read_buf[BL_CHUNK_SIZE];
+                        static uint8_t read_buf[BL_CHUNK_SIZE];
                         uint16_t read_len = bl_spi_get_read_data(read_buf, sizeof(read_buf));
                         bl_spi_send_response(DFU_RSP_OK, read_buf, read_len);
                     } else {
@@ -415,10 +416,13 @@ static void bl_state_dfu_spi(void)
 
             if (status == DFU_RSP_OK) {
                 if (dfu_cmd == DFU_CMD_JUMP) {
+                    bl_spi_wait_tx_done();
                     current_state = BL_STATE_JUMP_APP;
                 } else if (dfu_cmd == DFU_CMD_RESET) {
+                    bl_spi_wait_tx_done();
                     bl_system_reset();
                 } else if (dfu_cmd == DFU_CMD_VERIFY && bl_dfu_is_complete()) {
+                    bl_spi_wait_tx_done();
                     current_state = BL_STATE_VALIDATE;
                 }
             }
@@ -430,7 +434,7 @@ static void bl_state_dfu_spi(void)
 
 static void bl_state_validate(void)
 {
-    early_debug_print("[BL] Validating app...\r\n");
+    BL_DBG("[BL] Validating app...\r\n");
 
     if (bl_check_app_valid()) {
         early_debug_print("[BL] App VALID, jumping!\r\n");
@@ -473,7 +477,7 @@ void bl_jump_to_app(void)
     }
 
     /* Validate stack pointer (must be in RAM) */
-    if (app_stack < 0x20000000UL || app_stack > 0x20010000UL) {
+    if (app_stack < SRAM_BASE_ADDR || app_stack > SRAM_END_ADDR) {
         return;
     }
 
@@ -486,17 +490,20 @@ void bl_jump_to_app(void)
 
     /* Reset SPI peripheral before jumping */
     SPI1->CR1 &= ~SPI_CR1_SPE;
-    while (SPI1->SR & SPI_SR_RXNE) {
-        (void)SPI1->DR;
+    {
+        volatile uint32_t tout = 10000;
+        while ((SPI1->SR & SPI_SR_RXNE) && --tout) {
+            (void)SPI1->DR;
+        }
     }
     for (volatile int i = 0; i < 1000 && (SPI1->SR & SPI_SR_FTLVL); i++);
 
     __HAL_RCC_SPI1_FORCE_RESET();
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
     __HAL_RCC_SPI1_RELEASE_RESET();
 
     __HAL_RCC_DMA1_FORCE_RESET();
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
     __HAL_RCC_DMA1_RELEASE_RESET();
 
     __disable_irq();
@@ -534,7 +541,7 @@ bool bl_check_app_valid(void)
     uint32_t app_stack = *(__IO uint32_t*)APP_FLASH_BASE;
     uint32_t app_entry = *(__IO uint32_t*)(APP_FLASH_BASE + 4);
 
-    if (app_stack < 0x20000000UL || app_stack > 0x20010000UL) {
+    if (app_stack < SRAM_BASE_ADDR || app_stack > SRAM_END_ADDR) {
         return false;
     }
 
@@ -605,7 +612,7 @@ static void bl_hw_init(void)
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-    early_debug_print("[HW] voltage...\r\n");
+    BL_DBG("[HW] voltage...\r\n");
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
     /* Configure PLL: HSI 16MHz / 4 * 32 / 4 = 32 MHz */
@@ -619,12 +626,12 @@ static void bl_hw_init(void)
     RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
     RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV4;
     RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
-    early_debug_print("[HW] OscConfig...\r\n");
+    BL_DBG("[HW] OscConfig...\r\n");
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
         early_debug_print("[HW] OscConfig FAIL\r\n");
         Error_Handler();
     }
-    early_debug_print("[HW] OscConfig OK\r\n");
+    BL_DBG("[HW] OscConfig OK\r\n");
 
     RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3 | RCC_CLOCKTYPE_HCLK |
                                   RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
@@ -634,28 +641,17 @@ static void bl_hw_init(void)
     RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
     RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
-    early_debug_print("[HW] ClockConfig...\r\n");
+    BL_DBG("[HW] ClockConfig...\r\n");
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) {
         early_debug_print("[HW] ClockConfig FAIL\r\n");
         Error_Handler();
     }
-    early_debug_print("[HW] ClockConfig OK\r\n");
+    BL_DBG("[HW] ClockConfig OK\r\n");
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 }
 
-static void __attribute__((unused)) bl_hw_deinit(void)
-{
-    bl_uart_deinit();
-    bl_spi_deinit();
-    bl_crc_deinit();
-
-    __HAL_RCC_GPIOA_CLK_DISABLE();
-    __HAL_RCC_GPIOB_CLK_DISABLE();
-
-    HAL_DeInit();
-}
 
 /* Early debug output via LPUART1 */
 /* BRR calculation for LPUART @ 16MHz (HSI):
@@ -725,13 +721,13 @@ static void early_debug_init(void)
     LPUART1->CR1 = 0;
 
     /* Small delay for peripheral to settle */
-    for (volatile int i = 0; i < 1000; i++);
+    BL_SETTLE_DELAY(1000);
 
     /* Reset LPUART1 peripheral to clear all buffers */
     RCC->APB1RSTR2 |= RCC_APB1RSTR2_LPUART1RST;
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
     RCC->APB1RSTR2 &= ~RCC_APB1RSTR2_LPUART1RST;
-    for (volatile int i = 0; i < 100; i++);
+    BL_SETTLE_DELAY(100);
 
     /* PA2 = LPUART1_TX, AF8 */
     GPIOA->MODER &= ~(3UL << (2 * 2));
@@ -762,43 +758,36 @@ static void early_debug_update_baudrate(void)
 
     LPUART1->CR1 |= USART_CR1_UE;
 
-    while (!(LPUART1->ISR & USART_ISR_TEACK));
+    {
+        volatile uint32_t tout = 100000;
+        while (!(LPUART1->ISR & USART_ISR_TEACK) && --tout);
+    }
 }
 
 void early_debug_print(const char *str)
 {
+    volatile uint32_t tout;
     while (*str) {
-        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
+        tout = 100000;
+        while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF) && --tout);
+        if (!tout) return;
         LPUART1->TDR = *str++;
     }
-    while (!(LPUART1->ISR & USART_ISR_TC));
-}
-
-static void early_debug_hex_char(uint8_t nib)
-{
-    char c = (nib < 10) ? ('0' + nib) : ('A' + nib - 10);
-    while (!(LPUART1->ISR & USART_ISR_TXE_TXFNF));
-    LPUART1->TDR = c;
-}
-
-static void __attribute__((unused)) early_debug_hex32(uint32_t val)
-{
-    for (int i = 7; i >= 0; i--) {
-        early_debug_hex_char((val >> (i * 4)) & 0xF);
-    }
+    tout = 100000;
+    while (!(LPUART1->ISR & USART_ISR_TC) && --tout);
 }
 
 /* Main entry point */
 int main(void)
 {
     /* Capture DFU flags early before any memory initialization */
-    volatile uint32_t early_sram_flag = *((volatile uint32_t *)0x2000FFF8);
+    volatile uint32_t early_sram_flag = *((volatile uint32_t *)SRAM_DFU_FLAG_ADDR);
     volatile uint32_t early_tamp_flag;
 
     RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
     PWR->CR1 |= PWR_CR1_DBP;
-    for (volatile int i = 0; i < 100; i++);
-    early_tamp_flag = *((volatile uint32_t *)0x4000B100);
+    BL_SETTLE_DELAY(100);
+    early_tamp_flag = *((volatile uint32_t *)TAMP_BKP0R_ADDR);
 
     /* Set vector table before enabling interrupts */
     SCB->VTOR = BL_FLASH_BASE;
@@ -808,24 +797,23 @@ int main(void)
     __enable_irq();
 
     early_debug_init();
-    early_debug_print("\r\n[BL] Bootloader v1.0\r\n");
+    early_debug_print("\r\n[BL] " BL_VERSION_STRING "\r\n");
 
     /* Check DFU flag */
-    if (early_sram_flag == 0x4446554D || early_tamp_flag == 0x4446554D) {
+    if (early_sram_flag == DFU_REQUEST_MAGIC || early_tamp_flag == DFU_REQUEST_MAGIC) {
         early_debug_print("[BL] DFU flag detected\r\n");
-        g_early_dfu_flag_detected = true;
-        *((volatile uint32_t *)0x2000FFF8) = 0;
-        *((volatile uint32_t *)0x4000B100) = 0;
+        early_dfu_flag_detected = true;
+        *((volatile uint32_t *)SRAM_DFU_FLAG_ADDR) = 0;
+        *((volatile uint32_t *)TAMP_BKP0R_ADDR) = 0;
         __DSB();
     }
 
-    early_debug_print("[BL] Starting init...\r\n");
+    BL_DBG("[BL] Starting init...\r\n");
     bl_init();
-    early_debug_print("[BL] Init complete\r\n");
+    BL_DBG("[BL] Init complete\r\n");
     bl_run();
 
     while (1);
-    return 0;
 }
 
 void Error_Handler(void)

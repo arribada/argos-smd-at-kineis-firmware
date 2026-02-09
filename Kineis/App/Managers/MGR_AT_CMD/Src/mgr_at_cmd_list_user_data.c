@@ -130,6 +130,7 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 		switch (i16_scan_param_res) {
 		case 1:/** Case ARGOS Message with user data only */
 			u8UserDataAttr.u8_raw = 0x0; /* default attribute to data, no service */
+			/* fall through */
 		case 2:/** Case ARGOS Message with user data + optional attribute:
 			 * User data should be converted form string format to Hex format
 			 */
@@ -274,7 +275,7 @@ bool bMGR_AT_CMD_RX_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
 	}
 
 	scanParamRes = sscanf((const char *)pu8_cmdParamString,
-			(const char *)"AT+RX=%hd",
+			(const char *)"AT+RX=%hu",
 			&rxMode);
 
 	if (scanParamRes == 1) {

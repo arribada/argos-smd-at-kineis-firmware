@@ -111,10 +111,15 @@ static uint16_t log_ring_put_string(const char *str, uint16_t len)
 }
 
 /**
- * @brief Get characters from ring buffer atomically
+ * @brief Get characters from ring buffer atomically, aligned to complete lines.
+ *
+ * Only consumes up to the last '\\n' in the chunk to ensure partial lines
+ * are never sent. This prevents debug log fragments from being concatenated
+ * with AT responses when MGR_LOG_pause() is called between flush calls.
+ *
  * @param buf Buffer to fill
  * @param max_count Maximum characters to get
- * @return Number of characters retrieved
+ * @return Number of characters retrieved (always ends at a line boundary)
  */
 static uint16_t log_ring_get_string(uint8_t *buf, uint16_t max_count)
 {
@@ -122,11 +127,24 @@ static uint16_t log_ring_get_string(uint8_t *buf, uint16_t max_count)
 
 	uint16_t count = 0;
 	uint16_t tail = log_ring_tail;
+	int last_nl = -1;
 
+	/* Read bytes and track last newline position */
 	while (count < max_count && log_ring_head != tail) {
-		buf[count++] = log_ring_buffer[tail];
+		buf[count] = log_ring_buffer[tail];
+		if (buf[count] == '\n') {
+			last_nl = count;
+		}
+		count++;
 		tail = (tail + 1) & (LOG_RING_BUFFER_SIZE - 1);
 	}
+
+	/* Only consume up to last complete line */
+	if (last_nl >= 0) {
+		count = last_nl + 1;
+		tail = (log_ring_tail + count) & (LOG_RING_BUFFER_SIZE - 1);
+	}
+	/* else: no newline found (very long line) - consume all to prevent starvation */
 
 	log_ring_tail = tail;
 

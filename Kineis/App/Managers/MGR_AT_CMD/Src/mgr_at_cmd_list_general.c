@@ -454,8 +454,9 @@ bool bMGR_AT_CMD_RCONFRAW_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)
 		}
 		hex_str[32] = '\0';
 
-		MCU_AT_CONSOLE_send("+RCONFRAW=%s\r\n", hex_str);
-		return bMGR_AT_CMD_logSucceedMsg();
+		/* Send response and +OK atomically to prevent debug logs interleaving */
+		MCU_AT_CONSOLE_send("+RCONFRAW=%s\r\n+OK\r\n", hex_str);
+		return true;
 	}
 
 	MGR_LOG_VERBOSE("[ERROR] Action mode is unauthorized for this AT cmd\r\n");

@@ -45,7 +45,7 @@ extern "C" {
 #endif
 
 /* Extern Variables ----------------------------------------------------------*/
-extern CmdValue cmdInProgress;   /**< Current SPI command in progress */
+extern volatile CmdValue cmdInProgress;   /**< Current SPI command in progress */
 
 /* Functions -----------------------------------------------------------------*/
 
