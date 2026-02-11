@@ -106,26 +106,23 @@ void MCU_MISC_turn_off_pa()
 #ifdef KRD_FW_MP
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+	/* Disable PA: drive PSU_EN LOW actively to ensure PA stays off.
+	 * Keep pins as OUTPUT_PP (not analog) so pull-up/pull-down are effective
+	 * and the pin actively drives the level. */
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_RESET);
 
-
-	/*Configure GPIO pin : PtPin */
 	GPIO_InitStruct.Pin = PA_PSU_EN_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : PtPin */
 	GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_SEL_GPIO_Port, &GPIO_InitStruct);
-
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
-	DELAY_MS(10);
-	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
-	//DELAY_MS(MCU_PA_BOOTDELAY_MS);
 
 #ifdef USE_SMPS_BYPASS_TX
 	/* Restore SMPS to step-down mode for better power efficiency after TX.
