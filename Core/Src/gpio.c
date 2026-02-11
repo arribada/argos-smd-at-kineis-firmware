@@ -40,8 +40,6 @@
         * EXTI
         * Free pins are configured automatically as Analog (this feature is enabled through
         * the Code Generation settings)
-     PA10   ------> I2C1_SDA
-     PA9   ------> I2C1_SCL
 */
 void MX_GPIO_Init(void)
 {
@@ -73,7 +71,7 @@ void MX_GPIO_Init(void)
    * PA15 = SPI NSS
    *
    * Options available with Argos SMD
-   * PA9 / PA10  set to analog but can be used with I2C
+   * PA9 / PA10  set to analog (unused, high impedance)
    * PA11 = Set to analog but can be used to DBG_RF-NRST
    * PA12 = Set to analog but can be used to DBG_RF-BUSY
    */
@@ -146,11 +144,6 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(PA_PSU_SEL_GPIO_Port, &GPIO_InitStruct);
   HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
 
-  /* Configure PA9 and PA10 as analog (Hi-Z when off) */
-  GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
   /*Configure GPIO pin : PH3 */
   GPIO_InitStruct.Pin = GPIO_PIN_3;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;

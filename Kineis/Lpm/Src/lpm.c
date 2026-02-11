@@ -365,19 +365,78 @@ void LPM_SystemClockConfig(void)
 
 void GPIO_DisableAllToAnalogInput(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
+	/* Enable all GPIO clocks for configuration */
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	__HAL_RCC_GPIOH_CLK_ENABLE();
 
-	//Already defined in MX_GPIO_INIT
-	/*Configure GPIO pin : PtPin */
+	/* ---- GPIOA: Set all unused pins to analog (high impedance) ----
+	 * Active pins NOT set to analog:
+	 *   PA2  = LPUART1_TX
+	 *   PA3  = LPUART1_RX
+	 *   PA13 = SWDIO
+	 *   PA14 = SWCLK
+	 *   SPI mode only: PA1 = SCK, PA15 = NSS
+	 */
+#if defined(USE_SPI_DRIVER)
+	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 |
+	                      GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 |
+	                      GPIO_PIN_11 | GPIO_PIN_12;
+#elif defined(USE_UART_DRIVER)
+	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5 |
+	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 |
+	                      GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_15;
+#endif
+	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+	/* ---- GPIOB: Set all unused pins to analog ----
+	 * Active pins NOT set to analog:
+	 *   PB3 = EXT_WKUP_BUTTON / SWO
+	 *   SPI mode only: PB4 = MISO, PB5 = MOSI
+	 */
+#if defined(USE_SPI_DRIVER)
+	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 |
+	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 |
+	                      GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 |
+	                      GPIO_PIN_14 | GPIO_PIN_15;
+#elif defined(USE_UART_DRIVER)
+	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 |
+	                      GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 |
+	                      GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 |
+	                      GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+#endif
+	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	/* ---- GPIOC: Set all unused pins to analog ----
+	 * Active pins NOT set to analog: PC0 = PA_PSU_EN, PC1 = PA_PSU_SEL
+	 */
+	GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 |
+	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 |
+	                      GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 |
+	                      GPIO_PIN_14 | GPIO_PIN_15;
+	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+	/* ---- GPIOH: Set PH3 to analog ---- */
+	GPIO_InitStruct.Pin = GPIO_PIN_3;
+	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
+
+	/* Ensure PSU pins maintain correct output state */
 	GPIO_InitStruct.Pin = PA_PSU_EN_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
-
 
 	GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -387,13 +446,6 @@ void GPIO_DisableAllToAnalogInput(void)
 
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
-
-#ifndef USE_SPI_DRIVER
-  /* Disable GPIOs clock - but NOT when SPI is in use!
-   * SPI uses PA1 (SCK) and PA15 (NSS) which need GPIOA clock enabled.
-   * Disabling the clock would break SPI communication. */
-  __HAL_RCC_GPIOA_CLK_DISABLE();
-#endif
 }
 
 void LPM_init(void)
