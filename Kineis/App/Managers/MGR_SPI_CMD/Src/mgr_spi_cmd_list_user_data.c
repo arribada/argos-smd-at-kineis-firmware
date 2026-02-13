@@ -254,8 +254,11 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	appEvtTx.data_ctxt.usrdata_bitlen = spUserDataMsg->u16DataBitLen;
 	appEvtTx.data_ctxt.sf = (enum KNS_serviceFlag_t)(spUserDataMsg->u8Attr.sf);
 
-	/* Enable TCXO (non-blocking - just enables it) */
+	/* Enable TCXO and wait for warmup (same as UART flow) */
 	MCU_MISC_TCXO_Force_State(true);
+	uint32_t tcxo_warmup_ms = 0;
+	MCU_MISC_TCXO_get_warmup(&tcxo_warmup_ms);
+	HAL_Delay(tcxo_warmup_ms);
 
 	/* Push the event to the MAC layer */
 	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvtTx);
@@ -263,6 +266,7 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		case KNS_STATUS_QFULL:
 			MGR_LOG_VERBOSE("[ERROR] TX queue full after ACK sent.\r\n");
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
+			MCU_MISC_TCXO_Force_State(false);
 			macStatus = MAC_ERROR;
 			macStatusAcknowledged = true;  /* Allow reset on next read */
 			break;
@@ -276,6 +280,7 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		default:
 			MGR_LOG_VERBOSE("[ERROR] Unknown status when pushing TX data.\r\n");
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
+			MCU_MISC_TCXO_Force_State(false);
 			macStatus = MAC_ERROR;
 			macStatusAcknowledged = true;  /* Allow reset on next read */
 			break;

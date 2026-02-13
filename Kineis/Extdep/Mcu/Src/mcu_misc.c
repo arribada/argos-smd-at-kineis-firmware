@@ -56,6 +56,7 @@ void MCU_MISC_turn_on_pa()
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
 #ifdef KRD_FW_MP
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	MGR_LOG_DEBUG("[PA] turn_on_pa\r\n");
 
 #ifdef USE_SMPS_BYPASS_TX
 	/* Switch SMPS to bypass mode (LDO) to reduce switching noise on TCXO.
@@ -106,6 +107,7 @@ void MCU_MISC_turn_off_pa()
 #ifdef KRD_FW_MP
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+	MGR_LOG_DEBUG("[PA] turn_off_pa\r\n");
 	/* Disable PA: drive PSU_EN LOW actively to ensure PA stays off.
 	 * Keep pins as OUTPUT_PP (not analog) so pull-up/pull-down are effective
 	 * and the pin actively drives the level. */

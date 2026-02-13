@@ -363,6 +363,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
 
     case (KNS_MAC_RX_ERROR):
         MGR_LOG_DEBUG("MGR_SPI_CMD RX ERROR callback reached\r\n");
+        MCU_MISC_TCXO_Force_State(false);
         if (spUserDataMsg->bIsToBeTransmit) {
             USERDATA_txFifoRemoveElt(spUserDataMsg);
             macStatus = MAC_RX_ERROR;
@@ -376,6 +377,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
 
     case (KNS_MAC_RX_TIMEOUT):
         MGR_LOG_DEBUG("MGR_SPI_CMD RX timeout callback reached\r\n");
+        MCU_MISC_TCXO_Force_State(false);
         USERDATA_txFifoRemoveElt(spUserDataMsg);
         macStatus = MAC_RX_TIMEOUT;
         cbStatus = KNS_STATUS_TIMEOUT;
@@ -436,6 +438,7 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
 
     case (KNS_MAC_RF_ABORTED):
         MGR_LOG_DEBUG("MGR_SPI_CMD RF operation aborted\r\n");
+        MCU_MISC_TCXO_Force_State(false);
         macStatus = MAC_RF_ABORTED;
         cbStatus = KNS_STATUS_OK;
         break;
