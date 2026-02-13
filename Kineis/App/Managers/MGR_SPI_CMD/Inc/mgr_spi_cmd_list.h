@@ -129,7 +129,7 @@ struct spicmd_desc_t {
 };
 
 /* Extern Variables ----------------------------------------------------------*/
-extern const uint8_t spicmd_version;                     /**< SPI command list version. */
+extern const char *spicmd_version;                        /**< SPI command list version. */
 extern const struct spicmd_desc_t cas_spicmd_list_array[]; /**< Array of SPI command descriptors. */
 extern uint16_t userTxPayloadSize;                       /**< User-defined TX payload size. */
 

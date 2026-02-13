@@ -20,7 +20,7 @@
 #include "mgr_spi_cmd_list_previpass.h"
 #include "mgr_spi_cmd_list_certif.h"
 
-const uint8_t spicmd_version = 1;
+const char *spicmd_version = "v0.3";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {

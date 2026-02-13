@@ -19,7 +19,7 @@
 #include "mgr_at_cmd_list_mac.h"
 #include "mgr_at_cmd_list_certif.h"
 
-const char *atcmd_version = "v0.6";
+const char *atcmd_version = "v0.7";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {

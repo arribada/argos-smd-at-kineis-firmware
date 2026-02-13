@@ -335,6 +335,12 @@ endif
 ifeq ($(SMPS_BYPASS_TX), 1)
 BUILD_VERSION := $(BUILD_VERSION)_SmpsByp
 endif
+ifeq ($(COMM),UART)
+BUILD_VERSION := $(BUILD_VERSION)_Uart
+endif
+ifeq ($(COMM),SPI)
+BUILD_VERSION := $(BUILD_VERSION)_Spi
+endif
 
 #######################################
 # includes

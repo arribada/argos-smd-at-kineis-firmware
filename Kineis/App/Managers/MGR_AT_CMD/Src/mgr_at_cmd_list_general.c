@@ -51,7 +51,6 @@ bool bMGR_AT_CMD_VERSION_cmd(uint8_t *pu8_cmdParamString __attribute__((unused))
 	MCU_AT_CONSOLE_send("+VERSION=%s", atcmd_version);
 	for (idx=0; idx < ATCMD_MAX_COUNT; idx++) {
 		MCU_AT_CONSOLE_send(",%s", cas_atcmd_list_array[idx].pu8_cmdNameString);
-
 	}
 	MCU_AT_CONSOLE_send("\r\n");
 

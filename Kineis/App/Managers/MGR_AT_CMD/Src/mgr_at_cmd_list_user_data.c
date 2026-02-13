@@ -336,6 +336,7 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 			spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
 				srvcEvt.tx_ctxt.data_bitlen);
 			MCU_MISC_TCXO_Force_State(false);
+			MCU_MISC_turn_off_pa();
 			kns_assert(spUserDataMsg != NULL);
 		}
 	break;
@@ -346,13 +347,8 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	/** process event */
 	switch (srvcEvt.id) {
 	case (KNS_MAC_TX_DONE):
-//		MGR_LOG_DEBUG("MGR_AT_CMD TX_DONE callback reached\r\n");
-//		MGR_LOG_DEBUG("TX DONE for usrdata (%d bits = %d bytes + %d bits): 0x",
-//			srvcEvt.tx_ctxt.data_bitlen,
-//			srvcEvt.tx_ctxt.data_bitlen>>3,
-//			srvcEvt.tx_ctxt.data_bitlen&0x07);
-//		MGR_LOG_array(srvcEvt.tx_ctxt.data, (srvcEvt.tx_ctxt.data_bitlen+7)>>3);
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		kns_assert(spUserDataMsg->bIsToBeTransmit);
 		/** Upon TX done of a mail request message, it means some DL_BC was received
 		 * Thus, UL ACK of DL_BC will transmitted by lower layer internally just
@@ -390,18 +386,14 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 			bMGR_AT_CMD_sendResponse(ATCMD_RSP_TXACKOK, NULL);
 
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
 		Set_TX_LED(0);
 		cbStatus = KNS_STATUS_OK;
 	break;
 	case (KNS_MAC_TX_TIMEOUT):
-//		MGR_LOG_DEBUG("MGR_AT_CMD TX_TIMEOUT callback reached\r\n");
-//		MGR_LOG_DEBUG("TX TIMEOUT for usrdata (%d bits = %d bytes + %d bits): 0X",
-//			srvcEvt.tx_ctxt.data_bitlen,
-//			srvcEvt.tx_ctxt.data_bitlen>>3,
-//			srvcEvt.tx_ctxt.data_bitlen&0x07);
-//		MGR_LOG_array(srvcEvt.tx_ctxt.data, (srvcEvt.tx_ctxt.data_bitlen+7)>>3);
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		kns_assert(spUserDataMsg->bIsToBeTransmit);
 		/** @todo Should check integrity between data reported by event above and
 		 * the one stored in user data buffer
@@ -416,8 +408,8 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		cbStatus = KNS_STATUS_TIMEOUT;
 	break;
 	case (KNS_MAC_TXACK_TIMEOUT):
-//		MGR_LOG_DEBUG("MGR_AT_CMD TXACK_TIMEOUT callback reached\r\n");
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		kns_assert(spUserDataMsg->bIsToBeTransmit);
 		bMGR_AT_CMD_sendResponse(ATCMD_RSP_TXACKNOTOK, NULL);
 		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
@@ -425,8 +417,8 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		cbStatus = KNS_STATUS_TIMEOUT;
 	break;
 	case (KNS_MAC_RX_ERROR):  /**< RX error during TRX frame, report TX failure then */
-//		MGR_LOG_DEBUG("MGR_AT_CMD TX callback reached\r\n");
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		if (spUserDataMsg->bIsToBeTransmit) {
 //			MGR_LOG_DEBUG("RX enable ERROR (%d bits = %d bytes + %d bits): 0x",
 //				srvcEvt.tx_ctxt.data_bitlen,
@@ -453,6 +445,7 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	break;
 	case (KNS_MAC_RX_TIMEOUT): /**< RX window reached during TRX, report failure then */
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		/** @attention so far, TX failure is reported upon TRX RX timeout when:
 		 * * no DL-ACK received for a TX requesting ACK (this case is fine)
 		 * * no DL-BC received for a TX mail request. Actually this may really occur
@@ -545,6 +538,7 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	case (KNS_MAC_RF_ABORTED):
 		/* RF operation was aborted (e.g. user requested stop) */
 		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
 		bMGR_AT_CMD_sendResponse(ATCMD_RSP_RFABORTED, NULL);
 		if (spUserDataMsg != NULL && spUserDataMsg->bIsToBeTransmit)
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
