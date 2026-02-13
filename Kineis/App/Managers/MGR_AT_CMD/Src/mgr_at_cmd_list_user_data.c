@@ -426,6 +426,7 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	break;
 	case (KNS_MAC_RX_ERROR):  /**< RX error during TRX frame, report TX failure then */
 //		MGR_LOG_DEBUG("MGR_AT_CMD TX callback reached\r\n");
+		MCU_MISC_TCXO_Force_State(false);
 		if (spUserDataMsg->bIsToBeTransmit) {
 //			MGR_LOG_DEBUG("RX enable ERROR (%d bits = %d bytes + %d bits): 0x",
 //				srvcEvt.tx_ctxt.data_bitlen,
@@ -451,6 +452,7 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		}
 	break;
 	case (KNS_MAC_RX_TIMEOUT): /**< RX window reached during TRX, report failure then */
+		MCU_MISC_TCXO_Force_State(false);
 		/** @attention so far, TX failure is reported upon TRX RX timeout when:
 		 * * no DL-ACK received for a TX requesting ACK (this case is fine)
 		 * * no DL-BC received for a TX mail request. Actually this may really occur

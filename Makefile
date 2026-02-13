@@ -610,9 +610,16 @@ $(BOOTLOADER_BIN): bootloader
 #######################################
 # JLink executable - uses JLinkExe from PATH (install J-Link software)
 JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe" # JLinkExe
-JLINK_SERIAL ?= 801035790
+JLINK_SERIAL ?=
 JLINK_SPEED ?= 4000
 JLINK_SCRIPT = $(BUILD_DIR)/flash.jlink
+
+# Build JLink serial option: use -SelectEmuBySN if JLINK_SERIAL is set, otherwise auto-detect
+ifneq ($(JLINK_SERIAL),)
+JLINK_SERIAL_OPT = -SelectEmuBySN $(JLINK_SERIAL)
+else
+JLINK_SERIAL_OPT =
+endif
 
 # Flash app only (assumes bootloader already present)
 flash-app: $(BUILD_DIR)/$(TARGET).hex
@@ -623,7 +630,7 @@ flash-app: $(BUILD_DIR)/$(TARGET).hex
 	@echo "r" >> $(JLINK_SCRIPT)
 	@echo "g" >> $(JLINK_SCRIPT)
 	@echo "exit" >> $(JLINK_SCRIPT)
-	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
 # Flash bootloader only
 flash-bl: $(BOOTLOADER_HEX)
@@ -634,7 +641,7 @@ flash-bl: $(BOOTLOADER_HEX)
 	@echo "r" >> $(JLINK_SCRIPT)
 	@echo "g" >> $(JLINK_SCRIPT)
 	@echo "exit" >> $(JLINK_SCRIPT)
-	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
 # Flash combined firmware (app + bootloader)
 # Depends on COMBINED_BIN which triggers the merge script that creates both BIN and HEX
@@ -646,7 +653,7 @@ flash-full: $(COMBINED_BIN)
 	@echo "r" >> $(JLINK_SCRIPT)
 	@echo "g" >> $(JLINK_SCRIPT)
 	@echo "exit" >> $(JLINK_SCRIPT)
-	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) -SelectEmuBySN $(JLINK_SERIAL) -CommanderScript $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
 #######################################
 # clean up
