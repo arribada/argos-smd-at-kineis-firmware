@@ -267,6 +267,7 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 			MGR_LOG_VERBOSE("[ERROR] TX queue full after ACK sent.\r\n");
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
 			MCU_MISC_TCXO_Force_State(false);
+			MCU_MISC_turn_off_pa();
 			macStatus = MAC_ERROR;
 			macStatusAcknowledged = true;  /* Allow reset on next read */
 			break;
@@ -281,6 +282,7 @@ bool bMGR_SPI_CMD_WRITETX_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 			MGR_LOG_VERBOSE("[ERROR] Unknown status when pushing TX data.\r\n");
 			USERDATA_txFifoRemoveElt(spUserDataMsg);
 			MCU_MISC_TCXO_Force_State(false);
+			MCU_MISC_turn_off_pa();
 			macStatus = MAC_ERROR;
 			macStatusAcknowledged = true;  /* Allow reset on next read */
 			break;

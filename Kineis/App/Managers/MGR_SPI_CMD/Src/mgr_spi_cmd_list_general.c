@@ -24,6 +24,7 @@
 
 #include "kns_types.h"
 #include "mcu_spi_driver.h"
+#include "mgr_spi_protocol.h"
 #include "mgr_spi_cmd_common.h"
 #include "mgr_spi_cmd_list.h"
 #include "mgr_spi_cmd_list_general.h"
@@ -125,8 +126,11 @@ bool bMGR_SPI_CMD_READSPIVERSION_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	tx->data[0] = spicmd_version;
-	tx->next_req = 1;
+	uint16_t ver_len = (uint16_t)strlen(spicmd_version);
+	if (ver_len > (SPI_TRANSACTION_SIZE - SPI_FRAME_MIN_SIZE))
+		ver_len = (SPI_TRANSACTION_SIZE - SPI_FRAME_MIN_SIZE);
+	memcpy(&tx->data[0], spicmd_version, ver_len);
+	tx->next_req = ver_len;
 	rx->next_req = 1;
 	ret = bMGR_SPI_DRIVER_writeread();
 	//Reset tx/rx state if MAC_OK
@@ -143,8 +147,11 @@ bool bMGR_SPI_CMD_READFIRMWARE_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	(void)rx;  /* Unused parameter - command only returns data */
 	HAL_StatusTypeDef ret = HAL_OK;
 
-	memcpy(&tx->data[0], uc_fw_vers_commit_id, FW_VERSION_LENGTH);  // Copy the entire fixed-length string
-	tx->next_req = FW_VERSION_LENGTH;  // Total bytes to send
+	uint16_t fw_len = (uint16_t)strlen(uc_fw_vers_commit_id);
+	if (fw_len > (SPI_TRANSACTION_SIZE - SPI_FRAME_MIN_SIZE))
+		fw_len = (SPI_TRANSACTION_SIZE - SPI_FRAME_MIN_SIZE);
+	memcpy(&tx->data[0], uc_fw_vers_commit_id, fw_len);
+	tx->next_req = fw_len;
 	ret = bMGR_SPI_DRIVER_writeread();
 	//Reset tx/rx state if MAC_OK
 	if (ret == HAL_OK)
