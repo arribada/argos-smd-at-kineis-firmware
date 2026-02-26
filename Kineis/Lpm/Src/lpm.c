@@ -24,6 +24,11 @@
 #include "mgr_lpm.h"
 #include "lpm_cli_kstk.h"
 #include "mgr_log.h"
+#include "rtc.h"
+
+#if defined(USE_TRACKER_APP)
+#include "adc.h"
+#endif
 
 #pragma GCC visibility push(default)
 
@@ -241,9 +246,69 @@ static void LPM_sleep_exit() {
 //	MGR_LOG_DEBUG("==== SLEEP exit ====\r\n");
 }
 
+/* RTC tick compensation: save RTC time before STOP to compensate HAL_GetTick() on exit */
+static uint32_t lpm_rtc_subsec_before_stop = 0;
+static uint32_t lpm_rtc_sec_before_stop = 0;
+
+static void LPM_saveRtcTime(void)
+{
+	RTC_TimeTypeDef sTime;
+	RTC_DateTypeDef sDate;
+	HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+	HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN); /* Must read date after time per RM */
+	lpm_rtc_subsec_before_stop = sTime.SubSeconds;
+	lpm_rtc_sec_before_stop = sTime.Hours * 3600 + sTime.Minutes * 60 + sTime.Seconds;
+}
+
+static void LPM_compensateTick(void)
+{
+	RTC_TimeTypeDef sTime;
+	RTC_DateTypeDef sDate;
+	HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+	HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+	uint32_t sec_after = sTime.Hours * 3600 + sTime.Minutes * 60 + sTime.Seconds;
+
+	/* Compute elapsed seconds (handle midnight wrap) */
+	uint32_t elapsed_s;
+	if (sec_after >= lpm_rtc_sec_before_stop)
+		elapsed_s = sec_after - lpm_rtc_sec_before_stop;
+	else
+		elapsed_s = (86400 - lpm_rtc_sec_before_stop) + sec_after;
+
+	/* Compute elapsed sub-seconds (RTC sub-second is a down-counter) */
+	uint32_t prediv_s = hrtc.Init.SynchPrediv;
+	uint32_t subsec_before_ms = ((prediv_s - lpm_rtc_subsec_before_stop) * 1000) / (prediv_s + 1);
+	uint32_t subsec_after_ms = ((prediv_s - sTime.SubSeconds) * 1000) / (prediv_s + 1);
+
+	/* Total elapsed ms */
+	uint32_t elapsed_ms;
+	if (elapsed_s > 0) {
+		elapsed_ms = (elapsed_s - 1) * 1000 + (1000 - subsec_before_ms) + subsec_after_ms;
+	} else {
+		if (subsec_after_ms >= subsec_before_ms)
+			elapsed_ms = subsec_after_ms - subsec_before_ms;
+		else
+			elapsed_ms = 0;
+	}
+
+	/* Compensate HAL tick for the time spent in STOP */
+	if (elapsed_ms > 0) {
+		for (uint32_t i = 0; i < elapsed_ms; i++)
+			HAL_IncTick();
+	}
+}
+
 /** @brief System callback invoked by MGR_LPM at STOP mode entering */
 static void LPM_stop_enter() {
 //	MGR_LOG_DEBUG("==== STOP enter ====\r\n");
+	LPM_saveRtcTime();
+
+#if defined(USE_TRACKER_APP)
+	/* De-init ADC for power savings during STOP */
+	MX_ADC_DeInit();
+#endif
+
 	GPIO_DisableAllToAnalogInput();
 	/** Configure and re-enable interrupt as wakeup from UART is needed in case of GUI APP.
 	 *
@@ -261,11 +326,21 @@ static void LPM_stop_enter() {
 static void LPM_stop_exit() {
 	/* Wake Up on start bit detection successful */
 	LPM_SystemClock_Config_RestoreFromStop();
+
+	/* Compensate HAL tick for time spent in STOP mode */
+	LPM_compensateTick();
+
 	HAL_UARTEx_DisableStopMode(&hlpuart1);
 	HAL_Delay(100); /** So far need to add some delay at exit before being able to receive a new
 			 * AT command from UART link.
 			 * @note same delay used in STM32 examples
 			 */
+
+#if defined(USE_TRACKER_APP)
+	/* Re-init ADC after STOP mode */
+	MX_ADC_Init();
+#endif
+
 //	MGR_LOG_DEBUG("==== STOP exit ====\r\n");
 }
 
@@ -380,15 +455,23 @@ void GPIO_DisableAllToAnalogInput(void)
 	 *   PA13 = SWDIO
 	 *   PA14 = SWCLK
 	 *   SPI mode only: PA1 = SCK, PA15 = NSS
+	 *   TRACKER mode: PA11 = ADC_IN7 (SWS input), PA12 = SWS power control
 	 */
 #if defined(USE_SPI_DRIVER)
 	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 |
-	                      GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 |
-	                      GPIO_PIN_11 | GPIO_PIN_12;
+	                      GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10
+#if !defined(USE_TRACKER_APP)
+	                      | GPIO_PIN_11 | GPIO_PIN_12
+#endif
+	                      ;
 #elif defined(USE_UART_DRIVER)
 	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5 |
 	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 |
-	                      GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_15;
+	                      GPIO_PIN_10
+#if !defined(USE_TRACKER_APP)
+	                      | GPIO_PIN_11 | GPIO_PIN_12
+#endif
+	                      | GPIO_PIN_15;
 #endif
 	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;

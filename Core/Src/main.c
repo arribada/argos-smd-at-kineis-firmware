@@ -71,13 +71,13 @@
  * GUI APP is about AT commands support sent to device from GUI or SERIAL hyperterminal).
  * @note both flags are exclusive as standalone app will send periodic frame indefinitively
  */
-#if !defined(USE_STDALONE_APP) && !defined(USE_GUI_APP)
+#if !defined(USE_STDALONE_APP) && !defined(USE_GUI_APP) && !defined(USE_TRACKER_APP)
 //#define USE_STDALONE_APP
 #define USE_GUI_APP
 #endif
 
-#if defined(USE_STDALONE_APP) && defined(USE_GUI_APP)
-#error "USE_STDALONE_APP/USE_GUI_APP: Cannot build FW with both APPs, select only one."
+#if (defined(USE_STDALONE_APP) + defined(USE_GUI_APP) + defined(USE_TRACKER_APP)) > 1
+#error "Cannot build FW with multiple APPs, select only one of STDALONE/GUI/TRACKER."
 #endif
 
 #include "stm32wlxx_it.h"
@@ -87,6 +87,11 @@
 #include "mcu_tim.h"
 #include "kns_mac.h"
 #include "kns_app.h"
+#ifdef USE_TRACKER_APP
+#include "adc.h"
+#include "mgr_sws.h"
+#include "kns_app_tracker.h"
+#endif
 #ifdef USE_GUI_APP
 #ifdef USE_BAREMETAL
 #include "mgr_at_cmd.h" /* Needed for MGR_AT_CMD_isPendingAt()) in case of BAREMETAL OS to check no
@@ -271,6 +276,34 @@ static void IDLE_task(void)
     while(HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET);
 
   /** Enter low power mode has there is no event preempting */
+  LPM_enter();
+#endif
+#endif
+
+  /* ---- KINEIS TRACKER APP -------------------------------------------------------------------- */
+
+#ifdef USE_TRACKER_APP
+#ifdef USE_BAREMETAL
+  {
+  uint32_t prim;
+
+  prim = __get_PRIMASK();
+  __disable_irq();
+  __disable_fault_irq();
+  if (KNS_Q_isEvtInSomeQ()) {
+    if (!prim){
+      __enable_fault_irq();
+      __enable_irq();
+    }
+    return;
+  }
+  LPM_enter();
+  if (!prim){
+    __enable_fault_irq();
+    __enable_irq();
+  }
+  }
+#else
   LPM_enter();
 #endif
 #endif
@@ -649,6 +682,9 @@ int main(void)
 #if defined(USE_SPI_DRIVER)
   MX_SPI1_Init();
 #endif
+#if defined(USE_TRACKER_APP)
+  MX_ADC_Init();
+#endif
   /* USER CODE BEGIN 2 */
 
 #ifdef DEBUG
@@ -768,6 +804,12 @@ int main(void)
 #endif
 
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_gui_loop) == KNS_STATUS_OK);
+#endif
+#if defined(USE_TRACKER_APP)
+  MGR_SWS_init();
+  KNS_APP_tracker_init();
+  MGR_LOG_DEBUG("Build: TRACKER\r\n");
+  assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_tracker_loop) == KNS_STATUS_OK);
 #endif
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_IDLE, IDLE_task) == KNS_STATUS_OK);
 

@@ -39,6 +39,7 @@ endif
 # Select APPlication. Can be:
 # * STDLN: for the standalone application sending one message at startup
 # * GUI: for the application using the AT commands from UART link
+# * TRACKER: UW-DOPPLER tracker with SWS detection and BLIND-DOPPLER TX
 APP = GUI
 
 # Select output port
@@ -254,6 +255,21 @@ ifeq ($(APP),GUI)
 	-DUSE_GUI_APP
 endif
 
+ifeq ($(APP),TRACKER)
+	C_DEFS +=  \
+	-DUSE_TRACKER_APP \
+	-DUSE_MAC_PRFL_BLIND \
+	-DHAL_ADC_MODULE_ENABLED
+
+	C_SOURCES += \
+	Core/Src/adc.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc_ex.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
+	$(KINEIS_DIR)/App/Managers/MGR_SWS/Src/mgr_sws.c \
+	$(KINEIS_DIR)/App/kns_app_tracker.c
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC
@@ -324,6 +340,9 @@ endif
 ifeq ($(APP),STDLN)
 BUILD_VERSION := $(BUILD_VERSION)_stdln
 endif
+ifeq ($(APP),TRACKER)
+BUILD_VERSION := $(BUILD_VERSION)_tracker
+endif
 ifeq ($(MAC_PRFL), BASIC)
 BUILD_VERSION := $(BUILD_VERSION)_basic
 endif
@@ -377,6 +396,10 @@ C_INCLUDES =  \
 -I$(KINEIS_DIR)/Lpm/Inc
 
 C_INCLUDES += #$(libknsrf_wl_INCLUDES)
+
+ifeq ($(APP),TRACKER)
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_SWS/Inc
+endif
 
 ifeq ($(COMM),UART)
 C_DEFS +=  \
@@ -491,6 +514,7 @@ $(BUILD_DIR)/%.o: %.s $(current_makefile) | $(BUILD_DIR)
 
 $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) $(BUILD_INFO_OBJ) $(current_makefile)
 	@echo "-- Build firmware --"
+	TEMP=$$(cygpath -w /tmp 2>/dev/null || echo /tmp) TMP=$$(cygpath -w /tmp 2>/dev/null || echo /tmp) \
 	$(CC) $(OBJECTS) $(BUILD_INFO_OBJ) -L$(KINEIS_DIR)/Lib/. -Wl,--whole-archive -lkineis -lknsrf_wl -Wl,--no-whole-archive $(LDFLAGS) -o $@
 	$(SZ) -t $@
 

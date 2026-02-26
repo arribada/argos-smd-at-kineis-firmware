@@ -47,6 +47,10 @@ enum KNS_OS_taskHdlr_t {
 	KNS_OS_TASK_MAX   /**< number of tasks */
 };
 
+/* Note: TRACKER mode uses KNS_OS_TASK_APP for the tracker loop.
+ * SWS measurement is called directly from the tracker loop, not as a separate OS task.
+ */
+
 #pragma GCC visibility pop
 
 #endif /* KNS_OS_CONF_H */
