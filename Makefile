@@ -28,8 +28,12 @@ DEBUG = 1
 VERBOSE = 1
 USE_BAREMETAL = 1
 
-# Python executable (use python3 or python depending on your system)
+# Python executable (auto-detect python3 on Linux/WSL)
+ifeq ($(shell command -v python3 2>/dev/null),)
 PYTHON ?= python
+else
+PYTHON ?= python3
+endif
 
 
 # Select APPlication. Can be:
@@ -615,7 +619,12 @@ $(BOOTLOADER_BIN): bootloader
 # Flash targets
 #######################################
 # JLink executable - uses JLinkExe from PATH (install J-Link software)
-JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe" # JLinkExe
+# JLink executable - auto-detect: Linux JLinkExe or Windows via WSL
+ifeq ($(shell command -v JLinkExe 2>/dev/null),)
+JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe"
+else
+JLINK_EXE ?= JLinkExe
+endif
 JLINK_SERIAL ?=
 JLINK_SPEED ?= 4000
 JLINK_SCRIPT = $(BUILD_DIR)/flash.jlink

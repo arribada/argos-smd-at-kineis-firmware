@@ -62,10 +62,22 @@ bool bl_uart_init(void)
         return false;
     }
 
-    /* Configure LPUART1 GPIO: PA2 (TX), PA3 (RX) */
-    GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+    /* Configure LPUART1 GPIO: PA2 (TX) - no pull needed */
+    GPIO_InitStruct.Pin = GPIO_PIN_2;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF8_LPUART1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* Configure LPUART1 GPIO: PA3 (RX) - PULL-UP to prevent noise
+     * After direct jump from app (no hardware reset), PA3 transitions
+     * through floating state when reconfigured as UART AF. Without
+     * pull-up, the UART sees false start bits from noise, causing
+     * false UART detection during the SPI/UART protocol race. */
+    GPIO_InitStruct.Pin = GPIO_PIN_3;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF8_LPUART1;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
