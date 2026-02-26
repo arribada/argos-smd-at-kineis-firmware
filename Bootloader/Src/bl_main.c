@@ -146,12 +146,23 @@ static void bl_state_detect_protocol(void)
 {
     uint32_t start_tick = HAL_GetTick();
 
-    /* Always initialize both interfaces - DFU can be requested from either */
-    bl_uart_init();
+    /* Initialize SPI first - gives SPI a head start for detection.
+     * After direct jump from app (no hardware reset), the SPI master
+     * may already be sending sync frames. Initialize SPI before UART
+     * to catch these early frames. */
     bl_spi_init();
-
-    bl_uart_start_rx();
     bl_spi_start_rx();
+
+    /* Initialize UART after SPI to give SPI priority */
+    bl_uart_init();
+    bl_uart_start_rx();
+
+    /* Flush UART RX buffer after a short delay to discard noise bytes.
+     * When PA3 is reconfigured from floating/analog to UART AF, the
+     * transition can generate false start bits. Wait for any noise
+     * to be received, then flush it. */
+    HAL_Delay(5);
+    bl_uart_flush_rx();
 
     /* Always use full timeout - DFU request can come from SPI or UART,
      * and the master may need time to re-sync after STM32 reset/jump */
@@ -160,20 +171,23 @@ static void bl_state_detect_protocol(void)
     BL_DBG("[BL] Detecting protocol...\r\n");
 
     while ((HAL_GetTick() - start_tick) < timeout) {
+        /* Check SPI FIRST - SPI master may already be sending sync
+         * frames from before bootloader started. UART is checked second
+         * because it's more susceptible to noise-triggered false detection. */
+        if (bl_spi_has_data()) {
+            detected_protocol = BL_PROTO_SPI;
+            bl_uart_stop_rx();
+            BL_DBG("[BL] SPI detected\r\n");
+            current_state = BL_STATE_DFU_SPI;
+            return;
+        }
+
         if (bl_uart_has_data()) {
             detected_protocol = BL_PROTO_UART;
             bl_spi_stop_rx();
             bl_spi_deinit();
             BL_DBG("[BL] UART detected\r\n");
             current_state = BL_STATE_DFU_UART;
-            return;
-        }
-
-        if (bl_spi_has_data()) {
-            detected_protocol = BL_PROTO_SPI;
-            bl_uart_stop_rx();
-            BL_DBG("[BL] SPI detected\r\n");
-            current_state = BL_STATE_DFU_SPI;
             return;
         }
     }
