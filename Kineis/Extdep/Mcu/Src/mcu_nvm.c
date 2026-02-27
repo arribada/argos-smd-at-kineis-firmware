@@ -64,7 +64,7 @@ const uint8_t test_device_addr[4] = { 0x11, 0x22, 0x33, 0x44 };
  */
 static uint8_t radioConfZone[16] = {
 
-#ifdef KRD_FW_LP
+#ifdef SMD_NOPA
 	/** ---- radio configuration at 22 dBm instead of 27 dBm, needed for KRD_LP platform ---- */
 
 	/** ---- ESS4 402895000,402990000,22,LDA2 ---- */

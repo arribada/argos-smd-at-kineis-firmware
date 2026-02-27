@@ -71,13 +71,13 @@
  * GUI APP is about AT commands support sent to device from GUI or SERIAL hyperterminal).
  * @note both flags are exclusive as standalone app will send periodic frame indefinitively
  */
-#if !defined(USE_STDALONE_APP) && !defined(USE_GUI_APP) && !defined(USE_TRACKER_APP)
+#if !defined(USE_STDALONE_APP) && !defined(USE_GUI_APP) && !defined(USE_UW_DOPPLER_APP)
 //#define USE_STDALONE_APP
 #define USE_GUI_APP
 #endif
 
-#if (defined(USE_STDALONE_APP) + defined(USE_GUI_APP) + defined(USE_TRACKER_APP)) > 1
-#error "Cannot build FW with multiple APPs, select only one of STDALONE/GUI/TRACKER."
+#if (defined(USE_STDALONE_APP) + defined(USE_GUI_APP) + defined(USE_UW_DOPPLER_APP)) > 1
+#error "Cannot build FW with multiple APPs, select only one of STDALONE/GUI/UW_DOPPLER."
 #endif
 
 #include "stm32wlxx_it.h"
@@ -87,10 +87,16 @@
 #include "mcu_tim.h"
 #include "kns_mac.h"
 #include "kns_app.h"
-#ifdef USE_TRACKER_APP
+#ifdef USE_UW_DOPPLER_APP
 #include "adc.h"
 #include "mgr_sws.h"
-#include "kns_app_tracker.h"
+#include "kns_app_uw_doppler.h"
+#if defined(BSP_HAS_LED_RGB)
+#include "mgr_led.h"
+#endif
+#if defined(BSP_HAS_REED_SWITCH)
+#include "mgr_reed.h"
+#endif
 #endif
 #ifdef USE_GUI_APP
 #ifdef USE_BAREMETAL
@@ -280,9 +286,9 @@ static void IDLE_task(void)
 #endif
 #endif
 
-  /* ---- KINEIS TRACKER APP -------------------------------------------------------------------- */
+  /* ---- KINEIS UW_DOPPLER APP ----------------------------------------------------------------- */
 
-#ifdef USE_TRACKER_APP
+#ifdef USE_UW_DOPPLER_APP
 #ifdef USE_BAREMETAL
   {
   uint32_t prim;
@@ -682,7 +688,7 @@ int main(void)
 #if defined(USE_SPI_DRIVER)
   MX_SPI1_Init();
 #endif
-#if defined(USE_TRACKER_APP)
+#if defined(USE_UW_DOPPLER_APP)
   MX_ADC_Init();
 #endif
   /* USER CODE BEGIN 2 */
@@ -805,11 +811,17 @@ int main(void)
 
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_gui_loop) == KNS_STATUS_OK);
 #endif
-#if defined(USE_TRACKER_APP)
+#if defined(USE_UW_DOPPLER_APP)
+#if defined(BSP_HAS_REED_SWITCH)
+  MGR_REED_init();
+#endif
+#if defined(BSP_HAS_LED_RGB)
+  MGR_LED_init();
+#endif
   MGR_SWS_init();
-  KNS_APP_tracker_init();
-  MGR_LOG_DEBUG("Build: TRACKER\r\n");
-  assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_tracker_loop) == KNS_STATUS_OK);
+  KNS_APP_uw_doppler_init();
+  MGR_LOG_DEBUG("Build: UW_DOPPLER\r\n");
+  assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_uw_doppler_loop) == KNS_STATUS_OK);
 #endif
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_IDLE, IDLE_task) == KNS_STATUS_OK);
 

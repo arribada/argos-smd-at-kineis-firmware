@@ -39,7 +39,7 @@ endif
 # Select APPlication. Can be:
 # * STDLN: for the standalone application sending one message at startup
 # * GUI: for the application using the AT commands from UART link
-# * TRACKER: UW-DOPPLER tracker with SWS detection and BLIND-DOPPLER TX
+# * UW_DOPPLER: Underwater/surface detection with SWS and BLIND-DOPPLER TX
 APP = GUI
 
 # Select output port
@@ -54,8 +54,8 @@ MAC_PRFL = BASIC
 # NONE, SLEEP, STOP, STANDBY, SHUTDOWN
 LPM = NONE
 
-# * KRD board: choose between: KRD_FW_LP, KRD_FW_MP
-KRD_BOARD = KRD_FW_MP
+# * Board type: choose between: SMD_PA, SMD_NOPA, SMD_STDALONE, SMD_OP
+BOARD = SMD_PA
 
 # TCXO Stability: Use SMPS bypass (LDO mode) during TX to reduce noise
 # Set to 1 if TCXO instability is observed during satellite TX
@@ -221,7 +221,7 @@ C_DEFS +=  \
 -DUSE_LOCAL_PRINTF \
 -DUSE_USERDATA_TX \
 -DLPM_$(LPM)_ENABLED \
--D$(KRD_BOARD)
+-D$(BOARD)
 
 ifeq ($(USE_BAREMETAL), 1)
 C_DEFS +=  \
@@ -255,10 +255,9 @@ ifeq ($(APP),GUI)
 	-DUSE_GUI_APP
 endif
 
-ifeq ($(APP),TRACKER)
+ifeq ($(APP),UW_DOPPLER)
 	C_DEFS +=  \
-	-DUSE_TRACKER_APP \
-	-DUSE_MAC_PRFL_BLIND \
+	-DUSE_UW_DOPPLER_APP \
 	-DHAL_ADC_MODULE_ENABLED
 
 	C_SOURCES += \
@@ -267,7 +266,8 @@ ifeq ($(APP),TRACKER)
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc_ex.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
 	$(KINEIS_DIR)/App/Managers/MGR_SWS/Src/mgr_sws.c \
-	$(KINEIS_DIR)/App/kns_app_tracker.c
+	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
+	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
 endif
 
 ifeq ($(MAC_PRFL), BASIC)
@@ -279,7 +279,6 @@ ifeq ($(MAC_PRFL), BLIND)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BLIND
 endif
-
 
 ifeq ($(COMM),UART)
 C_DEFS +=  \
@@ -340,8 +339,8 @@ endif
 ifeq ($(APP),STDLN)
 BUILD_VERSION := $(BUILD_VERSION)_stdln
 endif
-ifeq ($(APP),TRACKER)
-BUILD_VERSION := $(BUILD_VERSION)_tracker
+ifeq ($(APP),UW_DOPPLER)
+BUILD_VERSION := $(BUILD_VERSION)_uw_doppler
 endif
 ifeq ($(MAC_PRFL), BASIC)
 BUILD_VERSION := $(BUILD_VERSION)_basic
@@ -349,11 +348,17 @@ endif
 ifeq ($(MAC_PRFL), BLIND)
 BUILD_VERSION := $(BUILD_VERSION)_blind
 endif
-ifeq ($(KRD_BOARD),KRD_FW_MP)
-BUILD_VERSION := $(BUILD_VERSION)_Mp
+ifeq ($(BOARD),SMD_PA)
+BUILD_VERSION := $(BUILD_VERSION)_Pa
 endif
-ifeq ($(KRD_BOARD),KRD_FW_LP)
-BUILD_VERSION := $(BUILD_VERSION)_Lp
+ifeq ($(BOARD),SMD_NOPA)
+BUILD_VERSION := $(BUILD_VERSION)_NoPa
+endif
+ifeq ($(BOARD),SMD_STDALONE)
+BUILD_VERSION := $(BUILD_VERSION)_StdAlone
+endif
+ifeq ($(BOARD),SMD_OP)
+BUILD_VERSION := $(BUILD_VERSION)_Op
 endif
 ifeq ($(SMPS_BYPASS_TX), 1)
 BUILD_VERSION := $(BUILD_VERSION)_SmpsByp
@@ -397,8 +402,18 @@ C_INCLUDES =  \
 
 C_INCLUDES += #$(libknsrf_wl_INCLUDES)
 
-ifeq ($(APP),TRACKER)
+ifeq ($(APP),UW_DOPPLER)
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_SWS/Inc
+endif
+
+# Board-specific drivers
+ifeq ($(BOARD),SMD_STDALONE)
+C_SOURCES += \
+$(KINEIS_DIR)/App/Managers/MGR_LED/Src/mgr_led.c \
+$(KINEIS_DIR)/App/Managers/MGR_REED/Src/mgr_reed.c
+C_INCLUDES += \
+-I$(KINEIS_DIR)/App/Managers/MGR_LED/Inc \
+-I$(KINEIS_DIR)/App/Managers/MGR_REED/Inc
 endif
 
 ifeq ($(COMM),UART)
