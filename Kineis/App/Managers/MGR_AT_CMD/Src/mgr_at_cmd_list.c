@@ -18,6 +18,9 @@
 #include "mgr_at_cmd_list_previpass.h"
 #include "mgr_at_cmd_list_mac.h"
 #include "mgr_at_cmd_list_certif.h"
+#ifdef USE_UW_DOPPLER_APP
+#include "mgr_at_cmd_list_uw_doppler.h"
+#endif
 
 const char *atcmd_version = "v0.7";
 
@@ -58,6 +61,16 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 
 	/**< DFU command - enter bootloader mode */
 	{ "AT+BOOT",          7, bMGR_AT_CMD_BOOT_cmd},
+
+#ifdef USE_UW_DOPPLER_APP
+	/**< UW_DOPPLER commands */
+	{ "AT+SWS",           6, bMGR_AT_CMD_SWS_cmd},
+	{ "AT+SWSCFG",        9, bMGR_AT_CMD_SWSCFG_cmd},
+	{ "AT+TXCFG",         8, bMGR_AT_CMD_TXCFG_cmd},
+	{ "AT+SWSFORCE",     11, bMGR_AT_CMD_SWSFORCE_cmd},
+	{ "AT+LED",           6, bMGR_AT_CMD_LED_cmd},
+	{ "AT+DEPLOY",        9, bMGR_AT_CMD_DEPLOY_cmd},
+#endif
 };
 
 /**

@@ -78,16 +78,23 @@ void MX_GPIO_Init(void)
 #if defined(USE_SPI_DRIVER)
   GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 |
 		  	  	  	  	  GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10
-#if !defined(USE_TRACKER_APP)
+#if !defined(USE_UW_DOPPLER_APP)
                         | GPIO_PIN_11 | GPIO_PIN_12
 #endif
                         ;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
 
 #elif defined(USE_UART_DRIVER)
-  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 |
-		  	  	  	  	  GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10
-#if !defined(USE_TRACKER_APP)
+  GPIO_InitStruct.Pin = GPIO_PIN_0
+#if !defined(SMD_STDALONE)
+                        | GPIO_PIN_1    /* PA1 = LED_RED on STDALONE */
+#endif
+                        | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 |
+		  	  	  	  	  GPIO_PIN_7 | GPIO_PIN_8
+#if !defined(SMD_STDALONE)
+                        | GPIO_PIN_9 | GPIO_PIN_10   /* PA9/PA10 = I2C on STDALONE */
+#endif
+#if !defined(USE_UW_DOPPLER_APP)
                         | GPIO_PIN_11 | GPIO_PIN_12
 #endif
                         | GPIO_PIN_15;
@@ -115,8 +122,15 @@ void MX_GPIO_Init(void)
                         GPIO_PIN_14 | GPIO_PIN_15;
 #elif defined(USE_UART_DRIVER)
   GPIO_InitStruct.Pin = GPIO_PIN_1 | GPIO_PIN_2 | //GPIO_PIN_3 |
-                        GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 |
-                        GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 |
+#if !defined(SMD_STDALONE)
+                        GPIO_PIN_4 | GPIO_PIN_5 |  /* PB4=LED_GREEN, PB5=LED_BLUE on STDALONE */
+                        GPIO_PIN_6 | GPIO_PIN_7 |  /* PB6=REED, PB7=PWR_LATCH on STDALONE */
+#endif
+                        GPIO_PIN_8 |
+#if !defined(SMD_STDALONE)
+                        GPIO_PIN_9 |               /* PB9=VBAT_EN on STDALONE */
+#endif
+                        GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 |
                         GPIO_PIN_14 | GPIO_PIN_15;
 #endif
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;

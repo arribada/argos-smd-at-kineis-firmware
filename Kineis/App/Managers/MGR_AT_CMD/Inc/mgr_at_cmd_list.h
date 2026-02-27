@@ -59,6 +59,16 @@ enum  atcmd_idx_t {
 	// DFU command
 	AT_BOOT,         /**< Enter bootloader/DFU mode */
 
+#ifdef USE_UW_DOPPLER_APP
+	// UW_DOPPLER commands
+	AT_SWS,          /**< SWS status / enable-disable */
+	AT_SWSCFG,       /**< SWS configuration */
+	AT_TXCFG,        /**< TX scheduling configuration */
+	AT_SWSFORCE,     /**< Force SWS measurement */
+	AT_LED,          /**< LED mode */
+	AT_DEPLOY,       /**< Deploy mode */
+#endif
+
 	ATCMD_MAX_COUNT,
 	ATCMD_UNKNOWN_COMMAND = ATCMD_MAX_COUNT
 };

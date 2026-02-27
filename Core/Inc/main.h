@@ -69,16 +69,19 @@ void request_dfu_mode(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define JTMS_SWCLK_Pin GPIO_PIN_14
-#define JTMS_SWCLK_GPIO_Port GPIOA
-#define JTMS_SWDIO_Pin GPIO_PIN_13
-#define JTMS_SWDIO_GPIO_Port GPIOA
-#define EXT_WKUP_BUTTON_Pin GPIO_PIN_3
-#define EXT_WKUP_BUTTON_GPIO_Port GPIOB
-#define PA_PSU_EN_Pin GPIO_PIN_0
-#define PA_PSU_EN_GPIO_Port GPIOC
-#define PA_PSU_SEL_Pin GPIO_PIN_1
-#define PA_PSU_SEL_GPIO_Port GPIOC
+
+/* Board-specific pin definitions */
+#if defined(SMD_PA)
+#include "bsp/bsp_smd_pa.h"
+#elif defined(SMD_NOPA)
+#include "bsp/bsp_smd_nopa.h"
+#elif defined(SMD_STDALONE)
+#include "bsp/bsp_smd_stdalone.h"
+#elif defined(SMD_OP)
+#include "bsp/bsp_smd_op.h"
+#else
+#error "No board defined. Set BOARD= to SMD_PA, SMD_NOPA, SMD_STDALONE, or SMD_OP."
+#endif
 
 /* USER CODE BEGIN Private defines */
 

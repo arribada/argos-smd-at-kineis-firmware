@@ -26,8 +26,14 @@
 #include "mgr_log.h"
 #include "rtc.h"
 
-#if defined(USE_TRACKER_APP)
+#if defined(USE_UW_DOPPLER_APP)
 #include "adc.h"
+#endif
+#if defined(BSP_HAS_LED_RGB)
+#include "mgr_led.h"
+#endif
+#if defined(BSP_HAS_REED_SWITCH)
+#include "mgr_reed.h"
 #endif
 
 #pragma GCC visibility push(default)
@@ -304,7 +310,7 @@ static void LPM_stop_enter() {
 //	MGR_LOG_DEBUG("==== STOP enter ====\r\n");
 	LPM_saveRtcTime();
 
-#if defined(USE_TRACKER_APP)
+#if defined(USE_UW_DOPPLER_APP)
 	/* De-init ADC for power savings during STOP */
 	MX_ADC_DeInit();
 #endif
@@ -336,9 +342,18 @@ static void LPM_stop_exit() {
 			 * @note same delay used in STM32 examples
 			 */
 
-#if defined(USE_TRACKER_APP)
+#if defined(USE_UW_DOPPLER_APP)
 	/* Re-init ADC after STOP mode */
 	MX_ADC_Init();
+#endif
+
+	/* Re-init LED and REED GPIOs after STOP mode (GPIO_DisableAllToAnalogInput
+	 * should have preserved them, but re-init for robustness) */
+#if defined(BSP_HAS_LED_RGB)
+	MGR_LED_init();
+#endif
+#if defined(BSP_HAS_REED_SWITCH)
+	MGR_REED_init();
 #endif
 
 //	MGR_LOG_DEBUG("==== STOP exit ====\r\n");
@@ -455,20 +470,26 @@ void GPIO_DisableAllToAnalogInput(void)
 	 *   PA13 = SWDIO
 	 *   PA14 = SWCLK
 	 *   SPI mode only: PA1 = SCK, PA15 = NSS
-	 *   TRACKER mode: PA11 = ADC_IN7 (SWS input), PA12 = SWS power control
+	 *   UW_DOPPLER mode: PA11 = ADC_IN7 (SWS input), PA12 = SWS power control
 	 */
 #if defined(USE_SPI_DRIVER)
 	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 |
 	                      GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10
-#if !defined(USE_TRACKER_APP)
+#if !defined(USE_UW_DOPPLER_APP)
 	                      | GPIO_PIN_11 | GPIO_PIN_12
 #endif
 	                      ;
 #elif defined(USE_UART_DRIVER)
-	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5 |
-	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 |
-	                      GPIO_PIN_10
-#if !defined(USE_TRACKER_APP)
+	GPIO_InitStruct.Pin = GPIO_PIN_0
+#if !defined(SMD_STDALONE)
+	                      | GPIO_PIN_1    /* PA1 = LED_RED on STDALONE */
+#endif
+	                      | GPIO_PIN_4 | GPIO_PIN_5 |
+	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8
+#if !defined(SMD_STDALONE)
+	                      | GPIO_PIN_9 | GPIO_PIN_10   /* PA9/PA10 = I2C on STDALONE */
+#endif
+#if !defined(USE_UW_DOPPLER_APP)
 	                      | GPIO_PIN_11 | GPIO_PIN_12
 #endif
 	                      | GPIO_PIN_15;
@@ -481,6 +502,7 @@ void GPIO_DisableAllToAnalogInput(void)
 	 * Active pins NOT set to analog:
 	 *   PB3 = EXT_WKUP_BUTTON / SWO
 	 *   SPI mode only: PB4 = MISO, PB5 = MOSI
+	 *   SMD_STDALONE: PB4=LED_GREEN, PB5=LED_BLUE, PB6=REED, PB7=PWR_LATCH, PB9=VBAT_EN
 	 */
 #if defined(USE_SPI_DRIVER)
 	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 |
@@ -489,8 +511,15 @@ void GPIO_DisableAllToAnalogInput(void)
 	                      GPIO_PIN_14 | GPIO_PIN_15;
 #elif defined(USE_UART_DRIVER)
 	GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 |
-	                      GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 |
-	                      GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 |
+#if !defined(SMD_STDALONE)
+	                      GPIO_PIN_4 | GPIO_PIN_5 |
+	                      GPIO_PIN_6 | GPIO_PIN_7 |
+#endif
+	                      GPIO_PIN_8 |
+#if !defined(SMD_STDALONE)
+	                      GPIO_PIN_9 |
+#endif
+	                      GPIO_PIN_10 | GPIO_PIN_11 |
 	                      GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
 #endif
 	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;

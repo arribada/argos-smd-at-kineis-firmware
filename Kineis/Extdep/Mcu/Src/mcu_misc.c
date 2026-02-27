@@ -54,7 +54,7 @@ extern uint32_t SystemCoreClock;
 void MCU_MISC_turn_on_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
-#ifdef KRD_FW_MP
+#if defined(SMD_PA) || defined(SMD_STDALONE)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 	MGR_LOG_DEBUG("[PA] turn_on_pa\r\n");
 
@@ -104,7 +104,7 @@ void MCU_MISC_turn_on_pa()
 void MCU_MISC_turn_off_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
-#ifdef KRD_FW_MP
+#if defined(SMD_PA) || defined(SMD_STDALONE)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
 	MGR_LOG_DEBUG("[PA] turn_off_pa\r\n");
@@ -141,13 +141,13 @@ enum KNS_status_t MCU_MISC_getSettingsHwRf(int8_t rf_level_dBm, void* rfSettings
 	int8_t rficPaLevel, rficPaLevel_min, rficPaLevel_max;
 
 
-#if defined(KRD_FW_MP)
+#if defined(SMD_PA) || defined(SMD_STDALONE)
 	rficPaLevel_min = -17; // dBm
 	rficPaLevel_max = 15;  // dBm
 
 	settings->isRficHPA = false;
 	settings->externalPaGain = 36;
-#elif defined(KRD_FW_LP)
+#elif defined(SMD_NOPA)
 	rficPaLevel_min = -9; // dBm
 	rficPaLevel_max = 22; // dBm
 
