@@ -97,8 +97,9 @@
 #if defined(BSP_HAS_REED_SWITCH)
 #include "mgr_reed.h"
 #endif
+#include "mgr_err.h"
 #endif
-#ifdef USE_GUI_APP
+#if defined(USE_GUI_APP) || defined(USE_UW_DOPPLER_APP)
 #ifdef USE_BAREMETAL
 #include "mgr_at_cmd.h" /* Needed for MGR_AT_CMD_isPendingAt()) in case of BAREMETAL OS to check no
                          * there is no pending AT cmd before entring low power mode
@@ -296,7 +297,7 @@ static void IDLE_task(void)
   prim = __get_PRIMASK();
   __disable_irq();
   __disable_fault_irq();
-  if (KNS_Q_isEvtInSomeQ()) {
+  if (KNS_Q_isEvtInSomeQ() || MGR_AT_CMD_isPendingAt()) {
     if (!prim){
       __enable_fault_irq();
       __enable_irq();
@@ -725,8 +726,15 @@ int main(void)
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_STOP);
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_STOP2);
-    /** Initialize retention RAM2 as not done by default in the Reset_Handler */
-    Sram2_Init();
+    /** Initialize retention RAM2 only on true cold boot (power-on/brownout).
+     *  On IWDG/software/pin resets, SRAM2 is preserved (SRAM_RST option byte set)
+     *  so we keep it intact to retain the event log and other retention data.
+     */
+    {
+      uint32_t csr = RCC->CSR;
+      if (!(csr & (RCC_CSR_IWDGRSTF | RCC_CSR_SFTRSTF)))
+        Sram2_Init();
+    }
     /** Deinit all unused timers including RTC timer to save current drain (was automatically
      * enabled by STM32Cube generated code earlier
      */
@@ -812,14 +820,19 @@ int main(void)
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_gui_loop) == KNS_STATUS_OK);
 #endif
 #if defined(USE_UW_DOPPLER_APP)
+  MGR_ERR_init();
 #if defined(BSP_HAS_REED_SWITCH)
   MGR_REED_init();
 #endif
 #if defined(BSP_HAS_LED_RGB)
   MGR_LED_init();
 #endif
+  /* Initialize AT command parser for UW_DOPPLER AT commands (SWS, TXCFG, LED, etc.) */
+#if defined(USE_UART_DRIVER)
+  MGR_AT_CMD_start(&hlpuart1);
+#endif
+  KNS_APP_uw_doppler_init();  /* NVM_load() first so SWS uses saved config */
   MGR_SWS_init();
-  KNS_APP_uw_doppler_init();
   MGR_LOG_DEBUG("Build: UW_DOPPLER\r\n");
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_uw_doppler_loop) == KNS_STATUS_OK);
 #endif
@@ -938,7 +951,13 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   MGR_LOG_DEBUG("Error_Handler\r\n");
-#ifdef DEBUG
+
+#if defined(USE_UW_DOPPLER_APP)
+  /* Tracker must ALWAYS reset, even in DEBUG — device must never be stuck */
+  MGR_ERR_logAndReset(ERR_ASSERT);
+  /* Never reaches here */
+
+#elif defined(DEBUG)
 #ifdef USE_GUI_APP
 #ifdef USE_UART_DRIVER
   MCU_AT_CONSOLE_send("+ASSERT=\r\n");
@@ -963,7 +982,7 @@ void Error_Handler(void)
   __disable_irq();
   /* reset uC */
   NVIC_SystemReset();
-#endif /* #ifdef DEBUG */
+#endif /* #if defined(USE_UW_DOPPLER_APP) */
   /* USER CODE END Error_Handler_Debug */
 }
 

@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "kns_types.h"
+#include "kns_cfg.h"
 #include "user_data.h"
 #include "mgr_at_cmd_list_user_data.h"
 #include "kns_q.h"
@@ -60,6 +61,50 @@ static void MGR_LOG_array(__attribute__((unused)) uint8_t *data, uint16_t len)
 	for (i = 0; i < len; i++)
 		MGR_LOG_DEBUG_RAW("%02X", data[i]);
 	MGR_LOG_DEBUG_RAW("\r\n");
+}
+
+/** @brief Compute padded bitlen based on current modulation.
+ *
+ * Pads user data to the nearest valid payload size for the active modulation.
+ * Buffer must already be zeroed so padding bytes are 0x00.
+ *
+ * @param[in] u16_actual_bitlen: actual user data bitlen after ASCII-to-binary conversion
+ * @return target bitlen (padded), or 0 if payload exceeds modulation max
+ */
+static uint16_t u16_get_padded_bitlen(uint16_t u16_actual_bitlen)
+{
+	struct KNS_CFG_radio_t radio_cfg;
+
+	if (KNS_CFG_getRadioInfo(&radio_cfg) != KNS_STATUS_OK)
+		return u16_actual_bitlen; /* fallback: no padding */
+
+	switch (radio_cfg.modulation) {
+	case KNS_TX_MOD_LDK:
+		if (u16_actual_bitlen > 128)
+			return 0;
+		return 128;
+	case KNS_TX_MOD_VLDA4:
+		if (u16_actual_bitlen > 24)
+			return 0;
+		return 24;
+	case KNS_TX_MOD_LDA2L:
+		if (u16_actual_bitlen > 192)
+			return 0;
+		return 192;
+	case KNS_TX_MOD_LDA2: {
+		/* Valid sizes: 32, 64, 96, 128, 160, 192 bits (multiples of 32) */
+		static const uint16_t valid[] = {32, 64, 96, 128, 160, 192};
+		uint16_t i;
+
+		for (i = 0; i < 6; i++) {
+			if (u16_actual_bitlen <= valid[i])
+				return valid[i];
+		}
+		return 0; /* too large */
+	}
+	default:
+		return u16_actual_bitlen; /* HDA4, CW, etc: no padding */
+	}
 }
 
 /** @brief Handle new TX data, this is the core function of AT+TX cmd
@@ -136,6 +181,14 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 			 */
 			u16UserDataBitlen = u16MGR_AT_CMD_convertAsciiBinary(pu8UserDataBuf,
 									     u16UserDataCharNb);
+			/* Auto-pad payload to match modulation requirements */
+			u16UserDataBitlen = u16_get_padded_bitlen(u16UserDataBitlen);
+			if (u16UserDataBitlen == 0) {
+				MGR_LOG_VERBOSE("[ERROR] Payload too large for current modulation\r\n");
+				return bMGR_AT_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH);
+			}
+			/* Buffer already zeroed, padding bytes are 0 */
+
 			if (u16UserDataBitlen <= (USERDATA_TX_DATAFIELD_SIZE * 8)) {
 				spUserDataMsg->u16DataBitLen = u16UserDataBitlen;
 				spUserDataMsg->u8Attr = u8UserDataAttr;

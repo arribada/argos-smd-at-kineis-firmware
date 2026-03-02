@@ -1,6 +1,25 @@
 /**
  * @file    mgr_at_cmd_list_uw_doppler.c
  * @brief   AT command handlers for UW_DOPPLER application
+ *
+ * Implements the following AT commands:
+ *   - AT+SWS      : SWS status / enable-disable
+ *   - AT+SWSCFG   : SWS configuration (thresholds, baselines, intervals)
+ *   - AT+SWSFORCE : Force immediate SWS measurement
+ *   - AT+TXCFG    : TX scheduling configuration (interval, growth, max)
+ *   - AT+LED      : LED mode control (off / on / 24h)
+ *   - AT+DEPLOY   : Deploy mode (enable/disable satellite TX)
+ *   - AT+SAVE     : Save all config to NVM flash with CRC32
+ *   - AT+LOG      : Event log dump (status) / clear (action)
+ *
+ * @attention The AT command table in mgr_at_cmd_list.c must list commands
+ *            with longest prefix first (SWSFORCE before SWSCFG before SWS)
+ *            to avoid prefix shadowing in the dispatcher.
+ */
+
+/**
+ * @addtogroup MGR_AT_CMD
+ * @{
  */
 
 /* Includes ------------------------------------------------------------------*/
@@ -12,6 +31,9 @@
 #include "mgr_at_cmd_list_uw_doppler.h"
 #include "mcu_at_console.h"
 #include "mgr_sws.h"
+#include "mgr_nvm.h"
+#include "mgr_evtlog.h"
+#include "mgr_wdg.h"
 #include "kns_app_uw_doppler.h"
 #include "main.h"
 #include "mgr_log.h"
@@ -84,6 +106,10 @@ bool bMGR_AT_CMD_SWSCFG_cmd(uint8_t *pu8_cmdParamString,
 			&interval_ms, &max_dive_s, &min_surf_s) != 7) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		}
+		if (thr_min > 4095 || thr_max > 4095 || thr_min >= thr_max ||
+		    interval_ms == 0) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
 
 		MGR_SWS_Config_t cfg = MGR_SWS_getConfig();
 		cfg.threshold_min = (uint16_t)thr_min;
@@ -124,6 +150,10 @@ bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString,
 			"AT+TXCFG=%u,%u,%u,%u",
 			&interval_s, &growth, &max_interval_s, &max_count) != 4) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		}
+		if (interval_s == 0 || interval_s > 65535 || growth > 255 ||
+		    max_interval_s == 0 || max_interval_s > 65535 || max_count > 255) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 
 		KNS_APP_UwDopplerTxCfg_t cfg;
@@ -212,3 +242,54 @@ bool bMGR_AT_CMD_DEPLOY_cmd(uint8_t *pu8_cmdParamString,
 
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
+
+bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
+		MGR_NVM_save();
+		MGR_LOG_DEBUG("[AT] Config saved to NVM\r\n");
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
+bool bMGR_AT_CMD_LOG_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint16_t count = MGR_EVTLOG_count();
+		MCU_AT_CONSOLE_send("+LOG=%u\r\n", (unsigned)count);
+
+		/* Refresh watchdog every 32 entries (~1.5s at 9600 baud) */
+		#define LOG_WDG_REFRESH_ENTRIES 32
+		for (uint16_t i = 0; i < count; i++) {
+			if ((i % LOG_WDG_REFRESH_ENTRIES) == 0)
+				MGR_WDG_refresh();
+			const MGR_EVTLOG_Entry_t *e = MGR_EVTLOG_get(i);
+			if (e) {
+				MCU_AT_CONSOLE_send("#%03u t=%08lu e=%02u s=%02u d=%04u\r\n",
+					(unsigned)i,
+					(unsigned long)e->tick,
+					(unsigned)e->type,
+					(unsigned)e->state,
+					(unsigned)e->data);
+			}
+		}
+
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		MGR_EVTLOG_clear();
+		MGR_LOG_DEBUG("[AT] Event log cleared\r\n");
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
+/**
+ * @}
+ */

@@ -468,6 +468,7 @@ static void bl_state_validate(void)
 static void bl_state_error(void)
 {
     bl_dfu_reset();
+    bl_spi_protocol_set_op_state(BL_DFU_STATE_IDLE);
 
     if (detected_protocol == BL_PROTO_SPI) {
         current_state = BL_STATE_DFU_SPI;

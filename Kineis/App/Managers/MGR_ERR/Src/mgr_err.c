@@ -1,0 +1,131 @@
+/**
+ * @file    mgr_err.c
+ * @brief   Error tracker using TAMP backup registers
+ *
+ * Uses STM32WL TAMP backup registers BKP2R-BKP7R to persist
+ * error context across system resets. These registers survive
+ * all resets (NRST, software, watchdog, brown-out) and are only
+ * cleared on VBAT removal.
+ *
+ * Register map:
+ *   BKP2R = reset counter (incremented each boot)
+ *   BKP3R = last RCC_CSR flags (reset cause snapshot)
+ *   BKP4R = last error code (MGR_ERR_Code_t)
+ *   BKP5R = last UW_DOPPLER state at time of error
+ *   BKP6R = last HAL tick at time of error
+ *   BKP7R = reserved
+ *
+ * Init sequence: read previous session data, log it, then clear
+ * error code for this session and increment boot counter.
+ */
+
+/**
+ * @addtogroup MGR_ERR
+ * @{
+ */
+
+#include "mgr_err.h"
+#include "stm32wlxx.h"
+#include "mgr_log.h"
+
+/* Use TAMP peripheral struct for backup register access */
+#define ERR_BKP_COUNT   (TAMP->BKP2R)   /* Reset counter */
+#define ERR_BKP_CSR     (TAMP->BKP3R)   /* Last RCC_CSR */
+#define ERR_BKP_CODE    (TAMP->BKP4R)   /* Last error code */
+#define ERR_BKP_STATE   (TAMP->BKP5R)   /* Last state */
+#define ERR_BKP_TICK    (TAMP->BKP6R)   /* Last tick */
+
+static const char *err_code_str(MGR_ERR_Code_t code)
+{
+	switch (code) {
+	case ERR_NONE:           return "NONE";
+	case ERR_HARDFAULT:      return "HARDFAULT";
+	case ERR_BUSFAULT:       return "BUSFAULT";
+	case ERR_MEMMANAGE:      return "MEMMANAGE";
+	case ERR_USAGEFAULT:     return "USAGEFAULT";
+	case ERR_NMI:            return "NMI";
+	case ERR_ASSERT:         return "ASSERT";
+	case ERR_MAC_TIMEOUT:    return "MAC_TIMEOUT";
+	case ERR_MAC_INIT_FAIL:  return "MAC_INIT_FAIL";
+	case ERR_TX_TIMEOUT:     return "TX_TIMEOUT";
+	case ERR_STACK_OVERFLOW: return "STACK_OVERFLOW";
+	case ERR_WDG_RESET:      return "WDG_RESET";
+	default:                 return "UNKNOWN";
+	}
+}
+
+static const char *reset_cause_str(uint32_t csr)
+{
+	if (csr & RCC_CSR_IWDGRSTF) return "IWDG";
+	if (csr & RCC_CSR_SFTRSTF)  return "SOFTWARE";
+	if (csr & RCC_CSR_PINRSTF)  return "PIN";
+	if (csr & RCC_CSR_BORRSTF)  return "BROWNOUT";
+	return "POWER_ON";
+}
+
+void MGR_ERR_init(void)
+{
+	/* Backup access must already be enabled (enable_backup_access() in main.c) */
+
+	/* Read previous session info before modifying */
+	uint32_t prev_count = ERR_BKP_COUNT;
+	uint32_t prev_csr   = ERR_BKP_CSR;
+	MGR_ERR_Code_t prev_err = (MGR_ERR_Code_t)ERR_BKP_CODE;
+	uint32_t prev_state = ERR_BKP_STATE;
+	uint32_t prev_tick  = ERR_BKP_TICK;
+
+	/* Read current reset cause from RCC_CSR */
+	uint32_t csr = RCC->CSR;
+
+	/* Log previous session info */
+	MGR_LOG_DEBUG("[ERR] Boot #%lu: last_reset=%s last_err=%s last_state=%lu tick=%lu\r\n",
+		prev_count + 1,
+		reset_cause_str(prev_csr),
+		err_code_str(prev_err),
+		prev_state,
+		prev_tick);
+
+	/* Update registers for this session */
+	ERR_BKP_COUNT = prev_count + 1;  /* Increment reset counter */
+	ERR_BKP_CSR   = csr;             /* Store current reset cause */
+	ERR_BKP_CODE  = ERR_NONE;        /* Clear error code */
+	ERR_BKP_STATE = 0;
+	ERR_BKP_TICK  = 0;
+
+	/* Clear RCC reset flags for next reset detection */
+	RCC->CSR |= RCC_CSR_RMVF;
+}
+
+void MGR_ERR_log(MGR_ERR_Code_t code)
+{
+	extern volatile uint32_t g_uw_doppler_state_for_err;
+	ERR_BKP_CODE  = (uint32_t)code;
+	ERR_BKP_STATE = g_uw_doppler_state_for_err;
+	ERR_BKP_TICK  = HAL_GetTick();
+
+	MGR_LOG_DEBUG("[ERR] Error logged: %s (tick=%lu)\r\n",
+		err_code_str(code), HAL_GetTick());
+}
+
+void MGR_ERR_logAndReset(MGR_ERR_Code_t code)
+{
+	MGR_ERR_log(code);
+	__disable_irq();
+	NVIC_SystemReset();
+	/* Never reaches here */
+	while (1) {}
+}
+
+uint32_t MGR_ERR_getResetCount(void)
+{
+	return ERR_BKP_COUNT;
+}
+
+MGR_ERR_Code_t MGR_ERR_getLastError(void)
+{
+	return (MGR_ERR_Code_t)ERR_BKP_CODE;
+}
+
+/**
+ * @}
+ */

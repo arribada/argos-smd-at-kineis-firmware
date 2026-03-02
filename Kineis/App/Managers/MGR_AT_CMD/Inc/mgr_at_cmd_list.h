@@ -60,13 +60,15 @@ enum  atcmd_idx_t {
 	AT_BOOT,         /**< Enter bootloader/DFU mode */
 
 #ifdef USE_UW_DOPPLER_APP
-	// UW_DOPPLER commands
-	AT_SWS,          /**< SWS status / enable-disable */
-	AT_SWSCFG,       /**< SWS configuration */
-	AT_TXCFG,        /**< TX scheduling configuration */
+	// UW_DOPPLER commands (longest prefix first to avoid shadowing in dispatcher)
 	AT_SWSFORCE,     /**< Force SWS measurement */
+	AT_SWSCFG,       /**< SWS configuration */
+	AT_SWS,          /**< SWS status / enable-disable */
+	AT_TXCFG,        /**< TX scheduling configuration */
 	AT_LED,          /**< LED mode */
 	AT_DEPLOY,       /**< Deploy mode */
+	AT_LOG,          /**< Event log dump / clear */
+	AT_SAVE,         /**< Save config to NVM */
 #endif
 
 	ATCMD_MAX_COUNT,

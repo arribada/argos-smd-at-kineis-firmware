@@ -117,10 +117,13 @@ static bool LPM_configWakeUpUart(void)
 	/* make sure that UART is ready to receive
 	 * (test carried out again later in HAL_UARTEx_StopModeWakeUpSourceConfig)
 	 */
+	uint32_t uart_timeout = 50000U; /* ~50ms at 48MHz */
 	while ((__HAL_UART_GET_FLAG(&hlpuart1, USART_ISR_BUSY) == SET) ||
 		(__HAL_UART_GET_FLAG(&hlpuart1, USART_ISR_RXNE) == SET) ||
-		(__HAL_UART_GET_FLAG(&hlpuart1, USART_ISR_REACK) == RESET))
-		;
+		(__HAL_UART_GET_FLAG(&hlpuart1, USART_ISR_REACK) == RESET)) {
+		if (--uart_timeout == 0U)
+			return false;
+	}
 
 	/* set the UART wake-up event:
 	 * specify wake-up on start-bit detection
@@ -298,16 +301,18 @@ static void LPM_compensateTick(void)
 			elapsed_ms = 0;
 	}
 
-	/* Compensate HAL tick for the time spent in STOP */
-	if (elapsed_ms > 0) {
-		for (uint32_t i = 0; i < elapsed_ms; i++)
-			HAL_IncTick();
-	}
+	/* Compensate HAL tick for the time spent in STOP.
+	 * Use direct uwTick addition instead of HAL_IncTick() loop
+	 * to avoid O(N) cost for long STOP durations.
+	 */
+	extern __IO uint32_t uwTick;
+	uwTick += elapsed_ms;
 }
 
 /** @brief System callback invoked by MGR_LPM at STOP mode entering */
 static void LPM_stop_enter() {
 //	MGR_LOG_DEBUG("==== STOP enter ====\r\n");
+	HAL_SuspendTick();
 	LPM_saveRtcTime();
 
 #if defined(USE_UW_DOPPLER_APP)
@@ -332,6 +337,9 @@ static void LPM_stop_enter() {
 static void LPM_stop_exit() {
 	/* Wake Up on start bit detection successful */
 	LPM_SystemClock_Config_RestoreFromStop();
+
+	/* Resume SysTick before compensating */
+	HAL_ResumeTick();
 
 	/* Compensate HAL tick for time spent in STOP mode */
 	LPM_compensateTick();
@@ -408,6 +416,12 @@ static void LPM_shutdown_enter() {
 	// 2) Program the desired pulls for Standby via PWR (per port/bit)
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);      // example: PA0 pull-up
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);      // example: PB3 pull-down
+
+#if defined(BSP_HAS_PWR_LATCH)
+	/* Pull PWR_LATCH (PB7) LOW to cut power on STDALONE board */
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
+#endif
+
 	LPM_configWakeUpRtc();
 	LPM_configWakeUpPins();
 	__HAL_RCC_CLEAR_RESET_FLAGS();

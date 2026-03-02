@@ -1,14 +1,24 @@
 /**
  * @file    mgr_reed.c
- * @brief   Reed switch (EXTI interrupt) and power latch driver
+ * @brief   Reed switch (EXTI interrupt) and power latch driver for SMD_STDALONE
  *
- * Reed: PB6, active HIGH (HIGH = magnet present), EXTI on both edges
- * Power latch: PB7, HIGH = keep board powered
+ * Reed: PB6, active HIGH (HIGH = magnet present), EXTI on both edges.
+ * Power latch: PB7, HIGH = keep board powered.
  *
  * The EXTI ISR records timestamps for rising/falling edges.
  * The application reads events via MGR_REED_getEvent() and gets
  * hold duration via MGR_REED_getLastHoldDuration_ms() to decide
  * which action to trigger based on how long the magnet was held.
+ *
+ * Usage in UW_DOPPLER:
+ *   - Magnet ON: starts hold timer
+ *   - Magnet OFF (<10s): no action (short contact)
+ *   - Magnet held >10s: triggers shutdown sequence (blink + NVM save + power off)
+ */
+
+/**
+ * @addtogroup MGR_REED
+ * @{
  */
 
 #include "mgr_reed.h"
@@ -62,9 +72,12 @@ bool MGR_REED_isMagnetPresent(void)
 
 MGR_REED_Event_t MGR_REED_getEvent(void)
 {
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();
 	MGR_REED_Event_t evt = pending_event;
 	if (evt != MGR_REED_EVT_NONE)
 		pending_event = MGR_REED_EVT_NONE;
+	__set_PRIMASK(primask);
 	return evt;
 }
 
@@ -91,7 +104,12 @@ void MGR_REED_releasePower(void)
  */
 void EXTI9_5_IRQHandler(void)
 {
-	HAL_GPIO_EXTI_IRQHandler(REED_MCU_Pin);
+	/* Service all EXTI lines 5-9 to prevent lockup if other sources trigger */
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_5);
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_6);
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_7);
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_8);
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_9);
 }
 
 /**
@@ -117,7 +135,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		pending_event = MGR_REED_EVT_MAGNET_ON;
 	} else {
 		/* Falling edge: magnet removed */
-		last_hold_ms = now - rising_tick;
+		if (rising_tick > 0)
+			last_hold_ms = now - rising_tick;
+		else
+			last_hold_ms = 0;  /* No valid rising edge recorded */
+		rising_tick = 0;
 		pending_event = MGR_REED_EVT_MAGNET_OFF;
 	}
 }
@@ -132,3 +154,7 @@ void MGR_REED_latchPower(void) {}
 void MGR_REED_releasePower(void) {}
 
 #endif /* BSP_HAS_REED_SWITCH */
+
+/**
+ * @}
+ */

@@ -96,6 +96,11 @@
 #define FLASH_WKU_COUNTER_WL_SIZE             1024 // Wear leveling can count to 2048 before to increment Overflow
 #define FLASH_WKU_COUNTER_WL_BYTE_SIZE        (FLASH_WKU_COUNTER_WL_SIZE * 8) // 64-bit aligned
 #define FLASH_WKU_COUNTER_WL_START_ADDR       (FLASH_USER_START_ADDR + FLASH_WKU_COUNTER_WL_OFFSET)
+
+// NVM config storage (last free page in FLASH_USER region)
+#define FLASH_NVM_CONFIG_OFFSET   (FLASH_WKU_COUNTER_WL_OFFSET + FLASH_WKU_COUNTER_WL_BYTE_SIZE)
+#define FLASH_NVM_CONFIG_ADDR     (FLASH_USER_START_ADDR + FLASH_NVM_CONFIG_OFFSET)
+
 extern uint32_t _sflash_user_data;  // optional use
 
 // TODO: Move it to another pertinent place?
