@@ -49,12 +49,14 @@
 #define VBAT_ADC_Pin            GPIO_PIN_13
 #define VBAT_ADC_GPIO_Port      GPIOB
 
-/* ---- LED RGB (active LOW: GPIO_PIN_RESET = on) ---- */
-#define LED_RED_Pin             GPIO_PIN_1
+/* ---- LED RGB (common anode = active LOW: GPIO_PIN_RESET = on) ---- */
+/* APHF1608LSEEQBDZGKC: pin1=anode(VBAT), pin2=R cathode, pin3=B cathode, pin4=G cathode */
+#define BSP_LED_ACTIVE_HIGH     0
+#define LED_RED_Pin             GPIO_PIN_1   /* PA1 → LED_R cathode (schematic pin 2) */
 #define LED_RED_GPIO_Port       GPIOA
-#define LED_GREEN_Pin           GPIO_PIN_4
+#define LED_GREEN_Pin           GPIO_PIN_4   /* PB4 → LED_G cathode (schematic pin 4) */
 #define LED_GREEN_GPIO_Port     GPIOB
-#define LED_BLUE_Pin            GPIO_PIN_5
+#define LED_BLUE_Pin            GPIO_PIN_5   /* PB5 → LED_B cathode (schematic pin 3) */
 #define LED_BLUE_GPIO_Port      GPIOB
 
 /* ---- Reed switch (active HIGH: HIGH = magnet present) ---- */

@@ -10,6 +10,9 @@
 #include "stm32wlxx_hal.h"
 #include <string.h>
 
+_Static_assert(BL_SPI_TRANSACTION_SIZE <= BL_RX_BUFFER_SIZE,
+               "SPI transaction size exceeds RX buffer");
+
 /* SPI handle */
 SPI_HandleTypeDef hspi1_bl;
 
@@ -575,8 +578,13 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
  */
 void bl_spi_wait_tx_done(void)
 {
-    if (spi_state == BL_SPI_STATE_WAITING_TX) {
+    uint32_t start = HAL_GetTick();
+    while (spi_state == BL_SPI_STATE_WAITING_TX &&
+           (HAL_GetTick() - start) < 500) {
         bl_spi_handle_tx_poll();
+    }
+    if (spi_state == BL_SPI_STATE_WAITING_TX) {
+        spi_state = BL_SPI_STATE_IDLE;
     }
 }
 

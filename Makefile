@@ -266,6 +266,11 @@ ifeq ($(APP),UW_DOPPLER)
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc_ex.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
 	$(KINEIS_DIR)/App/Managers/MGR_SWS/Src/mgr_sws.c \
+	$(KINEIS_DIR)/App/Managers/MGR_NVM/Src/mgr_nvm.c \
+	$(KINEIS_DIR)/App/Managers/MGR_BAT/Src/mgr_bat.c \
+	$(KINEIS_DIR)/App/Managers/MGR_ERR/Src/mgr_err.c \
+	$(KINEIS_DIR)/App/Managers/MGR_WDG/Src/mgr_wdg.c \
+	$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Src/mgr_evtlog.c \
 	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
 	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
 endif
@@ -404,6 +409,11 @@ C_INCLUDES += #$(libknsrf_wl_INCLUDES)
 
 ifeq ($(APP),UW_DOPPLER)
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_SWS/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_NVM/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_ERR/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_WDG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
 endif
 
 # Board-specific drivers

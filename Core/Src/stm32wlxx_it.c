@@ -22,6 +22,10 @@
 #include "stm32wlxx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#if defined(USE_UW_DOPPLER_APP)
+#include "mgr_err.h"
+extern volatile uint32_t g_uw_doppler_state_for_err;
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,15 +62,19 @@
   */
 static void Core_Error_Handler(void)
 {
+#if defined(USE_UW_DOPPLER_APP)
+  /* Tracker must always reset — never stay stuck */
   __disable_irq();
-#ifdef DEBUG
+  NVIC_SystemReset();
+#elif defined(DEBUG)
+  __disable_irq();
   while (1)
   {
   }
-#else // end of DEBUG
-  /* reset uC */
+#else
+  __disable_irq();
   NVIC_SystemReset();
-#endif /* #ifdef DEBUG */
+#endif
 }
 
 /* USER CODE END 0 */
@@ -112,8 +120,12 @@ void HardFault_Handler(void)
   /* USER CODE BEGIN HardFault_IRQn 0 */
   /* Direct UART output to detect HardFault */
   extern UART_HandleTypeDef hlpuart1;
-  const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
+  static const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
   HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
+#if defined(USE_UW_DOPPLER_APP)
+  /* Log fault context to TAMP registers (direct write, no function calls) */
+  MGR_ERR_LOG_FAULT(ERR_HARDFAULT, g_uw_doppler_state_for_err);
+#endif
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -129,7 +141,9 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+#if defined(USE_UW_DOPPLER_APP)
+  MGR_ERR_LOG_FAULT(ERR_MEMMANAGE, g_uw_doppler_state_for_err);
+#endif
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -145,7 +159,9 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+#if defined(USE_UW_DOPPLER_APP)
+  MGR_ERR_LOG_FAULT(ERR_BUSFAULT, g_uw_doppler_state_for_err);
+#endif
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -161,7 +177,9 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+#if defined(USE_UW_DOPPLER_APP)
+  MGR_ERR_LOG_FAULT(ERR_USAGEFAULT, g_uw_doppler_state_for_err);
+#endif
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {

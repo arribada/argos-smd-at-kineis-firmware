@@ -17,14 +17,21 @@ CFLAGS = -Wall -Wextra -g -O0 -std=c99
 UNIT_DIR = unit
 BUILD_DIR = build
 
-# Test executables
+# Test executables - Bootloader
 TEST_CRC32 = $(BUILD_DIR)/test_crc32
 TEST_DFU = $(BUILD_DIR)/test_dfu_protocol
 TEST_HEADER = $(BUILD_DIR)/test_app_header
 TEST_SPI = $(BUILD_DIR)/test_spi_protocol
 
+# Test executables - Tracker (UW_DOPPLER)
+TEST_EVTLOG = $(BUILD_DIR)/test_evtlog
+TEST_NVM = $(BUILD_DIR)/test_nvm
+TEST_TX_INTERVAL = $(BUILD_DIR)/test_tx_interval
+TEST_MEMORY_SAFETY = $(BUILD_DIR)/test_memory_safety
+
 # All tests
-TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI)
+TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI) \
+        $(TEST_EVTLOG) $(TEST_NVM) $(TEST_TX_INTERVAL) $(TEST_MEMORY_SAFETY)
 
 # Default target
 all: $(BUILD_DIR) $(TESTS)
@@ -49,6 +56,19 @@ $(TEST_HEADER): $(UNIT_DIR)/test_app_header.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 $(TEST_SPI): $(UNIT_DIR)/test_spi_protocol.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+# Tracker (UW_DOPPLER) tests
+$(TEST_EVTLOG): $(UNIT_DIR)/test_evtlog.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_NVM): $(UNIT_DIR)/test_nvm.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_TX_INTERVAL): $(UNIT_DIR)/test_tx_interval.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_MEMORY_SAFETY): $(UNIT_DIR)/test_memory_safety.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 # Run all unit tests
@@ -89,6 +109,18 @@ run-header: $(TEST_HEADER)
 run-spi: $(TEST_SPI)
 	$(RUN_PREFIX)$(TEST_SPI)
 
+run-evtlog: $(TEST_EVTLOG)
+	$(RUN_PREFIX)$(TEST_EVTLOG)
+
+run-nvm: $(TEST_NVM)
+	$(RUN_PREFIX)$(TEST_NVM)
+
+run-tx-interval: $(TEST_TX_INTERVAL)
+	$(RUN_PREFIX)$(TEST_TX_INTERVAL)
+
+run-memory-safety: $(TEST_MEMORY_SAFETY)
+	$(RUN_PREFIX)$(TEST_MEMORY_SAFETY)
+
 # Clean
 clean:
 	rm -rf $(BUILD_DIR)
@@ -105,4 +137,4 @@ integration-spi:
 integration-spi-mock:
 	python integration/test_spi_dfu.py --mock --verbose
 
-.PHONY: all run clean run-crc32 run-dfu run-header run-spi integration-uart integration-spi integration-spi-mock
+.PHONY: all run clean run-crc32 run-dfu run-header run-spi run-evtlog run-nvm run-tx-interval run-memory-safety integration-uart integration-spi integration-spi-mock

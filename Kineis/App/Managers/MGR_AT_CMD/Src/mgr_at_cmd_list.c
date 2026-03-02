@@ -63,13 +63,15 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+BOOT",          7, bMGR_AT_CMD_BOOT_cmd},
 
 #ifdef USE_UW_DOPPLER_APP
-	/**< UW_DOPPLER commands */
-	{ "AT+SWS",           6, bMGR_AT_CMD_SWS_cmd},
-	{ "AT+SWSCFG",        9, bMGR_AT_CMD_SWSCFG_cmd},
-	{ "AT+TXCFG",         8, bMGR_AT_CMD_TXCFG_cmd},
+	/**< UW_DOPPLER commands (longest prefix first to avoid shadowing) */
 	{ "AT+SWSFORCE",     11, bMGR_AT_CMD_SWSFORCE_cmd},
+	{ "AT+SWSCFG",        9, bMGR_AT_CMD_SWSCFG_cmd},
+	{ "AT+SWS",           6, bMGR_AT_CMD_SWS_cmd},
+	{ "AT+TXCFG",         8, bMGR_AT_CMD_TXCFG_cmd},
 	{ "AT+LED",           6, bMGR_AT_CMD_LED_cmd},
 	{ "AT+DEPLOY",        9, bMGR_AT_CMD_DEPLOY_cmd},
+	{ "AT+LOG",           6, bMGR_AT_CMD_LOG_cmd},
+	{ "AT+SAVE",          7, bMGR_AT_CMD_SAVE_cmd},
 #endif
 };
 

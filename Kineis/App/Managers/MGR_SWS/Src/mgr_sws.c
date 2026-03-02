@@ -2,13 +2,56 @@
  * @file    mgr_sws.c
  * @brief   Salt Water Switch manager - Adaptive underwater/surface detection
  *
- * Full biofouling-adaptive algorithm based on sws_analog_implementation.md spec.
+ * @details
+ * Biofouling-adaptive detection algorithm based on sws_analog_implementation.md spec.
  * Adapted for STM32WL55 12-bit ADC (0-4095). All absolute ADC thresholds are
  * scaled from the 14-bit spec by dividing by 4.
  *
- * Hardware:
- *   PA12 = SWS_OUT (sensor power control, GPIO output push-pull)
- *   PA11 = SWS_IN  (ADC_IN7, analog input)
+ * **Hardware:**
+ *   - PA12 = SWS_OUT (sensor power control, GPIO output push-pull)
+ *   - PA11 = SWS_IN  (ADC_IN7, analog input)
+ *   - Stabilization delay: 10ms after powering sensor before ADC read
+ *
+ * **Detection pipeline (per measurement cycle):**
+ *   1. Power sensor ON, wait 10ms, read ADC, power OFF
+ *   2. Validate reading within [threshold_min, threshold_max]
+ *   3. Apply moving average filter (2-sample history)
+ *   4. Compute trend buffer statistics (8-sample sliding window):
+ *      - Consecutive decrease counter
+ *      - Total drop from peak
+ *      - Variance (uint32_t to avoid truncation for high-spread values)
+ *   5. Check 3-tier rapid transition detection (biofouling override):
+ *      - Tier 1: >25% instant drop AND >75 ADC absolute (immediate surface)
+ *      - Tier 2: >12% drop AND >38 absolute AND 1+ trend decrease AND below water baseline
+ *      - Tier 3: >8% drop AND >25 absolute AND 2+ consecutive decreases
+ *   6. Check trend + variance override (catches slow drift):
+ *      - 3+ consecutive decreases with >10% total drop
+ *      - High variance (>625) with >15% cumulative drop from peak
+ *   7. Apply standard threshold with hysteresis:
+ *      - Below threshold_low -> SURFACE
+ *      - Above threshold_high -> UNDERWATER
+ *      - Between: maintain previous state (hysteresis band)
+ *
+ * **Adaptive calibration:**
+ *   - Air baseline: recalibrated from recent readings after stable surface time (>10s)
+ *   - Water baseline: EMA (alpha=19%) during dives, absolute minimum tracking
+ *   - Extended dive: recalibrate water baseline every 30s after 60s underwater
+ *   - Safety guard: water baseline cannot drop below ABSOLUTE_MIN_WATER_ADC (500)
+ *   - Ratio guard: water must be >= 5x air baseline
+ *
+ * **State transitions:**
+ *   - UNKNOWN -> SURFACE or UNDERWATER (initial calibration read)
+ *   - SURFACE -> UNDERWATER (filtered value crosses threshold_high)
+ *   - UNDERWATER -> SURFACE (filtered below threshold_low OR biofouling override)
+ *   - Max dive timeout forces SURFACE after configurable duration (default 7200s)
+ *   - Surface lockout prevents quick SURFACE->UNDERWATER->SURFACE oscillation (30s)
+ *
+ * @see mgr_sws.h for the public API and configuration structure
+ */
+
+/**
+ * @addtogroup MGR_SWS
+ * @{
  */
 
 #include <string.h>
@@ -189,7 +232,7 @@ static void update_trend(uint16_t filtered)
 		trend_peak_value = filtered;
 }
 
-static void compute_variance(uint16_t *var_out)
+static void compute_variance(uint32_t *var_out)
 {
 	uint8_t count = trend_buffer_full ? TREND_BUFFER_SIZE :
 		(trend_buffer_idx > 0 ? trend_buffer_idx : 1);
@@ -203,7 +246,7 @@ static void compute_variance(uint16_t *var_out)
 		int32_t diff = (int32_t)trend_buffer[i] - (int32_t)mean;
 		sq_sum += (uint32_t)(diff * diff);
 	}
-	*var_out = (uint16_t)(sq_sum / count);
+	*var_out = sq_sum / count;
 }
 
 static uint16_t trend_total_drop(void)
@@ -280,7 +323,7 @@ static bool detector_state(void)
 
 	/* 3. Trend + variance */
 	update_trend(filtered);
-	uint16_t variance = 0;
+	uint32_t variance = 0;
 	compute_variance(&variance);
 	uint16_t total_drop = trend_total_drop();
 
@@ -561,12 +604,23 @@ MGR_SWS_Config_t MGR_SWS_getConfig(void)
 
 void MGR_SWS_setConfig(const MGR_SWS_Config_t *config)
 {
-	if (config) {
-		sws_config = *config;
-		air_baseline = config->initial_air_baseline;
-		water_baseline = config->initial_water_baseline;
-		update_thresholds();
-	}
+	if (!config)
+		return;
+
+	/* Validate: thresholds within ADC range, min < max, water > air */
+	if (config->threshold_min >= config->threshold_max)
+		return;
+	if (config->threshold_min > 4095 || config->threshold_max > 4095)
+		return;
+	if (config->initial_water_baseline <= config->initial_air_baseline)
+		return;
+	if (config->test_interval_ms == 0)
+		return;
+
+	sws_config = *config;
+	air_baseline = config->initial_air_baseline;
+	water_baseline = config->initial_water_baseline;
+	update_thresholds();
 }
 
 void MGR_SWS_forceMeasurement(void)
@@ -580,3 +634,7 @@ bool MGR_SWS_stateChanged(void)
 	state_changed_flag = false;
 	return changed;
 }
+
+/**
+ * @}
+ */

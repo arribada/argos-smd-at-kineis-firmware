@@ -41,18 +41,12 @@
 bool bMGR_AT_CMD_VERSION_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	enum atcmd_type_t e_exec_mode)
 {
-	uint8_t idx;
-
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		MGR_LOG_VERBOSE("[ERROR] Action mode is unauthorized for this AT cmd\r\n");
 		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 	}
 
-	MCU_AT_CONSOLE_send("+VERSION=%s", atcmd_version);
-	for (idx=0; idx < ATCMD_MAX_COUNT; idx++) {
-		MCU_AT_CONSOLE_send(",%s", cas_atcmd_list_array[idx].pu8_cmdNameString);
-	}
-	MCU_AT_CONSOLE_send("\r\n");
+	MCU_AT_CONSOLE_send("+VERSION=%s\r\n", atcmd_version);
 
 	return bMGR_AT_CMD_logSucceedMsg();
 }

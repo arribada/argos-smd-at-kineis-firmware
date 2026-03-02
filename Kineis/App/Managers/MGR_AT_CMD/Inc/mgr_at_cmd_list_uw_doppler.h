@@ -49,4 +49,17 @@ bool bMGR_AT_CMD_LED_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_m
  */
 bool bMGR_AT_CMD_DEPLOY_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+LOG: Dump / Clear event log
+ *
+ * Status: Dump all events (oldest first), each as "#NNN t=TICK e=TYPE s=STATE d=DATA"
+ * Action: Clear the event log
+ */
+bool bMGR_AT_CMD_LOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+SAVE: Save current config to NVM flash
+ *
+ * Action: Saves all config (TX, SWS, deploy, LED) to flash with CRC32
+ */
+bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */

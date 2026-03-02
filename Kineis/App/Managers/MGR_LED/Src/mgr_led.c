@@ -1,8 +1,22 @@
 /**
  * @file    mgr_led.c
- * @brief   LED RGB driver implementation
+ * @brief   LED RGB driver implementation for SMD_STDALONE board
  *
- * Active LOW: GPIO_PIN_RESET = LED on, GPIO_PIN_SET = LED off
+ * Active LOW: GPIO_PIN_RESET = LED on, GPIO_PIN_SET = LED off.
+ * Pins: PA1=RED, PB4=GREEN, PB5=BLUE.
+ *
+ * Supports solid color display and non-blocking blink sequences.
+ * MGR_LED_task() must be called from the main loop to update blink timing.
+ *
+ * LED modes:
+ *   - OFF (0): LED always off
+ *   - ON  (1): LED enabled (state-dependent colors in UW_DOPPLER)
+ *   - 24H (2): LED enabled for 24 hours then auto-off
+ */
+
+/**
+ * @addtogroup MGR_LED
+ * @{
  */
 
 #include "mgr_led.h"
@@ -40,19 +54,30 @@ static void led_reinit_gpio(void)
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 
+	/* Init each LED individually (pins may be on different ports) */
 	GPIO_InitStruct.Pin = LED_RED_Pin;
 	HAL_GPIO_Init(LED_RED_GPIO_Port, &GPIO_InitStruct);
 
-	GPIO_InitStruct.Pin = LED_GREEN_Pin | LED_BLUE_Pin;
+	GPIO_InitStruct.Pin = LED_GREEN_Pin;
 	HAL_GPIO_Init(LED_GREEN_GPIO_Port, &GPIO_InitStruct);
+
+	GPIO_InitStruct.Pin = LED_BLUE_Pin;
+	HAL_GPIO_Init(LED_BLUE_GPIO_Port, &GPIO_InitStruct);
 }
 
 static void led_set_raw(bool r, bool g, bool b)
 {
-	/* Active LOW: RESET = on, SET = off */
+#if defined(BSP_LED_ACTIVE_HIGH) && BSP_LED_ACTIVE_HIGH
+	/* Active HIGH (common cathode): SET = on, RESET = off */
+	HAL_GPIO_WritePin(LED_RED_GPIO_Port,   LED_RED_Pin,   r ? GPIO_PIN_SET : GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, g ? GPIO_PIN_SET : GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port,  LED_BLUE_Pin,  b ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#else
+	/* Active LOW (common anode): RESET = on, SET = off */
 	HAL_GPIO_WritePin(LED_RED_GPIO_Port,   LED_RED_Pin,   r ? GPIO_PIN_RESET : GPIO_PIN_SET);
 	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, g ? GPIO_PIN_RESET : GPIO_PIN_SET);
 	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port,  LED_BLUE_Pin,  b ? GPIO_PIN_RESET : GPIO_PIN_SET);
+#endif
 }
 
 static void led_apply_color(MGR_LED_Color_t color)
@@ -92,24 +117,30 @@ void MGR_LED_init(void)
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
-	/* All LEDs off at init (HIGH = off for active LOW) */
+	/* All LEDs off at init */
+#if defined(BSP_LED_ACTIVE_HIGH) && BSP_LED_ACTIVE_HIGH
+	HAL_GPIO_WritePin(LED_RED_GPIO_Port,   LED_RED_Pin,   GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port,  LED_BLUE_Pin,  GPIO_PIN_RESET);
+#else
 	HAL_GPIO_WritePin(LED_RED_GPIO_Port,   LED_RED_Pin,   GPIO_PIN_SET);
 	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port,  LED_BLUE_Pin,  GPIO_PIN_SET);
+#endif
 
-	/* PA1 = LED_RED */
-	GPIO_InitStruct.Pin = LED_RED_Pin;
+	/* Init each LED individually (pins may be on different ports) */
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+
+	GPIO_InitStruct.Pin = LED_RED_Pin;
 	HAL_GPIO_Init(LED_RED_GPIO_Port, &GPIO_InitStruct);
 
-	/* PB4 = LED_GREEN, PB5 = LED_BLUE */
-	GPIO_InitStruct.Pin = LED_GREEN_Pin | LED_BLUE_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	GPIO_InitStruct.Pin = LED_GREEN_Pin;
 	HAL_GPIO_Init(LED_GREEN_GPIO_Port, &GPIO_InitStruct);
+
+	GPIO_InitStruct.Pin = LED_BLUE_Pin;
+	HAL_GPIO_Init(LED_BLUE_GPIO_Port, &GPIO_InitStruct);
 
 	mode_start_tick = HAL_GetTick();
 }
@@ -212,57 +243,26 @@ void MGR_LED_setMode(MGR_LED_Mode_t mode)
 void MGR_LED_bootTest(void)
 {
 	led_reinit_gpio();
-
-	/* Log GPIO register state for debugging */
-	uint32_t a_moder = GPIOA->MODER;
-	uint32_t b_moder = GPIOB->MODER;
-	MGR_LOG_DEBUG("[LED] GPIO MODER: A=0x%08lX B=0x%08lX\r\n",
-		(unsigned long)a_moder, (unsigned long)b_moder);
-	MGR_LOG_DEBUG("[LED] Pins: RED=PA%u GREEN=PB%u BLUE=PB%u\r\n",
-		(unsigned)1, (unsigned)4, (unsigned)5);
-
-	/* PA1 MODER bits [3:2]: should be 01 (output) */
-	MGR_LOG_DEBUG("[LED] PA1  MODER[3:2]=%lu (expect 1=output)\r\n",
-		(unsigned long)((a_moder >> 2) & 0x3));
-	/* PB4 MODER bits [9:8]: should be 01 (output) */
-	MGR_LOG_DEBUG("[LED] PB4  MODER[9:8]=%lu (expect 1=output)\r\n",
-		(unsigned long)((b_moder >> 8) & 0x3));
-	/* PB5 MODER bits [11:10]: should be 01 (output) */
-	MGR_LOG_DEBUG("[LED] PB5 MODER[11:10]=%lu (expect 1=output)\r\n",
-		(unsigned long)((b_moder >> 10) & 0x3));
-
-	/* Step 1: PA1 only (should be RED) */
-	led_set_raw(false, false, false);  /* all off first */
-	HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_RESET);  /* PA1 LOW = on */
-	MGR_LOG_DEBUG("[LED] TEST: PA1=LOW only -> should be RED\r\n");
-	HAL_Delay(500);
-	HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET);    /* off */
-
-	/* Step 2: PB4 only (should be GREEN) */
-	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_RESET);  /* PB4 LOW = on */
-	MGR_LOG_DEBUG("[LED] TEST: PB4=LOW only -> should be GREEN\r\n");
-	HAL_Delay(500);
-	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_SET);    /* off */
-
-	/* Step 3: PB5 only (should be BLUE) */
-	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin, GPIO_PIN_RESET);  /* PB5 LOW = on */
-	MGR_LOG_DEBUG("[LED] TEST: PB5=LOW only -> should be BLUE\r\n");
-	HAL_Delay(500);
-	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin, GPIO_PIN_SET);    /* off */
-
-	/* Step 4: All 3 on (should be WHITE) */
-	HAL_GPIO_WritePin(LED_RED_GPIO_Port,   LED_RED_Pin,   GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(LED_BLUE_GPIO_Port,  LED_BLUE_Pin,  GPIO_PIN_RESET);
-	MGR_LOG_DEBUG("[LED] TEST: ALL=LOW -> should be WHITE\r\n");
-	MGR_LOG_DEBUG("[LED] ODR: A=0x%04lX B=0x%04lX\r\n",
-		(unsigned long)(GPIOA->ODR & 0xFFFF),
-		(unsigned long)(GPIOB->ODR & 0xFFFF));
-	HAL_Delay(500);
-
-	/* All off */
 	led_set_raw(false, false, false);
-	MGR_LOG_DEBUG("[LED] TEST: done\r\n");
+
+	/* Cycle each color individually for pin-to-color identification */
+	MGR_LOG_DEBUG("[LED] Boot test: RED (PA1)\r\n");
+	led_set_raw(true, false, false);
+	HAL_Delay(400);
+
+	MGR_LOG_DEBUG("[LED] Boot test: GREEN (PB4)\r\n");
+	led_set_raw(false, true, false);
+	HAL_Delay(400);
+
+	MGR_LOG_DEBUG("[LED] Boot test: BLUE (PB5)\r\n");
+	led_set_raw(false, false, true);
+	HAL_Delay(400);
+
+	MGR_LOG_DEBUG("[LED] Boot test: WHITE (all)\r\n");
+	led_set_raw(true, true, true);
+	HAL_Delay(400);
+
+	led_set_raw(false, false, false);
 }
 
 #else /* No LED RGB */
@@ -279,3 +279,7 @@ void MGR_LED_setMode(MGR_LED_Mode_t mode) { (void)mode; }
 void MGR_LED_bootTest(void) {}
 
 #endif /* BSP_HAS_LED_RGB */
+
+/**
+ * @}
+ */
