@@ -69,6 +69,7 @@ enum  atcmd_idx_t {
 	AT_DEPLOY,       /**< Deploy mode */
 	AT_LOG,          /**< Event log dump / clear */
 	AT_SAVE,         /**< Save config to NVM */
+	AT_BATCFG,       /**< Battery protection config */
 #endif
 
 	ATCMD_MAX_COUNT,

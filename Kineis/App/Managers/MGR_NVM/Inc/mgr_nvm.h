@@ -14,15 +14,19 @@
 #include "kns_app_uw_doppler.h"
 #include "mgr_sws.h"
 #include "mgr_led.h"
+#include "mgr_bat.h"
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 1
+#define NVM_VERSION 2
 
 /**
  * @brief NVM config structure stored in flash
  *
  * Layout is designed for 64-bit aligned flash writes.
  * Total size must stay within one flash page (2KB).
+ *
+ * @note Version 2 added: bat_min_tx_mV field.
+ *       Version 1 configs are auto-migrated on load (bat_min_tx_mV = default).
  */
 typedef struct {
 	uint32_t magic;
@@ -45,7 +49,9 @@ typedef struct {
 	uint32_t sws_max_dive_time_s;
 	uint32_t sws_min_surface_time_s;
 	uint8_t  sws_enabled;
-	uint8_t  _pad2[3];
+	uint8_t  _pad2[1];
+	/* Battery config (v2) */
+	uint16_t bat_min_tx_mV;        /**< Min battery voltage for TX (0 = disabled) */
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 

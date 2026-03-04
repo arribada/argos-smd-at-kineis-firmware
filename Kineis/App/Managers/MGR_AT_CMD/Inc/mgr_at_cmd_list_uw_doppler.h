@@ -58,8 +58,15 @@ bool bMGR_AT_CMD_LOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_m
 
 /** @brief AT+SAVE: Save current config to NVM flash
  *
- * Action: Saves all config (TX, SWS, deploy, LED) to flash with CRC32
+ * Action: Saves all config (TX, SWS, deploy, LED, battery) to flash with CRC32
  */
 bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+BATCFG: Get/Set battery protection config
+ *
+ * Status: +BATCFG=<min_tx_mV>,<current_mV>
+ * Action: AT+BATCFG=<min_tx_mV>  (0 = disable threshold)
+ */
+bool bMGR_AT_CMD_BATCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */

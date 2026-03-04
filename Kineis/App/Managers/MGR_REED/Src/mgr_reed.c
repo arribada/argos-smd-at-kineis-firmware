@@ -32,7 +32,16 @@
 
 #define REED_DEBOUNCE_MS  50  /**< Ignore edges within this interval */
 
-static volatile MGR_REED_Event_t pending_event = MGR_REED_EVT_NONE;
+/* Event ring buffer: ISR pushes, getEvent() pops.
+ * Size must be power-of-2 for mask trick. 4 entries is enough
+ * (only 2 event types, 50ms debounce = max ~20 events/s). */
+#define EVT_BUF_SIZE  4
+#define EVT_BUF_MASK  (EVT_BUF_SIZE - 1)
+
+static volatile MGR_REED_Event_t evt_buf[EVT_BUF_SIZE];
+static volatile uint8_t evt_head = 0;  /**< Next write index (ISR only) */
+static volatile uint8_t evt_tail = 0;  /**< Next read index (main only) */
+
 static volatile uint32_t rising_tick = 0;       /**< Tick when magnet was detected */
 static volatile uint32_t last_hold_ms = 0;      /**< Duration of last completed hold */
 static volatile uint32_t last_edge_tick = 0;    /**< Tick of last edge (for debounce) */
@@ -72,12 +81,12 @@ bool MGR_REED_isMagnetPresent(void)
 
 MGR_REED_Event_t MGR_REED_getEvent(void)
 {
-	uint32_t primask = __get_PRIMASK();
-	__disable_irq();
-	MGR_REED_Event_t evt = pending_event;
-	if (evt != MGR_REED_EVT_NONE)
-		pending_event = MGR_REED_EVT_NONE;
-	__set_PRIMASK(primask);
+	/* Lock-free SPSC: tail only modified here (main context) */
+	if (evt_tail == evt_head)
+		return MGR_REED_EVT_NONE;
+
+	MGR_REED_Event_t evt = evt_buf[evt_tail & EVT_BUF_MASK];
+	evt_tail++;  /* Atomic 8-bit write on Cortex-M */
 	return evt;
 }
 
@@ -129,10 +138,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	}
 	last_edge_tick = now;
 
+	MGR_REED_Event_t evt;
+
 	if (HAL_GPIO_ReadPin(REED_MCU_GPIO_Port, REED_MCU_Pin) == GPIO_PIN_SET) {
 		/* Rising edge: magnet detected */
 		rising_tick = now;
-		pending_event = MGR_REED_EVT_MAGNET_ON;
+		evt = MGR_REED_EVT_MAGNET_ON;
 	} else {
 		/* Falling edge: magnet removed */
 		if (rising_tick > 0)
@@ -140,7 +151,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		else
 			last_hold_ms = 0;  /* No valid rising edge recorded */
 		rising_tick = 0;
-		pending_event = MGR_REED_EVT_MAGNET_OFF;
+		evt = MGR_REED_EVT_MAGNET_OFF;
+	}
+
+	/* Push into ring buffer (drop oldest if full) */
+	if ((uint8_t)(evt_head - evt_tail) < EVT_BUF_SIZE) {
+		evt_buf[evt_head & EVT_BUF_MASK] = evt;
+		evt_head++;
 	}
 }
 

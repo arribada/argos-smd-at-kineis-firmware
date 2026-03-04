@@ -26,6 +26,7 @@
 
 #include "mgr_err.h"
 #include "stm32wlxx.h"
+#include "stm32wlxx_hal.h"
 #include "mgr_log.h"
 
 /* Use TAMP peripheral struct for backup register access */
@@ -34,6 +35,7 @@
 #define ERR_BKP_CODE    (TAMP->BKP4R)   /* Last error code */
 #define ERR_BKP_STATE   (TAMP->BKP5R)   /* Last state */
 #define ERR_BKP_TICK    (TAMP->BKP6R)   /* Last tick */
+#define ERR_BKP_CRASH   (TAMP->BKP7R)   /* Consecutive crash counter */
 
 static const char *err_code_str(MGR_ERR_Code_t code)
 {
@@ -85,12 +87,25 @@ void MGR_ERR_init(void)
 		prev_state,
 		prev_tick);
 
+	/* Crash loop detection: check if previous boot was short-lived */
+	uint32_t prev_crash = ERR_BKP_CRASH;
+	if (prev_tick > 0 && prev_tick < MGR_ERR_CRASH_LOOP_MIN_UP_MS && prev_err != ERR_NONE) {
+		prev_crash++;
+	} else {
+		prev_crash = 0;  /* Previous boot was stable, reset counter */
+	}
+
 	/* Update registers for this session */
 	ERR_BKP_COUNT = prev_count + 1;  /* Increment reset counter */
 	ERR_BKP_CSR   = csr;             /* Store current reset cause */
 	ERR_BKP_CODE  = ERR_NONE;        /* Clear error code */
 	ERR_BKP_STATE = 0;
 	ERR_BKP_TICK  = 0;
+	ERR_BKP_CRASH = prev_crash;
+
+	if (prev_crash > 0) {
+		MGR_LOG_DEBUG("[ERR] Consecutive crashes: %lu\r\n", prev_crash);
+	}
 
 	/* Clear RCC reset flags for next reset detection */
 	RCC->CSR |= RCC_CSR_RMVF;
@@ -124,6 +139,58 @@ uint32_t MGR_ERR_getResetCount(void)
 MGR_ERR_Code_t MGR_ERR_getLastError(void)
 {
 	return (MGR_ERR_Code_t)ERR_BKP_CODE;
+}
+
+uint32_t MGR_ERR_getCrashCount(void)
+{
+	return ERR_BKP_CRASH;
+}
+
+bool MGR_ERR_checkCrashLoop(void)
+{
+	if (ERR_BKP_CRASH < MGR_ERR_CRASH_LOOP_MAX)
+		return false;
+
+	MGR_LOG_DEBUG("[ERR] CRASH LOOP detected (%lu consecutive), safe sleep %us\r\n",
+		ERR_BKP_CRASH, MGR_ERR_CRASH_LOOP_SLEEP_S);
+
+	/* Configure RTC wakeup timer to wake after CRASH_LOOP_SLEEP_S seconds.
+	 * RTC clock = LSE (32768 Hz), wakeup clock = CK_SPRE (1 Hz).
+	 */
+	__HAL_RCC_RTCAPB_CLK_ENABLE();
+
+	/* Disable wakeup timer to modify it */
+	RTC->CR &= ~RTC_CR_WUTE;
+	while ((RTC->ICSR & RTC_ICSR_WUTWF) == 0)
+		;
+
+	/* Select 1 Hz clock source (ck_spre) and set countdown */
+	RTC->CR &= ~RTC_CR_WUCKSEL;
+	RTC->CR |= RTC_CR_WUCKSEL_2;  /* WUCKSEL = 0b100 = ck_spre */
+	RTC->WUTR = MGR_ERR_CRASH_LOOP_SLEEP_S - 1;
+
+	/* Clear wakeup flag and enable wakeup timer + interrupt */
+	RTC->SCR = RTC_SCR_CWUTF;
+	RTC->CR |= RTC_CR_WUTE | RTC_CR_WUTIE;
+
+	/* Enable RTC wakeup as EXTI line 17 (internal) for STOP mode wakeup */
+	EXTI->IMR1 |= EXTI_IMR1_IM17;
+	EXTI->RTSR1 |= EXTI_RTSR1_RT17;
+
+	/* Enter STOP2 mode (lowest power with SRAM retention) */
+	__disable_irq();
+	HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+	__enable_irq();
+
+	/* Woke up - disable wakeup timer */
+	RTC->CR &= ~(RTC_CR_WUTE | RTC_CR_WUTIE);
+	RTC->SCR = RTC_SCR_CWUTF;
+
+	/* Reset crash counter to give the device another chance */
+	ERR_BKP_CRASH = 0;
+
+	MGR_LOG_DEBUG("[ERR] Woke from safe sleep, retrying\r\n");
+	return true;
 }
 
 /**

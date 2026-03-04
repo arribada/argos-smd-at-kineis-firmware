@@ -635,6 +635,27 @@ bool MGR_SWS_stateChanged(void)
 	return changed;
 }
 
+uint16_t MGR_SWS_getAirBaseline(void)
+{
+	return air_baseline;
+}
+
+uint16_t MGR_SWS_getWaterBaseline(void)
+{
+	return water_baseline;
+}
+
+void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water)
+{
+	if (air > 0 && water > air) {
+		air_baseline = air;
+		water_baseline = water;
+		update_thresholds();
+		MGR_LOG_DEBUG("[SWS] Baselines restored: air=%u water=%u th=%u/%u/%u\r\n",
+			air, water, threshold_low, threshold_current, threshold_high);
+	}
+}
+
 /**
  * @}
  */

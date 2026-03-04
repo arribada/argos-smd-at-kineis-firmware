@@ -92,6 +92,15 @@ typedef enum {
 static __attribute__((__section__(".retentionRamData")))
 UwDopplerState_t uw_doppler_state;
 
+/* SWS baselines retained across warm resets (SRAM2 survives IWDG/SW reset) */
+#define SWS_RETAINED_MAGIC 0x53575342UL /* "SWSB" */
+static __attribute__((__section__(".retentionRamData")))
+struct {
+	uint32_t magic;
+	uint16_t air_baseline;
+	uint16_t water_baseline;
+} sws_retained;
+
 /* Exported for fault handlers (MGR_ERR_LOG_FAULT macro in stm32wlxx_it.c) */
 volatile uint32_t g_uw_doppler_state_for_err = 0;
 
@@ -143,6 +152,10 @@ static enum MgrLpm_LPM_t uw_doppler_lpmReq(void)
 
 static bool uw_doppler_lpmNotifEnter(__attribute__((unused)) enum MgrLpm_LPM_t lpm)
 {
+#if defined(BSP_HAS_LED_RGB)
+	/* Turn off LEDs before STOP to avoid current draw during sleep */
+	MGR_LED_off();
+#endif
 	return true;
 }
 
@@ -238,10 +251,13 @@ static void reset_tx_scheduling(void)
 	surface_tx_pending = false;
 }
 
-static void build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
+static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 {
 	struct KNS_CFG_radio_t device_radio_cfg;
-	kns_assert(KNS_CFG_getRadioInfo(&device_radio_cfg) == KNS_STATUS_OK);
+	if (KNS_CFG_getRadioInfo(&device_radio_cfg) != KNS_STATUS_OK) {
+		MGR_LOG_DEBUG("[UW_DPL] Radio config read failed, skipping TX\r\n");
+		return false;
+	}
 
 	appEvt->id = KNS_MAC_SEND_DATA;
 	appEvt->data_ctxt.sf = KNS_SF_NO_SERVICE;
@@ -281,9 +297,12 @@ static void build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 		appEvt->data_ctxt.usrdata_bitlen = 128;
 		break;
 	default:
-		kns_assert(0);
+		MGR_LOG_DEBUG("[UW_DPL] Unknown modulation %d, fallback to LDA2\r\n",
+			device_radio_cfg.modulation);
+		appEvt->data_ctxt.usrdata_bitlen = 192; /* LDA2 fallback */
 		break;
 	}
+	return true;
 }
 
 static void start_mac_profile(void)
@@ -386,6 +405,9 @@ void KNS_APP_uw_doppler_init(void)
 		tx_cfg.tx_initial_interval_s, tx_cfg.tx_growth_percent,
 		tx_cfg.tx_max_interval_s, deploy_mode);
 
+	/* SWS baselines will be restored after MGR_SWS_init() via
+	 * KNS_APP_uw_doppler_restoreSwsBaselines() called from main.c */
+
 	/* Register LPM client to prevent SHUTDOWN during operation */
 	MGR_LPM_registerClient(uw_doppler_lpm_client);
 
@@ -471,8 +493,13 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 
 	/* Run SWS measurement after boot */
-	if (uw_doppler_state >= UW_DOPPLER_MONITORING)
+	if (uw_doppler_state >= UW_DOPPLER_MONITORING) {
 		MGR_SWS_task();
+		/* Save adapted baselines to retention RAM for warm reset recovery */
+		sws_retained.magic = SWS_RETAINED_MAGIC;
+		sws_retained.air_baseline = MGR_SWS_getAirBaseline();
+		sws_retained.water_baseline = MGR_SWS_getWaterBaseline();
+	}
 
 	switch (uw_doppler_state) {
 #if defined(BSP_HAS_LED_RGB)
@@ -576,7 +603,14 @@ void KNS_APP_uw_doppler_loop(void)
 #if defined(BSP_HAS_VBAT_ADC)
 				last_vbat_mV = MGR_BAT_readVoltage_mV();
 				MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
+				if (!MGR_BAT_isTxAllowed()) {
+					MGR_LOG_DEBUG("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
+						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
+					should_tx = false;
+				}
 #endif
+			}
+			if (should_tx) {
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
 				transition_to(UW_DOPPLER_SURFACE_TX);
 				/* Fall through to SURFACE_TX */
@@ -595,7 +629,14 @@ void KNS_APP_uw_doppler_loop(void)
 		MGR_LED_set(MGR_LED_VIOLET);
 #endif
 		struct KNS_MAC_appEvt_t appEvt;
-		build_tx_payload(&appEvt);
+		if (!build_tx_payload(&appEvt)) {
+			/* Radio config error - skip TX, go back to monitoring */
+#if defined(BSP_HAS_LED_RGB)
+			MGR_LED_off();
+#endif
+			transition_to(UW_DOPPLER_MONITORING);
+			return;
+		}
 
 		enum KNS_status_t status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 		if (status == KNS_STATUS_OK) {
@@ -695,6 +736,18 @@ void KNS_APP_uw_doppler_setDeployMode(uint8_t mode)
 {
 	deploy_mode = mode ? 1 : 0;
 	MGR_LOG_DEBUG("[UW_DPL] Deploy mode: %u\r\n", deploy_mode);
+}
+
+void KNS_APP_uw_doppler_restoreSwsBaselines(void)
+{
+	if (sws_retained.magic == SWS_RETAINED_MAGIC &&
+	    sws_retained.air_baseline > 0 &&
+	    sws_retained.water_baseline > sws_retained.air_baseline) {
+		MGR_SWS_restoreBaselines(sws_retained.air_baseline,
+		                         sws_retained.water_baseline);
+		MGR_LOG_DEBUG("[UW_DPL] Restored SWS baselines: air=%u water=%u\r\n",
+			sws_retained.air_baseline, sws_retained.water_baseline);
+	}
 }
 
 /**

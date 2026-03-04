@@ -69,6 +69,18 @@ void MGR_SWS_forceMeasurement(void);
 /** @brief Check if state changed since last call (auto-resets flag) */
 bool MGR_SWS_stateChanged(void);
 
+/** @brief Get current adapted air baseline (for retention across resets) */
+uint16_t MGR_SWS_getAirBaseline(void);
+
+/** @brief Get current adapted water baseline (for retention across resets) */
+uint16_t MGR_SWS_getWaterBaseline(void);
+
+/** @brief Restore adapted baselines after a warm reset
+ *  @param air   Previously saved air baseline (0 = don't restore)
+ *  @param water Previously saved water baseline (0 = don't restore)
+ */
+void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water);
+
 #ifdef __cplusplus
 }
 #endif

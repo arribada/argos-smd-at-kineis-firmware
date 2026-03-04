@@ -39,6 +39,9 @@
 /* Last known good reading — returned on ADC failure instead of 0 */
 static uint16_t last_good_vbat_mV = 0;
 
+/* Minimum voltage threshold for TX (0 = disabled) */
+static uint16_t min_tx_voltage_mV = MGR_BAT_DEFAULT_MIN_TX_MV;
+
 void MGR_BAT_init(void)
 {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -62,7 +65,8 @@ uint16_t MGR_BAT_readVoltage_mV(void)
 
 	/* Enable external VBAT measurement circuit */
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_SET);
-	HAL_Delay(2);  /* Allow voltage to settle */
+	/* Busy-wait ~2ms for voltage settle (SysTick-independent) */
+	{ volatile uint32_t d = 2 * 8000; while (d--) __NOP(); }
 
 	/* Read VREFINT first for accurate voltage calculation */
 	sConfig.Channel = ADC_CHANNEL_VREFINT;
@@ -90,13 +94,14 @@ uint16_t MGR_BAT_readVoltage_mV(void)
 		HAL_ADC_Stop(&hadc);
 	}
 
-	/* Restore ADC to SWS channel (ADC_CHANNEL_7) */
+cleanup:
+	/* ALWAYS restore ADC to SWS channel (ADC_CHANNEL_7), even on error paths.
+	 * Without this, SWS reads the wrong channel after a BAT ADC failure. */
 	sConfig.Channel = ADC_CHANNEL_7;
 	sConfig.Rank = ADC_REGULAR_RANK_1;
 	sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 	HAL_ADC_ConfigChannel(&hadc, &sConfig);
 
-cleanup:
 	/* Disable external VBAT measurement circuit */
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
 
@@ -134,11 +139,35 @@ uint8_t MGR_BAT_getLevel(void)
 	return (uint8_t)((mV - 3000) * 100 / 600);
 }
 
+bool MGR_BAT_isTxAllowed(void)
+{
+	if (min_tx_voltage_mV == 0)
+		return true;  /* Threshold disabled */
+	uint16_t mV = MGR_BAT_readVoltage_mV();
+	if (mV == 0)
+		return true;  /* ADC failed, allow TX (don't block on sensor failure) */
+	return (mV >= min_tx_voltage_mV);
+}
+
+uint16_t MGR_BAT_getMinTxVoltage_mV(void)
+{
+	return min_tx_voltage_mV;
+}
+
+void MGR_BAT_setMinTxVoltage_mV(uint16_t min_mV)
+{
+	min_tx_voltage_mV = min_mV;
+	MGR_LOG_DEBUG("[BAT] Min TX voltage: %umV\r\n", min_mV);
+}
+
 #else /* No VBAT ADC */
 
 void MGR_BAT_init(void) {}
 uint16_t MGR_BAT_readVoltage_mV(void) { return 0; }
 uint8_t MGR_BAT_getLevel(void) { return 0; }
+bool MGR_BAT_isTxAllowed(void) { return true; }
+uint16_t MGR_BAT_getMinTxVoltage_mV(void) { return 0; }
+void MGR_BAT_setMinTxVoltage_mV(uint16_t min_mV) { (void)min_mV; }
 
 #endif /* BSP_HAS_VBAT_ADC */
 
