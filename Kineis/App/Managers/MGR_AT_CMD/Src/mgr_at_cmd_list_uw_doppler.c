@@ -41,6 +41,9 @@
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"
 #endif
+#if defined(BSP_HAS_VBAT_ADC)
+#include "mgr_bat.h"
+#endif
 
 /* Functions -----------------------------------------------------------------*/
 
@@ -288,6 +291,42 @@ bool bMGR_AT_CMD_LOG_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	}
 
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
+bool bMGR_AT_CMD_BATCFG_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+#if defined(BSP_HAS_VBAT_ADC)
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint16_t min_mV = MGR_BAT_getMinTxVoltage_mV();
+		uint16_t cur_mV = MGR_BAT_readVoltage_mV();
+
+		MCU_AT_CONSOLE_send("+BATCFG=%u,%u\r\n",
+			(unsigned)min_mV, (unsigned)cur_mV);
+
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int min_mV;
+		if (sscanf((const char *)pu8_cmdParamString, "AT+BATCFG=%u", &min_mV) != 1) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		}
+		if (min_mV > 4200) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
+		MGR_BAT_setMinTxVoltage_mV((uint16_t)min_mV);
+		MGR_LOG_DEBUG("[AT] BATCFG min_tx=%umV\r\n", min_mV);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+#else
+	(void)pu8_cmdParamString;
+	(void)e_exec_mode;
+	MCU_AT_CONSOLE_send("+BATCFG=N/A\r\n");
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+#endif
 }
 
 /**

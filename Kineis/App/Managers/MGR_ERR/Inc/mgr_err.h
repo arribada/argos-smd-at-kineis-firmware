@@ -31,8 +31,13 @@
  * BKP4R = last error code (MGR_ERR_Code_t)
  * BKP5R = last UW_DOPPLER state at time of error
  * BKP6R = last HAL tick at time of error
- * BKP7R = reserved
+ * BKP7R = consecutive crash counter (resets after stable uptime)
  */
+
+/** Crash loop protection thresholds */
+#define MGR_ERR_CRASH_LOOP_MAX       10    /**< Max consecutive short-lived boots */
+#define MGR_ERR_CRASH_LOOP_MIN_UP_MS 30000 /**< Min uptime (ms) to consider boot "stable" */
+#define MGR_ERR_CRASH_LOOP_SLEEP_S   3600  /**< Sleep duration (s) when crash loop detected */
 
 typedef enum {
 	ERR_NONE = 0,
@@ -83,6 +88,20 @@ uint32_t MGR_ERR_getResetCount(void);
 
 /** @brief Get last error code from previous session */
 MGR_ERR_Code_t MGR_ERR_getLastError(void);
+
+/** @brief Get consecutive crash count (short-lived boots) */
+uint32_t MGR_ERR_getCrashCount(void);
+
+/**
+ * @brief Check for crash loop and enter safe sleep if detected
+ *
+ * Must be called early in init. If too many consecutive short-lived
+ * boots are detected, enters STOP mode for MGR_ERR_CRASH_LOOP_SLEEP_S
+ * seconds before retrying, to preserve battery.
+ *
+ * @return true if crash loop was detected (device just woke from safe sleep)
+ */
+bool MGR_ERR_checkCrashLoop(void);
 
 /**
  * @brief Log fault from ISR context (direct register access, no function calls)

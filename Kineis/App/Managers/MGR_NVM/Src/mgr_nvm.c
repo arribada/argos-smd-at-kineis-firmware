@@ -3,12 +3,17 @@
  * @brief   NVM manager - persistent config storage in flash
  *
  * Stores/loads UW_DOPPLER configuration (TX config, SWS config,
- * deploy mode, LED mode) from the last free flash page (0x0803F800).
+ * deploy mode, LED mode, battery threshold) from the last free flash
+ * page (0x0803F800).
  * Uses CRC32 (MPEG-2, polynomial 0x04C11DB7) for integrity verification.
  *
  * Flash write sequence: erase page, write 64-bit doublewords.
  * On load: validate magic + version + CRC32 before applying config.
  * On failure: compile-time defaults are kept (no partial load).
+ *
+ * Version history:
+ *   v1: TX, SWS, deploy, LED
+ *   v2: Added bat_min_tx_mV (auto-migrated from v1)
  */
 
 /**
@@ -48,6 +53,68 @@ static uint32_t nvm_crc32(const void *data, size_t len)
 	return crc;
 }
 
+/* ---- V1 layout for migration ---- */
+
+typedef struct {
+	uint32_t magic;
+	uint8_t  version;
+	uint8_t  deploy_mode;
+	uint8_t  led_mode;
+	uint8_t  _pad0;
+	uint16_t tx_initial_interval_s;
+	uint8_t  tx_growth_percent;
+	uint8_t  tx_max_count;
+	uint16_t tx_max_interval_s;
+	uint8_t  _pad1[2];
+	uint16_t sws_threshold_min;
+	uint16_t sws_threshold_max;
+	uint16_t sws_initial_air_baseline;
+	uint16_t sws_initial_water_baseline;
+	uint32_t sws_test_interval_ms;
+	uint32_t sws_max_dive_time_s;
+	uint32_t sws_min_surface_time_s;
+	uint8_t  sws_enabled;
+	uint8_t  _pad2[3];
+	uint32_t crc32;
+} NVM_Config_v1_t;
+
+/**
+ * @brief Apply a loaded config to all modules
+ */
+static void apply_config(const NVM_Config_t *cfg)
+{
+	/* Restore TX config */
+	KNS_APP_UwDopplerTxCfg_t tx_cfg;
+	tx_cfg.tx_initial_interval_s = cfg->tx_initial_interval_s;
+	tx_cfg.tx_growth_percent     = cfg->tx_growth_percent;
+	tx_cfg.tx_max_interval_s     = cfg->tx_max_interval_s;
+	tx_cfg.tx_max_count          = cfg->tx_max_count;
+	KNS_APP_uw_doppler_setTxCfg(&tx_cfg);
+
+	/* Restore SWS config */
+	MGR_SWS_Config_t sws_cfg;
+	sws_cfg.threshold_min          = cfg->sws_threshold_min;
+	sws_cfg.threshold_max          = cfg->sws_threshold_max;
+	sws_cfg.initial_air_baseline   = cfg->sws_initial_air_baseline;
+	sws_cfg.initial_water_baseline = cfg->sws_initial_water_baseline;
+	sws_cfg.test_interval_ms       = cfg->sws_test_interval_ms;
+	sws_cfg.max_dive_time_s        = cfg->sws_max_dive_time_s;
+	sws_cfg.min_surface_time_s     = cfg->sws_min_surface_time_s;
+	sws_cfg.enabled                = cfg->sws_enabled;
+	MGR_SWS_setConfig(&sws_cfg);
+
+	/* Restore app config */
+	KNS_APP_uw_doppler_setDeployMode(cfg->deploy_mode);
+
+#if defined(BSP_HAS_LED_RGB)
+	MGR_LED_setMode((MGR_LED_Mode_t)cfg->led_mode);
+#endif
+
+#if defined(BSP_HAS_VBAT_ADC)
+	MGR_BAT_setMinTxVoltage_mV(cfg->bat_min_tx_mV);
+#endif
+}
+
 bool MGR_NVM_load(void)
 {
 	NVM_Config_t cfg;
@@ -57,9 +124,54 @@ bool MGR_NVM_load(void)
 		return false;
 	}
 
-	if (cfg.magic != NVM_MAGIC || cfg.version != NVM_VERSION) {
-		MGR_LOG_DEBUG("[NVM] No valid config (magic=0x%08lx ver=%u), using defaults\r\n",
-			cfg.magic, cfg.version);
+	if (cfg.magic != NVM_MAGIC) {
+		MGR_LOG_DEBUG("[NVM] No valid config (magic=0x%08lx), using defaults\r\n",
+			cfg.magic);
+		return false;
+	}
+
+	/* Handle version migration */
+	if (cfg.version == 1) {
+		/* Read as v1 layout and migrate */
+		NVM_Config_v1_t v1;
+		if (MCU_FLASH_read(FLASH_NVM_CONFIG_ADDR, &v1, sizeof(v1)) != KNS_STATUS_OK)
+			return false;
+
+		uint32_t computed_crc = nvm_crc32(&v1, offsetof(NVM_Config_v1_t, crc32));
+		if (computed_crc != v1.crc32) {
+			MGR_LOG_DEBUG("[NVM] v1 CRC mismatch, using defaults\r\n");
+			return false;
+		}
+
+		/* Migrate: copy common fields, add v2 defaults */
+		memset(&cfg, 0, sizeof(cfg));
+		cfg.magic   = NVM_MAGIC;
+		cfg.version = NVM_VERSION;
+		cfg.deploy_mode              = v1.deploy_mode;
+		cfg.led_mode                 = v1.led_mode;
+		cfg.tx_initial_interval_s    = v1.tx_initial_interval_s;
+		cfg.tx_growth_percent        = v1.tx_growth_percent;
+		cfg.tx_max_count             = v1.tx_max_count;
+		cfg.tx_max_interval_s        = v1.tx_max_interval_s;
+		cfg.sws_threshold_min        = v1.sws_threshold_min;
+		cfg.sws_threshold_max        = v1.sws_threshold_max;
+		cfg.sws_initial_air_baseline = v1.sws_initial_air_baseline;
+		cfg.sws_initial_water_baseline = v1.sws_initial_water_baseline;
+		cfg.sws_test_interval_ms     = v1.sws_test_interval_ms;
+		cfg.sws_max_dive_time_s      = v1.sws_max_dive_time_s;
+		cfg.sws_min_surface_time_s   = v1.sws_min_surface_time_s;
+		cfg.sws_enabled              = v1.sws_enabled;
+		cfg.bat_min_tx_mV            = MGR_BAT_DEFAULT_MIN_TX_MV;
+
+		MGR_LOG_DEBUG("[NVM] Migrated v1 -> v2 (bat_min=%umV)\r\n",
+			cfg.bat_min_tx_mV);
+
+		apply_config(&cfg);
+		return true;
+	}
+
+	if (cfg.version != NVM_VERSION) {
+		MGR_LOG_DEBUG("[NVM] Unknown version %u, using defaults\r\n", cfg.version);
 		return false;
 	}
 
@@ -71,35 +183,10 @@ bool MGR_NVM_load(void)
 		return false;
 	}
 
-	/* Restore TX config */
-	KNS_APP_UwDopplerTxCfg_t tx_cfg;
-	tx_cfg.tx_initial_interval_s = cfg.tx_initial_interval_s;
-	tx_cfg.tx_growth_percent     = cfg.tx_growth_percent;
-	tx_cfg.tx_max_interval_s     = cfg.tx_max_interval_s;
-	tx_cfg.tx_max_count          = cfg.tx_max_count;
-	KNS_APP_uw_doppler_setTxCfg(&tx_cfg);
+	apply_config(&cfg);
 
-	/* Restore SWS config */
-	MGR_SWS_Config_t sws_cfg;
-	sws_cfg.threshold_min          = cfg.sws_threshold_min;
-	sws_cfg.threshold_max          = cfg.sws_threshold_max;
-	sws_cfg.initial_air_baseline   = cfg.sws_initial_air_baseline;
-	sws_cfg.initial_water_baseline = cfg.sws_initial_water_baseline;
-	sws_cfg.test_interval_ms       = cfg.sws_test_interval_ms;
-	sws_cfg.max_dive_time_s        = cfg.sws_max_dive_time_s;
-	sws_cfg.min_surface_time_s     = cfg.sws_min_surface_time_s;
-	sws_cfg.enabled                = cfg.sws_enabled;
-	MGR_SWS_setConfig(&sws_cfg);
-
-	/* Restore app config */
-	KNS_APP_uw_doppler_setDeployMode(cfg.deploy_mode);
-
-#if defined(BSP_HAS_LED_RGB)
-	MGR_LED_setMode((MGR_LED_Mode_t)cfg.led_mode);
-#endif
-
-	MGR_LOG_DEBUG("[NVM] Config loaded (CRC OK): deploy=%u interval=%us growth=%u%%\r\n",
-		cfg.deploy_mode, cfg.tx_initial_interval_s, cfg.tx_growth_percent);
+	MGR_LOG_DEBUG("[NVM] Config loaded (v%u CRC OK): deploy=%u interval=%us bat_min=%umV\r\n",
+		cfg.version, cfg.deploy_mode, cfg.tx_initial_interval_s, cfg.bat_min_tx_mV);
 
 	return true;
 }
@@ -135,6 +222,10 @@ bool MGR_NVM_save(void)
 
 #if defined(BSP_HAS_LED_RGB)
 	cfg.led_mode = (uint8_t)MGR_LED_getMode();
+#endif
+
+#if defined(BSP_HAS_VBAT_ADC)
+	cfg.bat_min_tx_mV = MGR_BAT_getMinTxVoltage_mV();
 #endif
 
 	/* Compute CRC32 over all fields before crc32 */

@@ -44,4 +44,7 @@ uint8_t KNS_APP_uw_doppler_getDeployMode(void);
 /** @brief Set deploy mode (1=deployed, 0=not deployed) */
 void KNS_APP_uw_doppler_setDeployMode(uint8_t mode);
 
+/** @brief Restore SWS baselines from retention RAM (call after MGR_SWS_init()) */
+void KNS_APP_uw_doppler_restoreSwsBaselines(void);
+
 #endif /* KNS_APP_UW_DOPPLER_H */

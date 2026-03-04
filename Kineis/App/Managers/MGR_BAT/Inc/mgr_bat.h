@@ -13,6 +13,10 @@
 #define MGR_BAT_H
 
 #include <stdint.h>
+#include <stdbool.h>
+
+/** @brief Default minimum voltage for TX (mV). Below this, TX is inhibited. */
+#define MGR_BAT_DEFAULT_MIN_TX_MV  2800
 
 /** @brief Initialize battery monitoring (configure VBAT_EN pin) */
 void MGR_BAT_init(void);
@@ -28,5 +32,17 @@ uint16_t MGR_BAT_readVoltage_mV(void);
  * @return 0-100 percentage
  */
 uint8_t MGR_BAT_getLevel(void);
+
+/**
+ * @brief Check if battery voltage is above minimum TX threshold
+ * @return true if voltage is sufficient for TX (or if VBAT ADC unavailable)
+ */
+bool MGR_BAT_isTxAllowed(void);
+
+/** @brief Get minimum TX voltage threshold in mV */
+uint16_t MGR_BAT_getMinTxVoltage_mV(void);
+
+/** @brief Set minimum TX voltage threshold in mV (0 = disabled) */
+void MGR_BAT_setMinTxVoltage_mV(uint16_t min_mV);
 
 #endif /* MGR_BAT_H */

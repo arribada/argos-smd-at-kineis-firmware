@@ -199,7 +199,10 @@ void mspFillup(void)
 }
 
 /**
- * @brief Check stack limit, in a way to track overflows (0xAAAAAAAA)
+ * @brief Check stack limit, in a way to track overflows (0xAAAAAAAA).
+ *
+ * Uses MGR_ERR_logAndReset in UW_DOPPLER mode to ensure the check is
+ * effective even in production builds (where assert_param is a no-op).
  */
 void assertMspOverflow(void)
 {
@@ -207,7 +210,13 @@ void assertMspOverflow(void)
   extern uint32_t _Min_Stack_Size; /* Symbol defined in the linker script */
   uint32_t *stack_lower_limit = (uint32_t*)((uint32_t)&_estack - (uint32_t)&_Min_Stack_Size);
 
-  assert_param( *(stack_lower_limit) == 0xAAAAAAAA );
+  if (*(stack_lower_limit) != 0xAAAAAAAA) {
+#if defined(USE_UW_DOPPLER_APP)
+    MGR_ERR_logAndReset(ERR_STACK_OVERFLOW);
+#else
+    assert_param(0);
+#endif
+  }
 }
 
 /**
@@ -821,6 +830,7 @@ int main(void)
 #endif
 #if defined(USE_UW_DOPPLER_APP)
   MGR_ERR_init();
+  MGR_ERR_checkCrashLoop();  /* Safe sleep if crash loop detected */
 #if defined(BSP_HAS_REED_SWITCH)
   MGR_REED_init();
 #endif
@@ -833,6 +843,7 @@ int main(void)
 #endif
   KNS_APP_uw_doppler_init();  /* NVM_load() first so SWS uses saved config */
   MGR_SWS_init();
+  KNS_APP_uw_doppler_restoreSwsBaselines();  /* Restore baselines from retention RAM after SWS init */
   MGR_LOG_DEBUG("Build: UW_DOPPLER\r\n");
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_uw_doppler_loop) == KNS_STATUS_OK);
 #endif
