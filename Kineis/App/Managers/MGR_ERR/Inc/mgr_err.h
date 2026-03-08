@@ -16,6 +16,7 @@
 #define MGR_ERR_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* TAMP backup register addresses (STM32WL55) */
 #define TAMP_BKP2R_ADDR  0x4000B108UL

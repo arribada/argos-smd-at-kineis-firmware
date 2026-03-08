@@ -40,6 +40,7 @@ endif
 # * STDLN: for the standalone application sending one message at startup
 # * GUI: for the application using the AT commands from UART link
 # * UW_DOPPLER: Underwater/surface detection with SWS and BLIND-DOPPLER TX
+# * DOPPLER: Periodic satellite transmitter with TPL5111 or RTC wakeup scheduling
 APP = GUI
 
 # Select output port
@@ -275,6 +276,31 @@ ifeq ($(APP),UW_DOPPLER)
 	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
 endif
 
+ifeq ($(APP),DOPPLER)
+	C_DEFS += \
+	-DUSE_DOPPLER_APP
+
+	C_SOURCES += \
+	$(KINEIS_DIR)/App/Managers/MGR_ERR/Src/mgr_err.c \
+	$(KINEIS_DIR)/App/Managers/MGR_WDG/Src/mgr_wdg.c \
+	$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Src/mgr_evtlog.c \
+	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_doppler.c \
+	$(KINEIS_DIR)/App/kns_app_doppler.c
+endif
+
+# DOPPLER: ADC only needed for battery check on STDALONE board
+ifeq ($(APP),DOPPLER)
+ifeq ($(BOARD),SMD_STDALONE)
+	C_DEFS += -DHAL_ADC_MODULE_ENABLED
+	C_SOURCES += \
+	Core/Src/adc.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc_ex.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
+	$(KINEIS_DIR)/App/Managers/MGR_BAT/Src/mgr_bat.c
+endif
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC
@@ -347,6 +373,9 @@ endif
 ifeq ($(APP),UW_DOPPLER)
 BUILD_VERSION := $(BUILD_VERSION)_uw_doppler
 endif
+ifeq ($(APP),DOPPLER)
+BUILD_VERSION := $(BUILD_VERSION)_doppler
+endif
 ifeq ($(MAC_PRFL), BASIC)
 BUILD_VERSION := $(BUILD_VERSION)_basic
 endif
@@ -414,6 +443,18 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_ERR/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_WDG/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
+endif
+
+ifeq ($(APP),DOPPLER)
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_ERR/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_WDG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
+endif
+
+ifeq ($(APP),DOPPLER)
+ifeq ($(BOARD),SMD_STDALONE)
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
+endif
 endif
 
 # Board-specific drivers

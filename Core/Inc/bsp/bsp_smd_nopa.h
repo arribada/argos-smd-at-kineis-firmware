@@ -26,4 +26,8 @@
 #define EXT_WKUP_BUTTON_Pin         GPIO_PIN_3
 #define EXT_WKUP_BUTTON_GPIO_Port   GPIOB
 
+/* ---- MCU_DONE (TPL5111, uncomment if wired) ---- */
+// #define MCU_DONE_Pin            GPIO_PIN_9
+// #define MCU_DONE_GPIO_Port      GPIOB
+
 #endif /* BSP_SMD_NOPA_H */

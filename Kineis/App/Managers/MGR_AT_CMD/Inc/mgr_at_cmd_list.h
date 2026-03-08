@@ -72,6 +72,15 @@ enum  atcmd_idx_t {
 	AT_BATCFG,       /**< Battery protection config */
 #endif
 
+#ifdef USE_DOPPLER_APP
+	// DOPPLER commands
+	AT_DPLCFG,       /**< Doppler TX configuration */
+	AT_DPLWKU,       /**< Doppler wakeup counter */
+	AT_DPL_LOG,      /**< Doppler event log dump / clear */
+	AT_DPL_SAVE,     /**< Doppler save config to NVM */
+	AT_DPL_BATCFG,   /**< Doppler battery protection config */
+#endif
+
 	ATCMD_MAX_COUNT,
 	ATCMD_UNKNOWN_COMMAND = ATCMD_MAX_COUNT
 };

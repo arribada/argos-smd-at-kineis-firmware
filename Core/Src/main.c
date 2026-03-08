@@ -71,13 +71,13 @@
  * GUI APP is about AT commands support sent to device from GUI or SERIAL hyperterminal).
  * @note both flags are exclusive as standalone app will send periodic frame indefinitively
  */
-#if !defined(USE_STDALONE_APP) && !defined(USE_GUI_APP) && !defined(USE_UW_DOPPLER_APP)
+#if !defined(USE_STDALONE_APP) && !defined(USE_GUI_APP) && !defined(USE_UW_DOPPLER_APP) && !defined(USE_DOPPLER_APP)
 //#define USE_STDALONE_APP
 #define USE_GUI_APP
 #endif
 
-#if (defined(USE_STDALONE_APP) + defined(USE_GUI_APP) + defined(USE_UW_DOPPLER_APP)) > 1
-#error "Cannot build FW with multiple APPs, select only one of STDALONE/GUI/UW_DOPPLER."
+#if (defined(USE_STDALONE_APP) + defined(USE_GUI_APP) + defined(USE_UW_DOPPLER_APP) + defined(USE_DOPPLER_APP)) > 1
+#error "Cannot build FW with multiple APPs, select only one of STDALONE/GUI/UW_DOPPLER/DOPPLER."
 #endif
 
 #include "stm32wlxx_it.h"
@@ -99,7 +99,17 @@
 #endif
 #include "mgr_err.h"
 #endif
-#if defined(USE_GUI_APP) || defined(USE_UW_DOPPLER_APP)
+#ifdef USE_DOPPLER_APP
+#include "kns_app_doppler.h"
+#if defined(BSP_HAS_LED_RGB)
+#include "mgr_led.h"
+#endif
+#if defined(BSP_HAS_VBAT_ADC)
+#include "adc.h"
+#endif
+#include "mgr_err.h"
+#endif
+#if defined(USE_GUI_APP) || defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
 #ifdef USE_BAREMETAL
 #include "mgr_at_cmd.h" /* Needed for MGR_AT_CMD_isPendingAt()) in case of BAREMETAL OS to check no
                          * there is no pending AT cmd before entring low power mode
@@ -299,6 +309,34 @@ static void IDLE_task(void)
   /* ---- KINEIS UW_DOPPLER APP ----------------------------------------------------------------- */
 
 #ifdef USE_UW_DOPPLER_APP
+#ifdef USE_BAREMETAL
+  {
+  uint32_t prim;
+
+  prim = __get_PRIMASK();
+  __disable_irq();
+  __disable_fault_irq();
+  if (KNS_Q_isEvtInSomeQ() || MGR_AT_CMD_isPendingAt()) {
+    if (!prim){
+      __enable_fault_irq();
+      __enable_irq();
+    }
+    return;
+  }
+  LPM_enter();
+  if (!prim){
+    __enable_fault_irq();
+    __enable_irq();
+  }
+  }
+#else
+  LPM_enter();
+#endif
+#endif
+
+  /* ---- KINEIS DOPPLER APP -------------------------------------------------------------------- */
+
+#ifdef USE_DOPPLER_APP
 #ifdef USE_BAREMETAL
   {
   uint32_t prim;
@@ -846,6 +884,22 @@ int main(void)
   KNS_APP_uw_doppler_restoreSwsBaselines();  /* Restore baselines from retention RAM after SWS init */
   MGR_LOG_DEBUG("Build: UW_DOPPLER\r\n");
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_uw_doppler_loop) == KNS_STATUS_OK);
+#endif
+#if defined(USE_DOPPLER_APP)
+  MGR_ERR_init();
+  MGR_ERR_checkCrashLoop();
+#if defined(BSP_HAS_LED_RGB)
+  MGR_LED_init();
+#endif
+#if defined(BSP_HAS_VBAT_ADC)
+  MX_ADC_Init();
+#endif
+#if defined(USE_UART_DRIVER)
+  MGR_AT_CMD_start(&hlpuart1);
+#endif
+  KNS_APP_doppler_init();
+  MGR_LOG_DEBUG("Build: DOPPLER\r\n");
+  assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_doppler_loop) == KNS_STATUS_OK);
 #endif
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_IDLE, IDLE_task) == KNS_STATUS_OK);
 
