@@ -1,15 +1,18 @@
 /**
  * @file    mgr_sws.h
- * @brief   Salt Water Switch manager - Adaptive underwater/surface detection
+ * @brief   Salt Water Switch manager - 5-level adaptive underwater/surface detection
  *
- * Implements biofouling-adaptive detection algorithm with:
- * - Moving average filter + trend/variance analysis
- * - 3-tier rapid transition detection (T1/T2/T3)
- * - Dynamic EMA water baseline + adaptive air recalibration
- * - Max dive timeout safety + surface lockout
+ * Implements 5-level surface detection algorithm (port of Linkit v4):
+ * - L1: Instant drop from recent peak (5%, 1 sample)
+ * - L2: Consecutive 2-sample raw drops (3% cumulative)
+ * - L3: MA3 trend (3+ decreases, 5% total)
+ * - L4: Absolute water baseline drop (15%)
+ * - L5: Dive peak safety net (15%, >10s gate)
+ * - Proximity guard, dynamic threshold ratio, 4% hysteresis
+ * - 1ms RC discrimination delay
  *
  * Hardware: PA12 = sensor power control, PA11 = ADC_IN7 input
- * ADC: 12-bit (0-4095), adapted from 14-bit spec (values ÷4)
+ * ADC: 12-bit (0-4095), adapted from 14-bit Linkit spec (values /4)
  */
 
 #ifndef __MGR_SWS_H__
@@ -33,7 +36,7 @@ typedef enum {
 /* ---- Configuration ---- */
 
 typedef struct {
-	uint16_t threshold_min;          /**< Min valid ADC value (default 13 = 50/4) */
+	uint16_t threshold_min;          /**< Min valid ADC value (default 0) */
 	uint16_t threshold_max;          /**< Max valid ADC value (default 2000 = 8000/4) */
 	uint16_t initial_air_baseline;   /**< Initial air baseline (default 50 = 200/4) */
 	uint16_t initial_water_baseline; /**< Initial water baseline (default 750 = 3000/4) */

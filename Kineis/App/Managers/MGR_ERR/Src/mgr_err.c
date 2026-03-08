@@ -175,7 +175,7 @@ bool MGR_ERR_checkCrashLoop(void)
 
 	/* Enable RTC wakeup as EXTI line 17 (internal) for STOP mode wakeup */
 	EXTI->IMR1 |= EXTI_IMR1_IM17;
-	EXTI->RTSR1 |= EXTI_RTSR1_RT17;
+	EXTI->RTSR1 |= (1UL << 17);
 
 	/* Enter STOP2 mode (lowest power with SRAM retention) */
 	__disable_irq();

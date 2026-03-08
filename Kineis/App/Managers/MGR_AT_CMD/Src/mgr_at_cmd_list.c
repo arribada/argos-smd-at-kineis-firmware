@@ -21,6 +21,9 @@
 #ifdef USE_UW_DOPPLER_APP
 #include "mgr_at_cmd_list_uw_doppler.h"
 #endif
+#ifdef USE_DOPPLER_APP
+#include "mgr_at_cmd_list_doppler.h"
+#endif
 
 const char *atcmd_version = "v0.7";
 
@@ -73,6 +76,15 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+LOG",           6, bMGR_AT_CMD_LOG_cmd},
 	{ "AT+SAVE",          7, bMGR_AT_CMD_SAVE_cmd},
 	{ "AT+BATCFG",        9, bMGR_AT_CMD_BATCFG_cmd},
+#endif
+
+#ifdef USE_DOPPLER_APP
+	/**< DOPPLER commands */
+	{ "AT+DPLCFG",        9, bMGR_AT_CMD_DPLCFG_cmd},
+	{ "AT+DPLWKU",        9, bMGR_AT_CMD_DPLWKU_cmd},
+	{ "AT+LOG",           6, bMGR_AT_CMD_DPLLOG_cmd},
+	{ "AT+SAVE",          7, bMGR_AT_CMD_DPLSAVE_cmd},
+	{ "AT+BATCFG",        9, bMGR_AT_CMD_DPLBATCFG_cmd},
 #endif
 };
 
