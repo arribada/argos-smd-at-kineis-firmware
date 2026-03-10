@@ -178,8 +178,11 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+#define HEAP_PAINT_VALUE   0x55555555UL
+#define STACK_PAINT_VALUE  0xAAAAAAAAUL
+
 /**
- * @brief Fill-up heap and stack RAM space to track overflows (with 0x55555555 and 0xAAAAAAAA)
+ * @brief Fill-up heap and stack RAM space to track overflows
  */
 void mspFillup(void)
 {
@@ -196,7 +199,7 @@ void mspFillup(void)
        heap_lower_limit < stack_lower_limit;
        heap_lower_limit++)
   {
-    *(heap_lower_limit) = 0x55555555;
+    *(heap_lower_limit) = HEAP_PAINT_VALUE;
   }
   /* Paint stack */
   for (
@@ -204,7 +207,7 @@ void mspFillup(void)
        stack_lower_limit < stack_upper_limit;
        stack_lower_limit++)
   {
-    *(stack_lower_limit) = 0xAAAAAAAA;
+    *(stack_lower_limit) = STACK_PAINT_VALUE;
   }
 }
 
@@ -220,8 +223,8 @@ void assertMspOverflow(void)
   extern uint32_t _Min_Stack_Size; /* Symbol defined in the linker script */
   uint32_t *stack_lower_limit = (uint32_t*)((uint32_t)&_estack - (uint32_t)&_Min_Stack_Size);
 
-  if (*(stack_lower_limit) != 0xAAAAAAAA) {
-#if defined(USE_UW_DOPPLER_APP)
+  if (*(stack_lower_limit) != STACK_PAINT_VALUE) {
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
     MGR_ERR_logAndReset(ERR_STACK_OVERFLOW);
 #else
     assert_param(0);
@@ -645,26 +648,6 @@ int main(void)
   /* Check for DFU request and jump to bootloader if needed */
   check_dfu_request();
 
-  /* BOOTLOADER CLEANUP - Not needed with new layout (app at 0x08000000) */
-#if 0
-  /* Reset APB1 peripherals */
-  __HAL_RCC_APB1_FORCE_RESET();
-  __HAL_RCC_APB1_RELEASE_RESET();
-  /* Reset APB2 peripherals */
-  __HAL_RCC_APB2_FORCE_RESET();
-  __HAL_RCC_APB2_RELEASE_RESET();
-  /* Reset AHB1 peripherals */
-  __HAL_RCC_AHB1_FORCE_RESET();
-  __HAL_RCC_AHB1_RELEASE_RESET();
-  /* Reset AHB2 peripherals */
-  __HAL_RCC_AHB2_FORCE_RESET();
-  __HAL_RCC_AHB2_RELEASE_RESET();
-  /* Reset AHB3 peripherals (includes SubGHz) */
-  __HAL_RCC_AHB3_FORCE_RESET();
-  __HAL_RCC_AHB3_RELEASE_RESET();
-  for (volatile int i = 0; i < 10000; i++);
-#endif
-
   mspFillup();
 
   /** Check if reset was triggered by nRST external pin
@@ -683,8 +666,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  /* Re-enable interrupts - bootloader disables them before jumping */
-  /* __enable_irq(); */  /* DISABLED - testing without bootloader */
+  /* Note: HAL_Init() already enables interrupts via NVIC configuration */
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -1017,7 +999,7 @@ void Error_Handler(void)
   /* User can add his own implementation to report the HAL error return state */
   MGR_LOG_DEBUG("Error_Handler\r\n");
 
-#if defined(USE_UW_DOPPLER_APP)
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   /* Tracker must ALWAYS reset, even in DEBUG — device must never be stuck */
   MGR_ERR_logAndReset(ERR_ASSERT);
   /* Never reaches here */
@@ -1047,7 +1029,7 @@ void Error_Handler(void)
   __disable_irq();
   /* reset uC */
   NVIC_SystemReset();
-#endif /* #if defined(USE_UW_DOPPLER_APP) */
+#endif /* #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP) */
   /* USER CODE END Error_Handler_Debug */
 }
 

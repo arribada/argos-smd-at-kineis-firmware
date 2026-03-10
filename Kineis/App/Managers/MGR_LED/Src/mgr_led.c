@@ -31,6 +31,9 @@
 static MGR_LED_Mode_t led_mode = MGR_LED_MODE_ON;
 static uint32_t mode_start_tick = 0;
 
+/* GPIO state tracking (avoid redundant reinit) */
+static bool gpio_configured = false;
+
 /* Blink state */
 static bool blinking = false;
 static MGR_LED_Color_t blink_color = MGR_LED_OFF;
@@ -48,6 +51,9 @@ static bool blink_phase_on = false;
  */
 static void led_reinit_gpio(void)
 {
+	if (gpio_configured)
+		return;
+
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -63,6 +69,8 @@ static void led_reinit_gpio(void)
 
 	GPIO_InitStruct.Pin = LED_BLUE_Pin;
 	HAL_GPIO_Init(LED_BLUE_GPIO_Port, &GPIO_InitStruct);
+
+	gpio_configured = true;
 }
 
 static void led_set_raw(bool r, bool g, bool b)
@@ -143,6 +151,7 @@ void MGR_LED_init(void)
 	HAL_GPIO_Init(LED_BLUE_GPIO_Port, &GPIO_InitStruct);
 
 	mode_start_tick = HAL_GetTick();
+	gpio_configured = true;
 }
 
 void MGR_LED_set(MGR_LED_Color_t color)
@@ -183,6 +192,8 @@ void MGR_LED_off(void)
 {
 	blinking = false;
 	led_apply_color(MGR_LED_OFF);
+	/* Mark GPIO as needing reinit after LPM wakeup */
+	gpio_configured = false;
 }
 
 void MGR_LED_task(void)

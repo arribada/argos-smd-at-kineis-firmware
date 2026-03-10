@@ -141,9 +141,13 @@ uint8_t MGR_BAT_getLevel(void)
 
 bool MGR_BAT_isTxAllowed(void)
 {
+	return MGR_BAT_isTxAllowedAt(MGR_BAT_readVoltage_mV());
+}
+
+bool MGR_BAT_isTxAllowedAt(uint16_t mV)
+{
 	if (min_tx_voltage_mV == 0)
 		return true;  /* Threshold disabled */
-	uint16_t mV = MGR_BAT_readVoltage_mV();
 	if (mV == 0)
 		return true;  /* ADC failed, allow TX (don't block on sensor failure) */
 	return (mV >= min_tx_voltage_mV);
@@ -166,6 +170,7 @@ void MGR_BAT_init(void) {}
 uint16_t MGR_BAT_readVoltage_mV(void) { return 0; }
 uint8_t MGR_BAT_getLevel(void) { return 0; }
 bool MGR_BAT_isTxAllowed(void) { return true; }
+bool MGR_BAT_isTxAllowedAt(uint16_t mV) { (void)mV; return true; }
 uint16_t MGR_BAT_getMinTxVoltage_mV(void) { return 0; }
 void MGR_BAT_setMinTxVoltage_mV(uint16_t min_mV) { (void)min_mV; }
 

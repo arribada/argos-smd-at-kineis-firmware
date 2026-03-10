@@ -161,8 +161,13 @@ bool MGR_ERR_checkCrashLoop(void)
 
 	/* Disable wakeup timer to modify it */
 	RTC->CR &= ~RTC_CR_WUTE;
-	while ((RTC->ICSR & RTC_ICSR_WUTWF) == 0)
-		;
+	{
+		uint32_t timeout = 100000U;
+		while ((RTC->ICSR & RTC_ICSR_WUTWF) == 0 && --timeout > 0)
+			;
+		if (timeout == 0)
+			return false;  /* RTC not responding, skip safe sleep */
+	}
 
 	/* Select 1 Hz clock source (ck_spre) and set countdown */
 	RTC->CR &= ~RTC_CR_WUCKSEL;
@@ -173,9 +178,10 @@ bool MGR_ERR_checkCrashLoop(void)
 	RTC->SCR = RTC_SCR_CWUTF;
 	RTC->CR |= RTC_CR_WUTE | RTC_CR_WUTIE;
 
-	/* Enable RTC wakeup as EXTI line 17 (internal) for STOP mode wakeup */
+	/* Enable RTC wakeup as EXTI line 17 (internal, rising edge only) */
 	EXTI->IMR1 |= EXTI_IMR1_IM17;
 	EXTI->RTSR1 |= (1UL << 17);
+	EXTI->FTSR1 &= ~(1UL << 17);
 
 	/* Enter STOP2 mode (lowest power with SRAM retention) */
 	__disable_irq();

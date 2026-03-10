@@ -99,6 +99,7 @@ struct {
 	uint32_t magic;
 	uint16_t air_baseline;
 	uint16_t water_baseline;
+	uint16_t observed_peak_adc;  /**< Highest ADC ever seen (dynamic cap) */
 } sws_retained;
 
 /* Exported for fault handlers (MGR_ERR_LOG_FAULT macro in stm32wlxx_it.c) */
@@ -127,6 +128,7 @@ static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
 
 #define TIMEOUT_BOOT_MS          10000  /**< Boot blink timeout */
 #define TIMEOUT_BOOT_DEPLOY_MS   5000   /**< Deploy LED timeout */
+#define BOOT_DEPLOY_LED_MS       2000   /**< Deploy color display duration */
 #define TIMEOUT_MAC_READY_MS     30000  /**< Wait for MAC ready */
 #define TIMEOUT_TX_DONE_MS       60000  /**< Wait for TX done */
 #define TIMEOUT_SHUTDOWN_BLINK_MS 10000 /**< Shutdown blink timeout */
@@ -156,11 +158,15 @@ static bool uw_doppler_lpmNotifEnter(__attribute__((unused)) enum MgrLpm_LPM_t l
 	/* Turn off LEDs before STOP to avoid current draw during sleep */
 	MGR_LED_off();
 #endif
+	/* Reconfigure SWS power pin as analog to eliminate GPIO leakage in STOP */
+	MGR_SWS_enterLowPower();
 	return true;
 }
 
 static bool uw_doppler_lpmNotifExit(__attribute__((unused)) enum MgrLpm_LPM_t lpm)
 {
+	/* Restore SWS power pin as output after STOP wakeup */
+	MGR_SWS_exitLowPower();
 	return true;
 }
 
@@ -394,6 +400,9 @@ void KNS_APP_uw_doppler_init(void)
 	mac_init_retries = 0;
 	state_enter_tick = HAL_GetTick();
 
+	/* Start IWDG watchdog early (16s timeout) - before any slow init */
+	MGR_WDG_init();
+
 	/* Init event log (SRAM2 retention - survives resets) */
 	MGR_EVTLOG_init();
 	MGR_EVTLOG_log(EVT_BOOT, 0);
@@ -420,9 +429,6 @@ void KNS_APP_uw_doppler_init(void)
 	last_vbat_mV = MGR_BAT_readVoltage_mV();
 	MGR_LOG_DEBUG("[BAT] Init: %umV\r\n", last_vbat_mV);
 #endif
-
-	/* Start IWDG watchdog (16s timeout) */
-	MGR_WDG_init();
 
 #if defined(BSP_HAS_LED_RGB)
 	/* Boot sequence: blink 10x */
@@ -499,6 +505,7 @@ void KNS_APP_uw_doppler_loop(void)
 		sws_retained.magic = SWS_RETAINED_MAGIC;
 		sws_retained.air_baseline = MGR_SWS_getAirBaseline();
 		sws_retained.water_baseline = MGR_SWS_getWaterBaseline();
+		sws_retained.observed_peak_adc = MGR_SWS_getObservedPeak();
 	}
 
 	switch (uw_doppler_state) {
@@ -519,7 +526,7 @@ void KNS_APP_uw_doppler_loop(void)
 
 	case UW_DOPPLER_BOOT_DEPLOY_LED:
 		/* Show deploy color for 2s then proceed (with timeout) */
-		if (state_elapsed_ms() >= 2000 || state_elapsed_ms() > TIMEOUT_BOOT_DEPLOY_MS) {
+		if (state_elapsed_ms() >= BOOT_DEPLOY_LED_MS || state_elapsed_ms() > TIMEOUT_BOOT_DEPLOY_MS) {
 			MGR_LED_off();
 			transition_to(UW_DOPPLER_INIT_MAC);
 		}
@@ -603,7 +610,7 @@ void KNS_APP_uw_doppler_loop(void)
 #if defined(BSP_HAS_VBAT_ADC)
 				last_vbat_mV = MGR_BAT_readVoltage_mV();
 				MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
-				if (!MGR_BAT_isTxAllowed()) {
+				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
 					MGR_LOG_DEBUG("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
 						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
 					should_tx = false;
@@ -745,8 +752,11 @@ void KNS_APP_uw_doppler_restoreSwsBaselines(void)
 	    sws_retained.water_baseline > sws_retained.air_baseline) {
 		MGR_SWS_restoreBaselines(sws_retained.air_baseline,
 		                         sws_retained.water_baseline);
-		MGR_LOG_DEBUG("[UW_DPL] Restored SWS baselines: air=%u water=%u\r\n",
-			sws_retained.air_baseline, sws_retained.water_baseline);
+		if (sws_retained.observed_peak_adc > 0)
+			MGR_SWS_restoreObservedPeak(sws_retained.observed_peak_adc);
+		MGR_LOG_DEBUG("[UW_DPL] Restored SWS: air=%u water=%u peak=%u\r\n",
+			sws_retained.air_baseline, sws_retained.water_baseline,
+			sws_retained.observed_peak_adc);
 	}
 }
 

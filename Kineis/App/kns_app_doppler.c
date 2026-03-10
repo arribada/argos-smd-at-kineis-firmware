@@ -116,13 +116,14 @@ static bool nvm_dirty = false;
 /* ---- NVM config (simple flash storage, after WKU counter region) ---- */
 
 #define DOPPLER_NVM_MAGIC   0x44504C52UL  /* "DPLR" */
-#define DOPPLER_NVM_VERSION 1
+#define DOPPLER_NVM_VERSION 2
 
 typedef struct {
 	uint32_t magic;
 	uint8_t  version;
 	uint8_t  msg_count;
-	uint8_t  _pad0[2];
+	uint8_t  led_mode;     /**< MGR_LED_Mode_t: 0=off, 1=on, 2=24h */
+	uint8_t  _pad0;
 	uint32_t msg_interval_s;
 	uint32_t sequence_interval_s;
 	uint32_t tpl_interval_s;
@@ -191,6 +192,12 @@ static bool nvm_load(void)
 	doppler_cfg.msg_interval_s      = cfg.msg_interval_s;
 	doppler_cfg.sequence_interval_s = cfg.sequence_interval_s;
 	doppler_cfg.tpl_interval_s      = cfg.tpl_interval_s;
+
+#if defined(BSP_HAS_LED_RGB)
+	if (cfg.led_mode <= 2)
+		MGR_LED_setMode((MGR_LED_Mode_t)cfg.led_mode);
+#endif
+
 	nvm_dirty = false;
 
 	MGR_LOG_DEBUG("[DPL] NVM loaded: count=%u interval=%lus seq=%lus tpl=%lus\r\n",
@@ -217,6 +224,9 @@ static bool nvm_save(void)
 	cfg.msg_interval_s      = doppler_cfg.msg_interval_s;
 	cfg.sequence_interval_s = doppler_cfg.sequence_interval_s;
 	cfg.tpl_interval_s      = doppler_cfg.tpl_interval_s;
+#if defined(BSP_HAS_LED_RGB)
+	cfg.led_mode            = (uint8_t)MGR_LED_getMode();
+#endif
 
 	cfg.crc32 = nvm_crc32(&cfg, offsetof(DopplerNvmConfig_t, crc32));
 
@@ -562,7 +572,7 @@ static struct MgrLpmClientCb_t doppler_lpm_client = {
 static void finish_sequence(void)
 {
 	MGR_LOG_DEBUG("[DPL] Sequence done (%u msgs)\r\n", tx_index);
-	MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_index);
+	MGR_EVTLOG_log(EVT_TX_DONE, (uint16_t)tx_index);
 
 #if defined(MCU_DONE_Pin)
 	/* Mode TPL5111: save config (if dirty) then pulse MCU_DONE to cut power.
@@ -590,6 +600,9 @@ void KNS_APP_doppler_init(void)
 	doppler_lpm_mode = LOW_POWER_MODE_STOP;
 	nvm_dirty = false;
 
+	/* Start IWDG watchdog early (16s timeout) - before any slow init */
+	MGR_WDG_init();
+
 	/* Init event log */
 	MGR_EVTLOG_init();
 	MGR_EVTLOG_log(EVT_BOOT, 0);
@@ -606,9 +619,6 @@ void KNS_APP_doppler_init(void)
 	/* Register LPM client */
 	MGR_LPM_registerClient(doppler_lpm_client);
 
-	/* Start IWDG watchdog */
-	MGR_WDG_init();
-
 	MGR_LOG_DEBUG("[DPL] Init: count=%u interval=%lus seq=%lus tpl=%lus\r\n",
 		doppler_cfg.msg_count,
 		(unsigned long)doppler_cfg.msg_interval_s,
@@ -616,6 +626,10 @@ void KNS_APP_doppler_init(void)
 		(unsigned long)doppler_cfg.tpl_interval_s);
 
 #if defined(BSP_HAS_LED_RGB)
+	/* Default to 24h auto-off for deployment battery savings.
+	 * nvm_load() above may override this if a saved mode exists. */
+	if (MGR_LED_getMode() == MGR_LED_MODE_ON)
+		MGR_LED_setMode(MGR_LED_MODE_24H);
 	MGR_LED_blink(MGR_LED_BLUE, 3, 200, 200);
 #endif
 
@@ -626,6 +640,11 @@ void KNS_APP_doppler_loop(void)
 {
 	/* Refresh watchdog every loop */
 	MGR_WDG_refresh();
+
+#if defined(BSP_HAS_LED_RGB)
+	/* Update LED blink animations */
+	MGR_LED_task();
+#endif
 
 	/* Process AT commands if available */
 #if defined(USE_UART_DRIVER)
@@ -818,6 +837,11 @@ bool KNS_APP_doppler_setCfg(const KNS_APP_DopplerCfg_t *cfg)
 bool KNS_APP_doppler_nvmSave(void)
 {
 	return nvm_save();
+}
+
+void KNS_APP_doppler_markDirty(void)
+{
+	nvm_dirty = true;
 }
 
 /**

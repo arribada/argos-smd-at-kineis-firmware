@@ -49,9 +49,10 @@ typedef struct {
 	uint32_t sws_max_dive_time_s;
 	uint32_t sws_min_surface_time_s;
 	uint8_t  sws_enabled;
-	uint8_t  _pad2[1];
+	uint8_t  _pad2[3];
 	/* Battery config (v2) */
 	uint16_t bat_min_tx_mV;        /**< Min battery voltage for TX (0 = disabled) */
+	uint8_t  _pad3[2];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 

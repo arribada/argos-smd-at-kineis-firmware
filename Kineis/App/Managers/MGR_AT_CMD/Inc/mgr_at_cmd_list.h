@@ -79,6 +79,7 @@ enum  atcmd_idx_t {
 	AT_DPL_LOG,      /**< Doppler event log dump / clear */
 	AT_DPL_SAVE,     /**< Doppler save config to NVM */
 	AT_DPL_BATCFG,   /**< Doppler battery protection config */
+	AT_DPL_LED,      /**< Doppler LED mode */
 #endif
 
 	ATCMD_MAX_COUNT,

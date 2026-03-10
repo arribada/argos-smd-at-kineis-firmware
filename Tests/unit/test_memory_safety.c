@@ -115,7 +115,7 @@ static void MGR_EVTLOG_clear(void)
  ******************************************************************************/
 
 #define NVM_MAGIC   0x434F4E46UL
-#define NVM_VERSION 1
+#define NVM_VERSION 2
 
 typedef struct {
 	uint32_t magic;
@@ -137,6 +137,8 @@ typedef struct {
 	uint32_t sws_min_surface_time_s;
 	uint8_t  sws_enabled;
 	uint8_t  _pad2[3];
+	uint16_t bat_min_tx_mV;
+	uint8_t  _pad3[2];
 	uint32_t crc32;
 } NVM_Config_t;
 

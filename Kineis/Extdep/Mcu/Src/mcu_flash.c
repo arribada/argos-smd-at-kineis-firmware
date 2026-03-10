@@ -221,6 +221,11 @@ static inline uint64_t read_flash_word(uint32_t address) {
 static HAL_StatusTypeDef write_flash_word(uint32_t address, uint64_t value) {
     HAL_FLASH_Unlock();
     __disable_irq();
+    if (MCU_FLASH_WaitReady(FLASH_WAIT_TIMEOUT_MS) != KNS_STATUS_OK) {
+        __enable_irq();
+        HAL_FLASH_Lock();
+        return HAL_ERROR;
+    }
     HAL_StatusTypeDef status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, address, value);
     __enable_irq();
     HAL_FLASH_Lock();
@@ -285,6 +290,12 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
         }
 
         HAL_FLASH_Unlock();
+        __disable_irq();
+        if (MCU_FLASH_WaitReady(FLASH_WAIT_TIMEOUT_MS) != KNS_STATUS_OK) {
+            __enable_irq();
+            HAL_FLASH_Lock();
+            return KNS_STATUS_FLASH_ERR;
+        }
         FLASH_EraseInitTypeDef erase = {
             .TypeErase = FLASH_TYPEERASE_PAGES,
             .Page = (wl_start - FLASH_BASE) / FLASH_PAGE_SIZE,
@@ -292,13 +303,16 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
         };
         uint32_t error;
         if (HAL_FLASHEx_Erase(&erase, &error) != HAL_OK) {
+            __enable_irq();
             HAL_FLASH_Lock();
             return KNS_STATUS_FLASH_ERR;
         }
         if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, wl_start, 0) != HAL_OK) {
+            __enable_irq();
             HAL_FLASH_Lock();
             return KNS_STATUS_FLASH_ERR;
         }
+        __enable_irq();
         HAL_FLASH_Lock();
         return KNS_STATUS_OK;
     }
@@ -315,10 +329,15 @@ enum KNS_status_t reset_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32
 
     uint64_t of = 0;
     if(MCU_FLASH_write(of_addr, &of, sizeof(of)) != KNS_STATUS_OK) {
-        /* MCU_FLASH_write already locks flash on error */
         return KNS_STATUS_FLASH_ERR;
     }
     HAL_FLASH_Unlock();
+    __disable_irq();
+    if (MCU_FLASH_WaitReady(FLASH_WAIT_TIMEOUT_MS) != KNS_STATUS_OK) {
+        __enable_irq();
+        HAL_FLASH_Lock();
+        return KNS_STATUS_FLASH_ERR;
+    }
     FLASH_EraseInitTypeDef erase = {
         .TypeErase = FLASH_TYPEERASE_PAGES,
         .Page = (wl_start - FLASH_BASE) / FLASH_PAGE_SIZE,
@@ -326,9 +345,11 @@ enum KNS_status_t reset_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32
     };
     uint32_t error;
     if (HAL_FLASHEx_Erase(&erase, &error) != HAL_OK) {
+        __enable_irq();
         HAL_FLASH_Lock();
         return KNS_STATUS_FLASH_ERR;
     }
+    __enable_irq();
     HAL_FLASH_Lock();
     return KNS_STATUS_OK;
 }
@@ -353,22 +374,31 @@ enum KNS_status_t set_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32_t
     }
 
     HAL_FLASH_Unlock();
+    __disable_irq();
+    if (MCU_FLASH_WaitReady(FLASH_WAIT_TIMEOUT_MS) != KNS_STATUS_OK) {
+        __enable_irq();
+        HAL_FLASH_Lock();
+        return KNS_STATUS_FLASH_ERR;
+    }
     FLASH_EraseInitTypeDef erase = {
         .TypeErase = FLASH_TYPEERASE_PAGES,
         .Page = (wl_start - FLASH_BASE) / FLASH_PAGE_SIZE,
         .NbPages = (wl_size * 8) / FLASH_PAGE_SIZE
     };
     if (HAL_FLASHEx_Erase(&erase, &error) != HAL_OK) {
+        __enable_irq();
         HAL_FLASH_Lock();
         return KNS_STATUS_FLASH_ERR;
     }
 
     for (uint32_t i = 0; i < index; ++i) {
         if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, wl_start + i * 8, 0) != HAL_OK) {
+            __enable_irq();
             HAL_FLASH_Lock();
             return KNS_STATUS_FLASH_ERR;
         }
     }
+    __enable_irq();
     HAL_FLASH_Lock();
     return KNS_STATUS_OK;
 }

@@ -49,9 +49,11 @@ void MGR_EVTLOG_init(void)
 
 void MGR_EVTLOG_log(MGR_EVTLOG_Type_t type, uint16_t data)
 {
-	/* Defensive: clamp head if SRAM corruption moved it out of bounds */
+	/* Defensive: clamp head and count if SRAM corruption moved them out of bounds */
 	if (evtlog_buf.head >= MGR_EVTLOG_MAX_ENTRIES)
 		evtlog_buf.head = 0;
+	if (evtlog_buf.count > MGR_EVTLOG_MAX_ENTRIES)
+		evtlog_buf.count = MGR_EVTLOG_MAX_ENTRIES;
 
 	MGR_EVTLOG_Entry_t *e = &evtlog_buf.entries[evtlog_buf.head];
 

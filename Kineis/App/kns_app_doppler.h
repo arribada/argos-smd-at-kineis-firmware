@@ -58,4 +58,12 @@ bool KNS_APP_doppler_setCfg(const KNS_APP_DopplerCfg_t *cfg);
  */
 bool KNS_APP_doppler_nvmSave(void);
 
+/**
+ * @brief Mark NVM config as dirty (needs save)
+ *
+ * Called when a setting that is persisted in NVM changes outside of setCfg(),
+ * e.g. LED mode changed via AT+LED.
+ */
+void KNS_APP_doppler_markDirty(void);
+
 #endif /* KNS_APP_DOPPLER_H */

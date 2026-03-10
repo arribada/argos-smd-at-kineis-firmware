@@ -85,6 +85,7 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+LOG",           6, bMGR_AT_CMD_DPLLOG_cmd},
 	{ "AT+SAVE",          7, bMGR_AT_CMD_DPLSAVE_cmd},
 	{ "AT+BATCFG",        9, bMGR_AT_CMD_DPLBATCFG_cmd},
+	{ "AT+LED",           6, bMGR_AT_CMD_DPLLED_cmd},
 #endif
 };
 
