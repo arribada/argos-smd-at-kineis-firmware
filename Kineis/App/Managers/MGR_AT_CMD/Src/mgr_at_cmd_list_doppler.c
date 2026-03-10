@@ -8,6 +8,7 @@
  *   - AT+SAVE    : Save config to NVM
  *   - AT+LOG     : Event log dump/clear
  *   - AT+BATCFG  : Battery config (STDALONE only)
+ *   - AT+LED     : LED mode control (off / on / 24h auto-off)
  */
 
 /**
@@ -31,6 +32,10 @@
 
 #if defined(BSP_HAS_VBAT_ADC)
 #include "mgr_bat.h"
+#endif
+
+#if defined(BSP_HAS_LED_RGB)
+#include "mgr_led.h"
 #endif
 
 /* WDG refresh interval for long AT log dumps */
@@ -107,7 +112,10 @@ bool bMGR_AT_CMD_DPLSAVE_cmd(uint8_t *pu8_cmdParamString __attribute__((unused))
 	enum atcmd_type_t e_exec_mode)
 {
 	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
-		KNS_APP_doppler_nvmSave();
+		if (!KNS_APP_doppler_nvmSave()) {
+			MGR_LOG_DEBUG("[AT] DOPPLER NVM save failed\r\n");
+			return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+		}
 		MGR_LOG_DEBUG("[AT] DOPPLER config saved to NVM\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
@@ -180,6 +188,39 @@ bool bMGR_AT_CMD_DPLBATCFG_cmd(uint8_t *pu8_cmdParamString,
 	(void)pu8_cmdParamString;
 	(void)e_exec_mode;
 	MCU_AT_CONSOLE_send("+BATCFG=N/A\r\n");
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+#endif
+}
+
+bool bMGR_AT_CMD_DPLLED_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+#if defined(BSP_HAS_LED_RGB)
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		MCU_AT_CONSOLE_send("+LED=%u\r\n", (unsigned)MGR_LED_getMode());
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int mode;
+		if (sscanf((const char *)pu8_cmdParamString, "AT+LED=%u", &mode) != 1) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		}
+		if (mode > 2) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
+		MGR_LED_setMode((MGR_LED_Mode_t)mode);
+		/* Mark NVM dirty so AT+SAVE persists LED mode */
+		KNS_APP_doppler_markDirty();
+		MGR_LOG_DEBUG("[AT] LED mode=%u\r\n", mode);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+#else
+	(void)pu8_cmdParamString;
+	(void)e_exec_mode;
+	MCU_AT_CONSOLE_send("+LED=N/A\r\n");
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 #endif
 }

@@ -31,4 +31,7 @@ bool bMGR_AT_CMD_DPLLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exe
 /** @brief AT+BATCFG: Get/Set battery protection config (STDALONE only) */
 bool bMGR_AT_CMD_DPLBATCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+LED: Get/Set LED mode (0=off, 1=on, 2=24h auto-off) */
+bool bMGR_AT_CMD_DPLLED_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_DOPPLER_H */

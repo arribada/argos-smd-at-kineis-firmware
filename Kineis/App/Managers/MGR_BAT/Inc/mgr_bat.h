@@ -39,6 +39,13 @@ uint8_t MGR_BAT_getLevel(void);
  */
 bool MGR_BAT_isTxAllowed(void);
 
+/**
+ * @brief Check if a given voltage is above minimum TX threshold
+ * @param mV Pre-read voltage in millivolts (avoids redundant ADC read)
+ * @return true if voltage is sufficient for TX
+ */
+bool MGR_BAT_isTxAllowedAt(uint16_t mV);
+
 /** @brief Get minimum TX voltage threshold in mV */
 uint16_t MGR_BAT_getMinTxVoltage_mV(void);
 

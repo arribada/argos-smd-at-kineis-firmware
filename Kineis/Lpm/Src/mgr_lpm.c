@@ -212,10 +212,10 @@ static void vMGR_LPM_clientNotifyEnter(enum MgrLpm_LPM_t deepest_lpm)
  */
 static void vMGR_LPM_clientNotifyExit(enum MgrLpm_LPM_t deepest_lpm)
 {
-	uint8_t index;
+	int8_t index;
 
-	//> Notify clients with LPM used
-	for (index = MGR_LPM_CLIENT_NBR_MAX - 1; index != 0; index--) {
+	//> Notify clients with LPM used (reverse order, including client[0])
+	for (index = MGR_LPM_CLIENT_NBR_MAX - 1; index >= 0; index--) {
 		if (mgrLpmClientTab[index].fpMGR_LPM_LpmNotifExitCb != NULL) {
 			if (!mgrLpmClientTab[index].fpMGR_LPM_LpmNotifExitCb(deepest_lpm))
 				kns_assert(0);

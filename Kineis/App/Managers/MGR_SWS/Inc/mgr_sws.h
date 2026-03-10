@@ -5,7 +5,7 @@
  * Implements 5-level surface detection algorithm (port of Linkit v4):
  * - L1: Instant drop from recent peak (5%, 1 sample)
  * - L2: Consecutive 2-sample raw drops (3% cumulative)
- * - L3: MA3 trend (3+ decreases, 5% total)
+ * - L3: MA2 trend (3+ decreases, 5% total)
  * - L4: Absolute water baseline drop (15%)
  * - L5: Dive peak safety net (15%, >10s gate)
  * - Proximity guard, dynamic threshold ratio, 4% hysteresis
@@ -83,6 +83,18 @@ uint16_t MGR_SWS_getWaterBaseline(void);
  *  @param water Previously saved water baseline (0 = don't restore)
  */
 void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water);
+
+/** @brief Get observed peak ADC value (for retention across resets) */
+uint16_t MGR_SWS_getObservedPeak(void);
+
+/** @brief Restore observed peak ADC from retention RAM */
+void MGR_SWS_restoreObservedPeak(uint16_t peak);
+
+/** @brief Configure SWS GPIO for low-power STOP mode (analog input = no leakage) */
+void MGR_SWS_enterLowPower(void);
+
+/** @brief Restore SWS GPIO after STOP mode wakeup */
+void MGR_SWS_exitLowPower(void);
 
 #ifdef __cplusplus
 }

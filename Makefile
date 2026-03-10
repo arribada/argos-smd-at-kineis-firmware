@@ -46,6 +46,10 @@ APP = GUI
 # Select output port
 COMM = UART
 
+# Build variant flags (set to 1 to enable)
+USE_RX_STACK ?= 0
+USE_HDA4 ?= 0
+
 # Select Kineis stack MAC profile. Can be:
 # * BASIC: basic profile, sending message once immediately
 # * BLIND: blind profile, sending message several times periodically
@@ -61,6 +65,11 @@ BOARD = SMD_PA
 # TCXO Stability: Use SMPS bypass (LDO mode) during TX to reduce noise
 # Set to 1 if TCXO instability is observed during satellite TX
 SMPS_BYPASS_TX = 0
+
+# Validate APP selection
+ifneq ($(APP),$(filter $(APP),STDLN GUI UW_DOPPLER DOPPLER))
+$(error Invalid APP=$(APP). Must be one of: STDLN GUI UW_DOPPLER DOPPLER)
+endif
 
 # optimization
 ifeq ($(DEBUG), 1)
@@ -467,15 +476,7 @@ C_INCLUDES += \
 -I$(KINEIS_DIR)/App/Managers/MGR_REED/Inc
 endif
 
-ifeq ($(COMM),UART)
-C_DEFS +=  \
--DUSE_UART_DRIVER
-endif
-
-ifeq ($(COMM),SPI)
-C_DEFS +=  \
--DUSE_SPI_DRIVER
-endif
+# Note: COMM UART/SPI defines already set above (line 314)
 
 # compile gcc flags
 ASFLAGS += $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
@@ -779,7 +780,7 @@ doc_clean:
 #######################################
 -include $(wildcard $(BUILD_DIR)/*.d)
 
-.PHONY: doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash-app flash-bl flash-full clean-all check-app check-bootloader
+.PHONY: all clean doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash-app flash-bl flash-full clean-all check-app check-bootloader
 
 #######################################
 # force empty target

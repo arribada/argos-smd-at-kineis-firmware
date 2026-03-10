@@ -110,7 +110,7 @@ bool bMGR_AT_CMD_SWSCFG_cmd(uint8_t *pu8_cmdParamString,
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		}
 		if (thr_min > 4095 || thr_max > 4095 || thr_min >= thr_max ||
-		    interval_ms == 0) {
+		    water_init <= air_init || interval_ms == 0) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 
@@ -155,7 +155,8 @@ bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString,
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		}
 		if (interval_s == 0 || interval_s > 65535 || growth > 255 ||
-		    max_interval_s == 0 || max_interval_s > 65535 || max_count > 255) {
+		    max_interval_s == 0 || max_interval_s > 65535 || max_count > 255 ||
+		    interval_s > max_interval_s) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 
@@ -178,6 +179,7 @@ bool bMGR_AT_CMD_SWSFORCE_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)
 {
 	/* Accept both modes for convenience */
 	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
+		MGR_WDG_refresh();
 		MGR_SWS_forceMeasurement();
 		MGR_SWS_task();
 
@@ -238,6 +240,9 @@ bool bMGR_AT_CMD_DEPLOY_cmd(uint8_t *pu8_cmdParamString,
 		if (sscanf((const char *)pu8_cmdParamString, "AT+DEPLOY=%u", &mode) != 1) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		}
+		if (mode > 1) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
 		KNS_APP_uw_doppler_setDeployMode((uint8_t)mode);
 		MGR_LOG_DEBUG("[AT] Deploy mode=%u\r\n", mode);
 		return bMGR_AT_CMD_logSucceedMsg();
@@ -250,7 +255,10 @@ bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	enum atcmd_type_t e_exec_mode)
 {
 	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
-		MGR_NVM_save();
+		if (!MGR_NVM_save()) {
+			MGR_LOG_DEBUG("[AT] NVM save failed\r\n");
+			return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+		}
 		MGR_LOG_DEBUG("[AT] Config saved to NVM\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}

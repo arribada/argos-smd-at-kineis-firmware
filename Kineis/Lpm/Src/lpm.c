@@ -293,6 +293,9 @@ static void LPM_compensateTick(void)
 	/* Total elapsed ms */
 	uint32_t elapsed_ms;
 	if (elapsed_s > 0) {
+		/* Cap to avoid uint32 overflow (49+ days in STOP) */
+		if (elapsed_s > 4000000UL)
+			elapsed_s = 4000000UL;
 		elapsed_ms = (elapsed_s - 1) * 1000 + (1000 - subsec_before_ms) + subsec_after_ms;
 	} else {
 		if (subsec_after_ms >= subsec_before_ms)

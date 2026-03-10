@@ -17,7 +17,7 @@
  * **5-Level Surface Detection (all require UW >= 1s + proximity guard):**
  *   - L1: Drop > 5% from recent peak (decaying) -> immediate surface
  *   - L2: 2 consecutive raw drops, cumulative > 3% -> surface
- *   - L3: MA3 decreasing 3+ times, total drop > 5% -> surface
+ *   - L3: MA2 decreasing 3+ times, total drop > 5% -> surface
  *   - L4: filtered < water_baseline * 85% -> surface
  *   - L5: Drop from dive peak > 15%, >10s gate -> safety fallback
  *
@@ -74,6 +74,7 @@
 #define SURFACE_ADAPT_THRESHOLD_X10        13   /**< 1.3x stored as x10 */
 #define MIN_SURFACE_TIME_FOR_ADAPT_S       10
 #define SURFACE_READINGS_SIZE              10
+#define CALIB_INTERVAL_S                 3600   /**< Periodic full recalib (1h) */
 
 /* ---- 5-Level Surface Detection Constants ---- */
 
@@ -84,7 +85,7 @@
 #define L2_DROP_PERCENT                     3
 #define L2_MIN_CONSECUTIVE                  2
 
-/* Level 3: MA3 trend */
+/* Level 3: MA trend (window = ADC_HISTORY_SIZE) */
 #define L3_MIN_CONSECUTIVE                  3
 #define L3_DROP_PERCENT                     5
 #define TREND_MA_SIZE                       3
@@ -152,7 +153,7 @@ static uint16_t recent_peak = 0;           /**< Decaying peak for L1 */
 static uint16_t drop_reference = 0;        /**< Raw value when consecutive drops started */
 static uint8_t  consecutive_raw_drops = 0;
 
-/* Level 3: MA3 trend detection */
+/* Level 3: MA trend detection (TREND_MA_SIZE=3 window) */
 static uint16_t trend_buffer[TREND_MA_SIZE];
 static uint8_t  trend_buffer_idx = 0;
 static uint8_t  trend_buffer_count = 0;
@@ -165,7 +166,10 @@ static uint16_t peak_adc_since_underwater = 0;
 static uint16_t min_adc_during_dive = 0xFFFF;
 
 /* Safety */
-static uint32_t surface_lockout_remaining = 0;
+static uint32_t surface_lockout_until = 0;  /**< HAL tick when lockout expires (0 = no lockout) */
+
+/* Periodic recalibration timer */
+static uint32_t last_calib_tick = 0;
 
 /* First-sample coherence */
 static bool first_sample_done = false;
@@ -202,7 +206,7 @@ static void update_dynamic_threshold(void)
 	threshold_current = air_baseline + (range * ratio) / 100;
 
 	hysteresis_value = (threshold_current * DEFAULT_HYSTERESIS_PERCENT) / 100;
-	if (hysteresis_value < 1) hysteresis_value = 1;
+	if (hysteresis_value < 3) hysteresis_value = 3;
 
 	/* Cap threshold+hysteresis at observed peak so we never exceed actual readings */
 	if (observed_peak_adc > 0) {
@@ -214,7 +218,7 @@ static void update_dynamic_threshold(void)
 			} else {
 				hysteresis_value = max_thresh_high - threshold_current;
 			}
-			if (hysteresis_value < 1) hysteresis_value = 1;
+			if (hysteresis_value < 3) hysteresis_value = 3;
 		}
 	}
 }
@@ -307,8 +311,9 @@ static bool detector_state(void)
 				raw_value, water_baseline);
 			calib_incoherent = true;
 		}
-		/* Reading far below air baseline -> air was calibrated in water */
-		else if (raw_value < air_baseline / 2 && air_baseline > WATER_DETECT_HEURISTIC / 2) {
+		/* Reading far below air baseline -> air was calibrated in water
+		 * Guard: air_baseline > 500 (=2000/4, matching reference 14-bit threshold) */
+		else if (raw_value < air_baseline / 2 && air_baseline > 500) {
 			MGR_LOG_DEBUG("[SWS] Coherence fail: raw=%u << air=%u\r\n",
 				raw_value, air_baseline);
 			calib_incoherent = true;
@@ -394,7 +399,7 @@ static bool detector_state(void)
 		consecutive_raw_drops = 0;
 	}
 
-	/* LEVEL 3: MA3 trend detection */
+	/* LEVEL 3: MA trend detection */
 	trend_buffer[trend_buffer_idx] = filtered;
 	trend_buffer_idx = (trend_buffer_idx + 1) % TREND_MA_SIZE;
 	if (trend_buffer_count < TREND_MA_SIZE)
@@ -483,7 +488,20 @@ static bool detector_state(void)
 				sum += surface_readings[i];
 			uint16_t avg = (uint16_t)(sum / surface_readings_count);
 
-			if (avg * 10 > (uint32_t)air_baseline * SURFACE_ADAPT_THRESHOLD_X10 &&
+			/* Periodic full recalibration (every CALIB_INTERVAL_S) */
+			if (CALIB_INTERVAL_S > 0 &&
+			    elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
+				MGR_LOG_DEBUG("[SWS] Air recalib %u -> %u\r\n",
+					air_baseline, avg);
+				air_baseline = avg;
+				/* Slow decay of observed peak (1% per recalib cycle) */
+				if (observed_peak_adc > 0)
+					observed_peak_adc = (uint16_t)((uint32_t)observed_peak_adc * 99 / 100);
+				update_dynamic_threshold();
+				last_calib_tick = HAL_GetTick();
+				surface_readings_count = 0;
+				surface_readings_idx = 0;
+			} else if (avg * 10 > (uint32_t)air_baseline * SURFACE_ADAPT_THRESHOLD_X10 &&
 			    avg < threshold_current) {
 				/* Upward adaptation: biofouling raising air level (slow 10%) */
 				air_baseline = (uint16_t)((90 * (uint32_t)air_baseline + 10 * (uint32_t)avg) / 100);
@@ -503,7 +521,7 @@ static bool detector_state(void)
 	}
 
 	/* 5. WATER BASELINE EMA (when clearly underwater, not during lockout) */
-	if (is_underwater && surface_lockout_remaining == 0)
+	if (is_underwater && (surface_lockout_until == 0 || HAL_GetTick() >= surface_lockout_until))
 		calibrate_water_baseline(filtered);
 
 	/* 6. STATE DETERMINATION */
@@ -534,7 +552,7 @@ static bool detector_state(void)
 
 		/* Enforce surface lockout */
 		if (sws_config.min_surface_time_s > 0)
-			surface_lockout_remaining = sws_config.min_surface_time_s;
+			surface_lockout_until = HAL_GetTick() + sws_config.min_surface_time_s * 1000;
 
 		MGR_LOG_DEBUG("[SWS] SURFACE L%u raw=%u filt=%u air=%u water=%u\r\n",
 			surface_level, raw_value, filtered, air_baseline, water_baseline);
@@ -544,15 +562,16 @@ static bool detector_state(void)
 	if (is_underwater && sws_config.max_dive_time_s > 0 &&
 	    time_in_state >= sws_config.max_dive_time_s) {
 		new_is_underwater = false;
-		surface_lockout_remaining = SURFACE_LOCKOUT_S;
+		surface_lockout_until = HAL_GetTick() + SURFACE_LOCKOUT_S * 1000;
 		MGR_LOG_DEBUG("[SWS] MAX_DIVE timeout, forcing surface\r\n");
 	}
 
-	/* 8. SURFACE LOCKOUT */
-	if (surface_lockout_remaining > 0) {
-		surface_lockout_remaining--;
+	/* 8. SURFACE LOCKOUT (time-based) */
+	if (surface_lockout_until > 0 && HAL_GetTick() < surface_lockout_until) {
 		if (new_is_underwater)
 			new_is_underwater = false;
+	} else {
+		surface_lockout_until = 0;
 	}
 
 	return new_is_underwater;
@@ -597,7 +616,8 @@ void MGR_SWS_init(void)
 	min_adc_during_dive = 0xFFFF;
 	surface_readings_idx = 0;
 	surface_readings_count = 0;
-	surface_lockout_remaining = 0;
+	surface_lockout_until = 0;
+	last_calib_tick = HAL_GetTick();
 	first_sample_done = false;
 
 	sws_state = MGR_SWS_STATE_UNKNOWN;
@@ -747,6 +767,43 @@ void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water)
 		MGR_LOG_DEBUG("[SWS] Baselines restored: air=%u water=%u th=%u hyst=%u\r\n",
 			air, water, threshold_current, hysteresis_value);
 	}
+}
+
+uint16_t MGR_SWS_getObservedPeak(void)
+{
+	return observed_peak_adc;
+}
+
+void MGR_SWS_restoreObservedPeak(uint16_t peak)
+{
+	if (peak > 0) {
+		observed_peak_adc = peak;
+		MGR_LOG_DEBUG("[SWS] Observed peak restored: %u\r\n", peak);
+	}
+}
+
+void MGR_SWS_enterLowPower(void)
+{
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+	/* Reconfigure PA12 (SWS_OUT) as analog to eliminate leakage in STOP */
+	GPIO_InitStruct.Pin = SWS_POWER_PIN;
+	GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(SWS_POWER_PORT, &GPIO_InitStruct);
+}
+
+void MGR_SWS_exitLowPower(void)
+{
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+	/* Restore PA12 (SWS_OUT) as output push-pull for sensor power control */
+	GPIO_InitStruct.Pin = SWS_POWER_PIN;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(SWS_POWER_PORT, &GPIO_InitStruct);
+	HAL_GPIO_WritePin(SWS_POWER_PORT, SWS_POWER_PIN, GPIO_PIN_RESET);
 }
 
 /**

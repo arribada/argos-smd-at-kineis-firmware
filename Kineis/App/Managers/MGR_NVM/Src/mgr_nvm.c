@@ -23,6 +23,7 @@
 
 #include "mgr_nvm.h"
 #include "mcu_flash.h"
+#include "mgr_wdg.h"
 #include "mgr_log.h"
 #include <string.h>
 #include <stddef.h>
@@ -81,6 +82,27 @@ typedef struct {
 /**
  * @brief Apply a loaded config to all modules
  */
+static bool validate_config(const NVM_Config_t *cfg)
+{
+	/* TX: intervals must be non-zero, initial <= max */
+	if (cfg->tx_initial_interval_s == 0 || cfg->tx_max_interval_s == 0)
+		return false;
+	if (cfg->tx_initial_interval_s > cfg->tx_max_interval_s)
+		return false;
+	if (cfg->tx_max_count == 0)
+		return false;
+
+	/* SWS: thresholds ordered, interval non-zero */
+	if (cfg->sws_threshold_min >= cfg->sws_threshold_max)
+		return false;
+	if (cfg->sws_initial_water_baseline <= cfg->sws_initial_air_baseline)
+		return false;
+	if (cfg->sws_test_interval_ms == 0)
+		return false;
+
+	return true;
+}
+
 static void apply_config(const NVM_Config_t *cfg)
 {
 	/* Restore TX config */
@@ -166,6 +188,10 @@ bool MGR_NVM_load(void)
 		MGR_LOG_DEBUG("[NVM] Migrated v1 -> v2 (bat_min=%umV)\r\n",
 			cfg.bat_min_tx_mV);
 
+		if (!validate_config(&cfg)) {
+			MGR_LOG_DEBUG("[NVM] v1 migrated config invalid, using defaults\r\n");
+			return false;
+		}
 		apply_config(&cfg);
 		return true;
 	}
@@ -180,6 +206,11 @@ bool MGR_NVM_load(void)
 	if (computed_crc != cfg.crc32) {
 		MGR_LOG_DEBUG("[NVM] CRC mismatch (stored=0x%08lx computed=0x%08lx), using defaults\r\n",
 			cfg.crc32, computed_crc);
+		return false;
+	}
+
+	if (!validate_config(&cfg)) {
+		MGR_LOG_DEBUG("[NVM] Config values invalid, using defaults\r\n");
 		return false;
 	}
 
@@ -230,6 +261,9 @@ bool MGR_NVM_save(void)
 
 	/* Compute CRC32 over all fields before crc32 */
 	cfg.crc32 = nvm_crc32(&cfg, offsetof(NVM_Config_t, crc32));
+
+	/* Refresh watchdog before flash erase+write (can take ~20ms per page) */
+	MGR_WDG_refresh();
 
 	if (MCU_FLASH_write(FLASH_NVM_CONFIG_ADDR, &cfg, sizeof(cfg)) != KNS_STATUS_OK) {
 		MGR_LOG_DEBUG("[NVM] Flash write error\r\n");
