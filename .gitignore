@@ -1,6 +1,7 @@
 build/*
 build_bl/*
 Tests/build/*
+Tests/unit/build/*
 .settings/
 .vscode/
 Kineis/doc/html/
