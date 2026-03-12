@@ -73,7 +73,8 @@ enum  atcmd_idx_t {
 #endif
 
 #ifdef USE_DOPPLER_APP
-	// DOPPLER commands
+	// DOPPLER commands (DEPLOY before DPLCFG to avoid prefix shadowing)
+	AT_DPL_DEPLOY,   /**< Doppler deploy mode */
 	AT_DPLCFG,       /**< Doppler TX configuration */
 	AT_DPLWKU,       /**< Doppler wakeup counter */
 	AT_DPL_LOG,      /**< Doppler event log dump / clear */

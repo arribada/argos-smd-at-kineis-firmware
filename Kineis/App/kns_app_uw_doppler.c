@@ -62,6 +62,7 @@
 #include "mgr_lpm.h"
 #if defined(USE_UART_DRIVER)
 #include "mgr_at_cmd.h"
+#include "usart.h"
 #endif
 
 #if defined(BSP_HAS_LED_RGB)
@@ -115,6 +116,10 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 /* Deploy mode: 1 = deployed (TX enabled), 0 = not deployed (SWS runs but no TX) */
 static uint8_t deploy_mode = 1;
 
+/* Boot window: AT command received during boot window keeps UART active */
+static bool boot_window_at_received = false;
+
+#define BOOT_WINDOW_MS  5000  /**< UART listen window at boot (5s) */
 
 /* TX scheduling state */
 static uint32_t tx_count = 0;              /**< Number of TXs sent in current surface event */
@@ -433,10 +438,9 @@ void KNS_APP_uw_doppler_init(void)
 #if defined(BSP_HAS_LED_RGB)
 	/* Boot sequence: blink 10x */
 	MGR_LED_blink(MGR_LED_BLUE, 10, 200, 200);
-	transition_to(UW_DOPPLER_BOOT);
-#else
-	transition_to(UW_DOPPLER_INIT_MAC);
 #endif
+	/* Always go through BOOT state for boot window (UART listen period) */
+	transition_to(UW_DOPPLER_BOOT);
 }
 
 void KNS_APP_uw_doppler_loop(void)
@@ -448,8 +452,12 @@ void KNS_APP_uw_doppler_loop(void)
 #if defined(USE_UART_DRIVER)
 	{
 		uint8_t *pu8_atcmd = MGR_AT_CMD_popNextAt();
-		if (pu8_atcmd != NULL)
+		if (pu8_atcmd != NULL) {
 			MGR_AT_CMD_decodeAt(pu8_atcmd);
+			/* Track AT activity during boot window */
+			if (uw_doppler_state <= UW_DOPPLER_BOOT_DEPLOY_LED)
+				boot_window_at_received = true;
+		}
 	}
 #endif
 
@@ -509,29 +517,60 @@ void KNS_APP_uw_doppler_loop(void)
 	}
 
 	switch (uw_doppler_state) {
-#if defined(BSP_HAS_LED_RGB)
 	case UW_DOPPLER_BOOT:
-		/* Wait for boot blink to finish (with timeout) */
-		if (MGR_LED_isBlinkDone() || state_elapsed_ms() > TIMEOUT_BOOT_MS) {
-			if (state_elapsed_ms() > TIMEOUT_BOOT_MS)
-				MGR_LOG_DEBUG("[UW_DPL] Boot blink timeout, skipping\r\n");
+	{
+		/* Boot window: UART listens for AT commands.
+		 * With LED: wait for blink to finish (with timeout).
+		 * Without LED: wait BOOT_WINDOW_MS for AT commands. */
+		bool boot_done = false;
+#if defined(BSP_HAS_LED_RGB)
+		boot_done = (MGR_LED_isBlinkDone() || state_elapsed_ms() > TIMEOUT_BOOT_MS);
+#else
+		boot_done = (state_elapsed_ms() > BOOT_WINDOW_MS);
+#endif
+		if (boot_done) {
+#if defined(BSP_HAS_LED_RGB)
 			/* Show deploy status: green=deployed, blue=not deployed */
 			if (deploy_mode)
 				MGR_LED_set(MGR_LED_GREEN);
 			else
 				MGR_LED_set(MGR_LED_BLUE);
+#endif
 			transition_to(UW_DOPPLER_BOOT_DEPLOY_LED);
 		}
 		return;
+	}
 
 	case UW_DOPPLER_BOOT_DEPLOY_LED:
+	{
 		/* Show deploy color for 2s then proceed (with timeout) */
-		if (state_elapsed_ms() >= BOOT_DEPLOY_LED_MS || state_elapsed_ms() > TIMEOUT_BOOT_DEPLOY_MS) {
+		bool deploy_led_done = false;
+#if defined(BSP_HAS_LED_RGB)
+		deploy_led_done = (state_elapsed_ms() >= BOOT_DEPLOY_LED_MS ||
+		                   state_elapsed_ms() > TIMEOUT_BOOT_DEPLOY_MS);
+#else
+		deploy_led_done = true;  /* No LED: skip immediately */
+#endif
+		if (deploy_led_done) {
+#if defined(BSP_HAS_LED_RGB)
 			MGR_LED_off();
+#endif
+#if defined(USE_UART_DRIVER)
+			/* If deployed and no AT command received during boot window,
+			 * disable UART to save power for multi-year deployment */
+			if (deploy_mode && !boot_window_at_received) {
+				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART disabled\r\n");
+				HAL_NVIC_DisableIRQ(LPUART1_IRQn);
+				HAL_UART_DeInit(&hlpuart1);
+				HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2 | GPIO_PIN_3);
+			} else if (deploy_mode) {
+				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART kept (AT received)\r\n");
+			}
+#endif
 			transition_to(UW_DOPPLER_INIT_MAC);
 		}
 		return;
-#endif
+	}
 
 	case UW_DOPPLER_INIT_MAC:
 		start_mac_profile();

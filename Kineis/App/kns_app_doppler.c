@@ -43,8 +43,10 @@
 #include KINEIS_SW_ASSERT_H
 #include "mgr_log.h"
 #include "mgr_lpm.h"
+#include "lpm.h"
 #include "mcu_flash.h"
 #include "rtc.h"
+#include "usart.h"
 #if defined(USE_UART_DRIVER)
 #include "mgr_at_cmd.h"
 #endif
@@ -54,6 +56,12 @@
 #endif
 #if defined(BSP_HAS_VBAT_ADC)
 #include "mgr_bat.h"
+#endif
+
+/* Compile-time safety: DOPPLER without TPL5111 uses SHUTDOWN via RTC wakeup.
+ * The LPM framework must have SHUTDOWN support enabled. */
+#if !defined(MCU_DONE_Pin) && !defined(LPM_SHUTDOWN_ENABLED)
+#error "DOPPLER without MCU_DONE requires LPM=SHUTDOWN (add -DLPM_SHUTDOWN_ENABLED)"
 #endif
 
 /* ---- State Machine ---- */
@@ -99,6 +107,9 @@ static uint8_t  mac_init_retries = 0;
 /* Max msg_interval_s before uint32 overflow on *1000 conversion */
 #define MSG_INTERVAL_MAX_S       (UINT32_MAX / 1000UL)
 
+/* Max RTC wakeup timer period in seconds (17-bit mode) */
+#define RTC_WAKEUP_MAX_S         0x20000UL  /* 131072s ≈ 36h */
+
 /* WDG refresh interval for long AT log dumps */
 #define LOG_WDG_REFRESH_ENTRIES  32
 
@@ -110,20 +121,28 @@ static uint16_t last_vbat_mV = 0;
 /* LPM mode tracking: STOP during sequence, SHUTDOWN after */
 static enum MgrLpm_LPM_t doppler_lpm_mode = LOW_POWER_MODE_STOP;
 
+/* Deploy mode: 1 = deployed (UART off after boot window), 0 = config mode */
+static uint8_t deploy_mode = 0;
+
+/* Boot window: AT command received during boot window keeps UART active */
+static bool boot_window_at_received = false;
+
+#define BOOT_WINDOW_MS  5000  /**< UART listen window at boot (5s) */
+
 /* NVM dirty flag: only write flash when config has actually changed */
 static bool nvm_dirty = false;
 
 /* ---- NVM config (simple flash storage, after WKU counter region) ---- */
 
 #define DOPPLER_NVM_MAGIC   0x44504C52UL  /* "DPLR" */
-#define DOPPLER_NVM_VERSION 2
+#define DOPPLER_NVM_VERSION 3
 
 typedef struct {
 	uint32_t magic;
 	uint8_t  version;
 	uint8_t  msg_count;
 	uint8_t  led_mode;     /**< MGR_LED_Mode_t: 0=off, 1=on, 2=24h */
-	uint8_t  _pad0;
+	uint8_t  deployed;     /**< 1=deployed (UART off after boot window), 0=config mode */
 	uint32_t msg_interval_s;
 	uint32_t sequence_interval_s;
 	uint32_t tpl_interval_s;
@@ -166,7 +185,8 @@ static bool nvm_load(void)
 	if (cfg.magic != DOPPLER_NVM_MAGIC)
 		return false;
 
-	if (cfg.version != DOPPLER_NVM_VERSION)
+	/* Accept v2 (no deploy field) or v3 (with deploy field) */
+	if (cfg.version != DOPPLER_NVM_VERSION && cfg.version != 2)
 		return false;
 
 	uint32_t computed = nvm_crc32(&cfg, offsetof(DopplerNvmConfig_t, crc32));
@@ -187,18 +207,29 @@ static bool nvm_load(void)
 			(unsigned long)cfg.msg_interval_s);
 		return false;
 	}
+#if !defined(MCU_DONE_Pin)
+	if (cfg.sequence_interval_s > RTC_WAKEUP_MAX_S) {
+		MGR_LOG_DEBUG("[DPL] NVM seq_interval too large (%lu), capped\r\n",
+			(unsigned long)cfg.sequence_interval_s);
+		cfg.sequence_interval_s = RTC_WAKEUP_MAX_S;
+	}
+#endif
 
 	doppler_cfg.msg_count           = cfg.msg_count;
 	doppler_cfg.msg_interval_s      = cfg.msg_interval_s;
 	doppler_cfg.sequence_interval_s = cfg.sequence_interval_s;
 	doppler_cfg.tpl_interval_s      = cfg.tpl_interval_s;
 
+	/* Deploy mode: v2 had _pad0=0 at this offset → defaults to not deployed */
+	deploy_mode = (cfg.deployed <= 1) ? cfg.deployed : 0;
+
 #if defined(BSP_HAS_LED_RGB)
 	if (cfg.led_mode <= 2)
 		MGR_LED_setMode((MGR_LED_Mode_t)cfg.led_mode);
 #endif
 
-	nvm_dirty = false;
+	/* Mark dirty if migrating from v2 so next save writes v3 format */
+	nvm_dirty = (cfg.version < DOPPLER_NVM_VERSION);
 
 	MGR_LOG_DEBUG("[DPL] NVM loaded: count=%u interval=%lus seq=%lus tpl=%lus\r\n",
 		doppler_cfg.msg_count,
@@ -224,6 +255,7 @@ static bool nvm_save(void)
 	cfg.msg_interval_s      = doppler_cfg.msg_interval_s;
 	cfg.sequence_interval_s = doppler_cfg.sequence_interval_s;
 	cfg.tpl_interval_s      = doppler_cfg.tpl_interval_s;
+	cfg.deployed            = deploy_mode;
 #if defined(BSP_HAS_LED_RGB)
 	cfg.led_mode            = (uint8_t)MGR_LED_getMode();
 #endif
@@ -343,16 +375,19 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 		MGR_LOG_DEBUG("[DPL] WARNING: wakeup_seconds=0, clamped to 1s\r\n");
 		wakeup_seconds = 1;
 	}
-	if (wakeup_seconds > 0x20000) {
-		MGR_LOG_DEBUG("[DPL] WARNING: wakeup_seconds=%lu clamped to 131072s\r\n",
-			(unsigned long)wakeup_seconds);
-		wakeup_seconds = 0x20000;
+	if (wakeup_seconds > RTC_WAKEUP_MAX_S) {
+		MGR_LOG_DEBUG("[DPL] WARNING: wakeup_seconds=%lu clamped to %lu\r\n",
+			(unsigned long)wakeup_seconds, (unsigned long)RTC_WAKEUP_MAX_S);
+		wakeup_seconds = RTC_WAKEUP_MAX_S;
 	}
 
 	MGR_LOG_DEBUG("[DPL] Entering SHUTDOWN for %lus\r\n", (unsigned long)wakeup_seconds);
 
 	/* Save NVM before sleep (only writes if dirty) */
-	nvm_save();
+	if (!nvm_save()) {
+		MGR_LOG_DEBUG("[DPL] WARNING: NVM save failed before SHUTDOWN\r\n");
+		MGR_EVTLOG_log(EVT_ERROR, (uint16_t)ERR_NONE);
+	}
 
 #if defined(BSP_HAS_LED_RGB)
 	MGR_LED_off();
@@ -368,10 +403,47 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 		RTC_WAKEUPCLOCK_CK_SPRE_17BITS : RTC_WAKEUPCLOCK_CK_SPRE_16BITS;
 	uint16_t counter = (uint16_t)((wakeup_seconds - 1) & 0xFFFF);
 
-	HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0);
+	HAL_StatusTypeDef rtc_status =
+		HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0);
+	if (rtc_status != HAL_OK) {
+		MGR_LOG_DEBUG("[DPL] CRITICAL: RTC wakeup setup failed (%d), resetting\r\n",
+			rtc_status);
+		MGR_ERR_logAndReset(ERR_ASSERT);
+		/* Never reaches here */
+	}
 
-	/* Allow SHUTDOWN in LPM */
-	doppler_lpm_mode = LOW_POWER_MODE_SHUTDOWN;
+	/* Disable UART before SHUTDOWN to prevent spurious activity */
+	HAL_NVIC_DisableIRQ(LPUART1_IRQn);
+	HAL_GPIO_DeInit(GPIOA, GPIO_PIN_3);  /* LPUART1_RX */
+
+	/* Set all GPIOs to analog to minimize current leakage */
+	GPIO_DisableAllToAnalogInput();
+
+	/* Enable pull-up/pull-down configuration for SHUTDOWN */
+	HAL_PWREx_EnablePullUpPullDownConfig();
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);  /* EXT_WKUP */
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);   /* PA off */
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);    /* VSEL high */
+
+#if defined(BSP_HAS_PWR_LATCH)
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);  /* PWR_LATCH off */
+#endif
+
+	/* Enable internal wakeup line (RTC → PWR controller).
+	 * Without this the RTC wakeup event does not reach the PWR
+	 * controller and the device never wakes from SHUTDOWN. */
+	HAL_PWREx_DisableInternalWakeUpLine();
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+	HAL_PWREx_EnableInternalWakeUpLine();
+
+	/* Configure external wakeup pins */
+	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN1);
+	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN2);
+	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN3);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
+
+	__HAL_RCC_CLEAR_RESET_FLAGS();
 
 	/* Enter SHUTDOWN -- never returns */
 	HAL_PWREx_EnterSHUTDOWNMode();
@@ -572,7 +644,7 @@ static struct MgrLpmClientCb_t doppler_lpm_client = {
 static void finish_sequence(void)
 {
 	MGR_LOG_DEBUG("[DPL] Sequence done (%u msgs)\r\n", tx_index);
-	MGR_EVTLOG_log(EVT_TX_DONE, (uint16_t)tx_index);
+	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)tx_index);
 
 #if defined(MCU_DONE_Pin)
 	/* Mode TPL5111: save config (if dirty) then pulse MCU_DONE to cut power.
@@ -650,8 +722,12 @@ void KNS_APP_doppler_loop(void)
 #if defined(USE_UART_DRIVER)
 	{
 		uint8_t *pu8_atcmd = MGR_AT_CMD_popNextAt();
-		if (pu8_atcmd != NULL)
+		if (pu8_atcmd != NULL) {
 			MGR_AT_CMD_decodeAt(pu8_atcmd);
+			/* Track AT activity during boot window */
+			if (doppler_state == DOPPLER_BOOT)
+				boot_window_at_received = true;
+		}
 		MGR_AT_CMD_macEvtProcess();
 	}
 #endif
@@ -660,12 +736,26 @@ void KNS_APP_doppler_loop(void)
 
 	case DOPPLER_BOOT:
 	{
+		/* Boot window: UART accepts AT commands for BOOT_WINDOW_MS.
+		 * If deployed and no AT received → UART is de-init for power savings.
+		 * If AT received during window → UART stays active (config session). */
+		bool boot_done = false;
 #if defined(BSP_HAS_LED_RGB)
-		if (MGR_LED_isBlinkDone() || state_elapsed_ms() > TIMEOUT_BOOT_MS)
+		boot_done = (MGR_LED_isBlinkDone() || state_elapsed_ms() > TIMEOUT_BOOT_MS);
 #else
-		if (state_elapsed_ms() > TIMEOUT_BOOT_MS)
+		boot_done = (state_elapsed_ms() > BOOT_WINDOW_MS);
 #endif
-		{
+		if (boot_done) {
+#if defined(USE_UART_DRIVER)
+			if (deploy_mode && !boot_window_at_received) {
+				MGR_LOG_DEBUG("[DPL] Deploy mode: UART disabled\r\n");
+				HAL_NVIC_DisableIRQ(LPUART1_IRQn);
+				HAL_UART_DeInit(&hlpuart1);
+				HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2 | GPIO_PIN_3);
+			} else if (deploy_mode) {
+				MGR_LOG_DEBUG("[DPL] Deploy mode: UART kept (AT received)\r\n");
+			}
+#endif
 			transition_to(DOPPLER_CHECK_SCHEDULE);
 		}
 		return;
@@ -823,6 +913,12 @@ bool KNS_APP_doppler_setCfg(const KNS_APP_DopplerCfg_t *cfg)
 	if (cfg->msg_interval_s > MSG_INTERVAL_MAX_S)
 		return false;
 
+#if !defined(MCU_DONE_Pin)
+	/* RTC wakeup max is 131072s (~36h). Reject values that would be silently clamped. */
+	if (cfg->sequence_interval_s > RTC_WAKEUP_MAX_S)
+		return false;
+#endif
+
 #ifdef USE_MAC_PRFL_BLIND
 	/* BLIND retx_period_s is uint16_t */
 	if (cfg->msg_interval_s > UINT16_MAX)
@@ -842,6 +938,18 @@ bool KNS_APP_doppler_nvmSave(void)
 void KNS_APP_doppler_markDirty(void)
 {
 	nvm_dirty = true;
+}
+
+uint8_t KNS_APP_doppler_getDeployMode(void)
+{
+	return deploy_mode;
+}
+
+void KNS_APP_doppler_setDeployMode(uint8_t mode)
+{
+	deploy_mode = mode ? 1 : 0;
+	nvm_dirty = true;
+	MGR_LOG_DEBUG("[DPL] Deploy mode: %u\r\n", deploy_mode);
 }
 
 /**

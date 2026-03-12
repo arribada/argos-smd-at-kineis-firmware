@@ -66,6 +66,11 @@ bool bMGR_AT_CMD_DPLCFG_cmd(uint8_t *pu8_cmdParamString,
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		}
 
+		/* Validate msg_count fits in uint8_t before casting */
+		if (msg_count > 255) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
+
 		KNS_APP_DopplerCfg_t cfg;
 		cfg.msg_count           = (uint8_t)msg_count;
 		cfg.msg_interval_s      = (uint32_t)msg_interval;
@@ -89,7 +94,13 @@ bool bMGR_AT_CMD_DPLWKU_cmd(uint8_t *pu8_cmdParamString,
 {
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		uint64_t count = MCU_FLASH_read_wku_counter();
-		MCU_AT_CONSOLE_send("+DPLWKU=%lu\r\n", (unsigned long)count);
+		uint32_t count_hi = (uint32_t)(count >> 32);
+		uint32_t count_lo = (uint32_t)(count & 0xFFFFFFFFUL);
+		if (count_hi > 0)
+			MCU_AT_CONSOLE_send("+DPLWKU=%lu%08lu\r\n",
+				(unsigned long)count_hi, (unsigned long)count_lo);
+		else
+			MCU_AT_CONSOLE_send("+DPLWKU=%lu\r\n", (unsigned long)count_lo);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -101,6 +112,8 @@ bool bMGR_AT_CMD_DPLWKU_cmd(uint8_t *pu8_cmdParamString,
 		if (val == 0) {
 			MCU_FLASH_reset_wku_counter();
 			MGR_LOG_DEBUG("[AT] WKU counter reset\r\n");
+		} else {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
@@ -223,6 +236,31 @@ bool bMGR_AT_CMD_DPLLED_cmd(uint8_t *pu8_cmdParamString,
 	MCU_AT_CONSOLE_send("+LED=N/A\r\n");
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 #endif
+}
+
+bool bMGR_AT_CMD_DPLDEPLOY_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		MCU_AT_CONSOLE_send("+DEPLOY=%u\r\n",
+			(unsigned)KNS_APP_doppler_getDeployMode());
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int mode;
+		if (sscanf((const char *)pu8_cmdParamString, "AT+DEPLOY=%u", &mode) != 1) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		}
+		if (mode > 1) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
+		KNS_APP_doppler_setDeployMode((uint8_t)mode);
+		MGR_LOG_DEBUG("[AT] Deploy mode=%u\r\n", mode);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
 /**

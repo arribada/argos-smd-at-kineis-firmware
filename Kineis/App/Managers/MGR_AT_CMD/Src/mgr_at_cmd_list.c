@@ -79,7 +79,8 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 #endif
 
 #ifdef USE_DOPPLER_APP
-	/**< DOPPLER commands */
+	/**< DOPPLER commands (DEPLOY before DPLCFG: longest prefix first) */
+	{ "AT+DEPLOY",        9, bMGR_AT_CMD_DPLDEPLOY_cmd},
 	{ "AT+DPLCFG",        9, bMGR_AT_CMD_DPLCFG_cmd},
 	{ "AT+DPLWKU",        9, bMGR_AT_CMD_DPLWKU_cmd},
 	{ "AT+LOG",           6, bMGR_AT_CMD_DPLLOG_cmd},
