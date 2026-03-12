@@ -21,7 +21,7 @@
 #include "mgr_at_cmd_list_user_data.h"
 #include "mcu_at_console.h"
 /* @todo PRODEV-68: remove specific flag when HW setting check is implemented on all platforms */
-#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE)
+#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE) || defined(SMD_OP)
 #include "mcu_misc.h" // use to check RF HW setting vers radio confoguration
 #endif
 #include "kns_cfg.h"
@@ -244,7 +244,7 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	/* CRITICAL FIX: Buffer increased to hold "UNKNOWN" + null (8 chars) */
 	uint8_t modulation[16];
 	uint16_t nbBits;
-#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE)
+#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	struct rfSettings_t hwSettings;
 #endif
 
@@ -268,7 +268,7 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 			radio_cfg.max_frequency, radio_cfg.rf_level, modulation);
 
 		/** @todo PRODEV-68: check radio conf versus HW settings for other platforms */
-#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE)
+#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE) || defined(SMD_OP)
 		if (MCU_MISC_getSettingsHwRf(radio_cfg.rf_level, &hwSettings) == KNS_STATUS_OK)
 			return bMGR_AT_CMD_logSucceedMsg();
 		return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);

@@ -141,7 +141,7 @@ enum KNS_status_t MCU_MISC_getSettingsHwRf(int8_t rf_level_dBm, void* rfSettings
 	int8_t rficPaLevel, rficPaLevel_min, rficPaLevel_max;
 
 
-#if defined(SMD_PA) || defined(SMD_STDALONE)
+#if defined(SMD_PA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	rficPaLevel_min = -17; // dBm
 	rficPaLevel_max = 15;  // dBm
 
@@ -153,6 +153,8 @@ enum KNS_status_t MCU_MISC_getSettingsHwRf(int8_t rf_level_dBm, void* rfSettings
 
 	settings->isRficHPA = true;
 	settings->externalPaGain = 0;
+#else
+#error "Unknown board type for RF settings"
 #endif
 	rficPaLevel = rf_level_dBm - settings->externalPaGain;
 

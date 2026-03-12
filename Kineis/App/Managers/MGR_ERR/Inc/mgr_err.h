@@ -110,13 +110,18 @@ bool MGR_ERR_checkCrashLoop(void);
  * This macro is safe to call from HardFault/BusFault handlers where
  * the stack may be corrupted. Uses direct memory-mapped register writes.
  *
+ * Uses uwTick (same backing variable as HAL_GetTick()) instead of
+ * SysTick->VAL so crash loop detection can compare against MIN_UP_MS.
+ * uwTick is a simple volatile uint32_t read — safe from fault context.
+ *
  * @param code  MGR_ERR_Code_t value
  * @param state Current UW_DOPPLER state (or 0xFF if unknown)
  */
 #define MGR_ERR_LOG_FAULT(code, state) do { \
+	extern volatile uint32_t uwTick; \
 	*((volatile uint32_t *)TAMP_BKP4R_ADDR) = (uint32_t)(code); \
 	*((volatile uint32_t *)TAMP_BKP5R_ADDR) = (uint32_t)(state); \
-	*((volatile uint32_t *)TAMP_BKP6R_ADDR) = SysTick->VAL; \
+	*((volatile uint32_t *)TAMP_BKP6R_ADDR) = uwTick; \
 } while (0)
 
 #endif /* MGR_ERR_H */

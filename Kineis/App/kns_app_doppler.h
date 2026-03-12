@@ -8,6 +8,13 @@
  *
  * A "sequence" = N messages sent with a fixed interval between each.
  * Compatible with all boards (SMD_STDALONE, SMD_PA, SMD_NOPA, SMD_OP).
+ *
+ * Deploy mode:
+ *   - AT+DEPLOY=1 + AT+SAVE: marks device as deployed
+ *   - When deployed: UART listens for 5s at each boot (boot window).
+ *     If no AT command is received, UART is fully de-initialized to save power.
+ *     If an AT command is received during the window, UART stays active.
+ *   - AT+DEPLOY=0 + AT+SAVE: returns to config mode (UART always active)
  */
 
 #ifndef KNS_APP_DOPPLER_H
@@ -65,5 +72,19 @@ bool KNS_APP_doppler_nvmSave(void);
  * e.g. LED mode changed via AT+LED.
  */
 void KNS_APP_doppler_markDirty(void);
+
+/** @brief Get deploy mode (0=config, 1=deployed) */
+uint8_t KNS_APP_doppler_getDeployMode(void);
+
+/**
+ * @brief Set deploy mode
+ *
+ * When deployed (mode=1), UART is disabled after a 5s boot window
+ * unless an AT command is received during the window.
+ * Must call KNS_APP_doppler_nvmSave() to persist.
+ *
+ * @param mode 0=config mode, 1=deployed
+ */
+void KNS_APP_doppler_setDeployMode(uint8_t mode);
 
 #endif /* KNS_APP_DOPPLER_H */

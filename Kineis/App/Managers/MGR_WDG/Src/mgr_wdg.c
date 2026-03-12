@@ -69,6 +69,12 @@ void MGR_WDG_init(void)
 	/* First refresh */
 	IWDG->KR = IWDG_KEY_REFRESH;
 
+	/* Verify IWDG_STOP option byte is set (IWDG frozen during STOP mode).
+	 * If not set, IWDG would keep running during STOP and reset the device
+	 * during long sleep intervals. FLASH_OPTR bit 17 = IWDG_STOP (1=frozen). */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U)
+		MGR_LOG_DEBUG("[WDG] WARNING: IWDG_STOP not set in option bytes!\r\n");
+
 	MGR_LOG_DEBUG("[WDG] IWDG started (timeout ~16s)\r\n");
 }
 

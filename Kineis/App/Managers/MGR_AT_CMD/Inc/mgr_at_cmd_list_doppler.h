@@ -34,4 +34,15 @@ bool bMGR_AT_CMD_DPLBATCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_
 /** @brief AT+LED: Get/Set LED mode (0=off, 1=on, 2=24h auto-off) */
 bool bMGR_AT_CMD_DPLLED_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+DEPLOY: Get/Set deploy mode
+ *
+ * Status: +DEPLOY=<mode> (0=config, 1=deployed)
+ * Action: AT+DEPLOY=<0|1>
+ *
+ * When deployed, UART is disabled after 5s boot window to save power.
+ * Send any AT command during boot window to keep UART active.
+ * Use AT+SAVE after AT+DEPLOY to persist.
+ */
+bool bMGR_AT_CMD_DPLDEPLOY_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_DOPPLER_H */
