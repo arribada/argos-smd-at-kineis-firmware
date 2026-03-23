@@ -41,8 +41,8 @@
 #include "mcu_flash.h"
 #include "stm32wlxx_hal.h"
 
-/* DFU request function (defined in main.c) - uses RTC backup register */
-extern void request_dfu_mode(void);
+/* DFU request function (defined in main.c) */
+#include "main.h"
 
 /* TCXO warmup limits - MEDIUM FIX: Replace magic number with constant */
 #define TCXO_MAX_WARMUP_MS      30000UL
@@ -759,10 +759,10 @@ bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	/* Wait for Zephyr to clock out the response (NOP transaction takes ~30-50ms) */
 	HAL_Delay(100);
 
-	MGR_LOG_DEBUG("DFU: Calling request_dfu_mode()...\r\n");
+	MGR_LOG_DEBUG("DFU: Calling request_dfu_mode(SPI)...\r\n");
 
-	/* Request DFU mode via RTC backup register and reset */
-	request_dfu_mode();
+	/* Request DFU mode with SPI protocol forced (skip UART/SPI detection race) */
+	request_dfu_mode(DFU_PROTO_SPI);
 
 	/* Should never reach here */
 	return true;

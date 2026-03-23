@@ -148,9 +148,10 @@
 #define BL_STATE_FLASH_ADDR     0x0803B000UL
 #define BL_STATE_FLASH_SIZE     0x800UL         /* 2 KB (1 page) */
 
-/* In this layout, app starts directly at 0x08000000 (no separate header region) */
-#define APP_HEADER_ADDR         APP_FLASH_BASE  /* Same as app start (no header) */
-#define APP_HEADER_SIZE         0x00UL          /* No separate header region */
+/* ISR vector at 0x08000000, app header at 0x08000200 (after vector table) */
+#define APP_HEADER_OFFSET       0x200UL                 /* Header offset from flash base */
+#define APP_HEADER_ADDR         (APP_FLASH_BASE + APP_HEADER_OFFSET)  /* 0x08000200 */
+#define APP_HEADER_SIZE         0x100UL                 /* 256 bytes header */
 
 /* Flash parameters - use BL_ prefix to avoid conflict with HAL */
 #define BL_FLASH_PAGE_SIZE      0x800UL         /* 2 KB per page */
@@ -162,8 +163,14 @@
 #define SRAM_BASE_ADDR          0x20000000UL
 #define SRAM_END_ADDR           0x20010000UL    /* 64 KB SRAM */
 #define SRAM_DFU_FLAG_ADDR      0x2000FFF8UL    /* DFU flag location in SRAM */
+#define SRAM_DFU_PROTO_ADDR     0x2000FFFCUL    /* DFU protocol selection in SRAM */
 #define TAMP_BKP0R_ADDR         0x4000B100UL    /* TAMP backup register 0 */
 #define DFU_REQUEST_MAGIC       0x4446554DUL    /* "DFUM" - DFU Mode request */
+
+/* Protocol selection values (written by app, read by bootloader) */
+#define DFU_PROTO_NONE          0x00000000UL    /* Auto-detect (legacy race) */
+#define DFU_PROTO_UART          0x55415254UL    /* "UART" - Force UART mode */
+#define DFU_PROTO_SPI           0x53504921UL    /* "SPI!" - Force SPI mode */
 
 /*******************************************************************************
  * APPLICATION HEADER MAGIC AND VERSION

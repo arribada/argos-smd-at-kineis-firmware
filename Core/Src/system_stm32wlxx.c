@@ -158,7 +158,7 @@
 /* Bootloader runs at 0x08033000 */
 #define VECT_TAB_OFFSET         0x00033000U     /*!< Bootloader Vector Table offset */
 #else
-/* Application runs at 0x08000000 (default, for Kineis library compatibility) */
+/* Application vector table at 0x08000000 (start of flash) */
 #define VECT_TAB_OFFSET         0x00000000U     /*!< Application Vector Table offset */
 #endif
 #endif

@@ -65,7 +65,12 @@ void SystemClock_Config(void);
  * @note Call this function from SPI command handler when DFU is requested.
  * @note SRAM2 is preserved across system reset.
  */
-void request_dfu_mode(void);
+void request_dfu_mode(uint32_t protocol);
+
+/* Protocol selection constants for request_dfu_mode() */
+#define DFU_PROTO_NONE          0x00000000UL    /* Auto-detect (legacy) */
+#define DFU_PROTO_UART          0x55415254UL    /* "UART" - Force UART mode */
+#define DFU_PROTO_SPI           0x53504921UL    /* "SPI!" - Force SPI mode */
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

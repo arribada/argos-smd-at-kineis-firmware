@@ -24,6 +24,9 @@ static bl_protocol_t detected_protocol = BL_PROTO_NONE;
 /* Early DFU flag detection */
 static volatile bool early_dfu_flag_detected = false;
 
+/* Protocol forced by app (read from SRAM before it gets cleared) */
+static volatile uint32_t early_proto_flag = DFU_PROTO_NONE;
+
 /* Application jump function pointer type */
 typedef void (*pFunction)(void);
 
@@ -144,6 +147,26 @@ static void bl_state_check_app(void)
 
 static void bl_state_detect_protocol(void)
 {
+    /* ── Fast path: protocol forced by app (no detection race) ── */
+    if (early_proto_flag == DFU_PROTO_SPI) {
+        early_debug_print("[BL] SPI forced — skipping detection\r\n");
+        bl_spi_init();
+        bl_spi_start_rx();
+        detected_protocol = BL_PROTO_SPI;
+        current_state = BL_STATE_DFU_SPI;
+        return;
+    }
+
+    if (early_proto_flag == DFU_PROTO_UART) {
+        early_debug_print("[BL] UART forced — skipping detection\r\n");
+        bl_uart_init();
+        bl_uart_start_rx();
+        detected_protocol = BL_PROTO_UART;
+        current_state = BL_STATE_DFU_UART;
+        return;
+    }
+
+    /* ── Legacy path: auto-detect (race between UART and SPI) ── */
     uint32_t start_tick = HAL_GetTick();
 
     /* Initialize SPI first - gives SPI a head start for detection.
@@ -168,7 +191,7 @@ static void bl_state_detect_protocol(void)
      * and the master may need time to re-sync after STM32 reset/jump */
     uint32_t timeout = BL_DETECTION_TIMEOUT_MS;
 
-    BL_DBG("[BL] Detecting protocol...\r\n");
+    BL_DBG("[BL] Detecting protocol (auto)...\r\n");
 
     while ((HAL_GetTick() - start_tick) < timeout) {
         /* Check SPI FIRST - SPI master may already be sending sync
@@ -487,6 +510,7 @@ void bl_jump_to_app(void)
         app_stack = *(__IO uint32_t*)(header->app_start_addr);
         app_entry = *(__IO uint32_t*)(header->app_start_addr + 4);
     } else {
+        /* Fallback: ISR vector at APP_FLASH_BASE (0x08000000) */
         app_stack = *(__IO uint32_t*)APP_FLASH_BASE;
         app_entry = *(__IO uint32_t*)(APP_FLASH_BASE + 4);
     }
@@ -552,7 +576,7 @@ bool bl_check_app_valid(void)
         }
     }
 
-    /* Fallback: Check for valid code at APP_FLASH_BASE (legacy mode) */
+    /* Fallback: Check for valid code at APP_FLASH_BASE (ISR vector at 0x08000000) */
     uint32_t app_stack = *(__IO uint32_t*)APP_FLASH_BASE;
     uint32_t app_entry = *(__IO uint32_t*)(APP_FLASH_BASE + 4);
 
@@ -778,6 +802,7 @@ int main(void)
 {
     /* Capture DFU flags early before any memory initialization */
     volatile uint32_t early_sram_flag = *((volatile uint32_t *)SRAM_DFU_FLAG_ADDR);
+    volatile uint32_t early_proto_val = *((volatile uint32_t *)SRAM_DFU_PROTO_ADDR);
     volatile uint32_t early_tamp_flag;
 
     RCC->APB1ENR1 |= RCC_APB1ENR1_RTCAPBEN;
@@ -799,7 +824,22 @@ int main(void)
     if (early_sram_flag == DFU_REQUEST_MAGIC || early_tamp_flag == DFU_REQUEST_MAGIC) {
         early_debug_print("[BL] DFU flag detected\r\n");
         early_dfu_flag_detected = true;
+
+        /* Capture protocol selection before clearing */
+        if (early_proto_val == DFU_PROTO_SPI) {
+            early_proto_flag = DFU_PROTO_SPI;
+            early_debug_print("[BL] Protocol: FORCED SPI\r\n");
+        } else if (early_proto_val == DFU_PROTO_UART) {
+            early_proto_flag = DFU_PROTO_UART;
+            early_debug_print("[BL] Protocol: FORCED UART\r\n");
+        } else {
+            early_proto_flag = DFU_PROTO_NONE;
+            early_debug_print("[BL] Protocol: AUTO-DETECT\r\n");
+        }
+
+        /* Clear all flags */
         *((volatile uint32_t *)SRAM_DFU_FLAG_ADDR) = 0;
+        *((volatile uint32_t *)SRAM_DFU_PROTO_ADDR) = 0;
         *((volatile uint32_t *)TAMP_BKP0R_ADDR) = 0;
         __DSB();
     }
