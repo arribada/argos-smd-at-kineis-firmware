@@ -3,7 +3,7 @@
  * @brief   Application header for bootloader validation
  * @date    2025
  *
- * This structure is placed at 0x08008000 (APP_HEADER section) and contains
+ * This structure is placed at 0x08000200 (after ISR vector table) and contains
  * metadata about the application for the bootloader to validate before jumping.
  *
  * Note: The CRC fields are filled by the create_dfu.py post-processing script.
@@ -17,7 +17,7 @@
 #define APP_HEADER_MAGIC        0x4B494E45UL    /* "KINE" in ASCII */
 #define APP_HEADER_VERSION      0x0001
 #define APP_HEADER_SIZE         256
-#define APP_FLASH_BASE          0x08008100UL
+#define APP_FLASH_BASE          0x08000000UL    /* ISR vector at start of flash */
 
 /* Application version - update for each release */
 #define APP_VERSION_MAJOR       1
@@ -74,7 +74,7 @@ typedef struct __attribute__((packed)) {
 
 /*******************************************************************************
  * APPLICATION HEADER INSTANCE
- * Placed in .app_header section at 0x08008000 by linker script
+ * Placed in .app_header section at 0x08000200 by linker script
  ******************************************************************************/
 
 __attribute__((section(".app_header"), used))

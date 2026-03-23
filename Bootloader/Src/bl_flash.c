@@ -96,8 +96,8 @@ bl_flash_status_t bl_flash_erase_app(void)
     }
 
     /* Calculate number of pages in application region */
-    /* App region: 0x08004000 to 0x0803AFFF (header + code) */
-    uint32_t app_start = APP_HEADER_ADDR;
+    /* App region: 0x08000000 to 0x08032FFF (ISR + header + code) */
+    uint32_t app_start = APP_FLASH_BASE;
     uint32_t app_end = APP_FLASH_END;
     uint32_t num_pages = ((app_end - app_start) / FLASH_PAGE_SIZE) + 1;
 
@@ -234,7 +234,7 @@ bool bl_flash_verify(uint32_t address, const void* data, uint32_t length)
 
 bool bl_flash_addr_in_app(uint32_t address)
 {
-    return (address >= APP_HEADER_ADDR && address <= APP_FLASH_END);
+    return (address >= APP_FLASH_BASE && address <= APP_FLASH_END);
 }
 
 bool bl_flash_addr_in_bootloader(uint32_t address)

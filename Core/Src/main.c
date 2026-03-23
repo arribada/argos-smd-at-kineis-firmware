@@ -414,6 +414,13 @@ static void IDLE_task(void)
 #define SRAM_DFU_FLAG_ADDR      0x2000FFF8UL
 #define SRAM_DFU_FLAG_PTR       (*((volatile uint32_t *)SRAM_DFU_FLAG_ADDR))
 
+/* Protocol selection flag (read by bootloader to skip detection race) */
+#define SRAM_DFU_PROTO_ADDR     0x2000FFFCUL
+#define SRAM_DFU_PROTO_PTR      (*((volatile uint32_t *)SRAM_DFU_PROTO_ADDR))
+#define DFU_PROTO_NONE          0x00000000UL    /* Auto-detect (legacy) */
+#define DFU_PROTO_UART          0x55415254UL    /* "UART" - Force UART mode */
+#define DFU_PROTO_SPI           0x53504921UL    /* "SPI!" - Force SPI mode */
+
 /**
  * @brief Check and fix SRAM_RST option byte to preserve SRAM across reset
  * @note  This must be called early to ensure DFU flag survives reset
@@ -520,10 +527,11 @@ static void check_dfu_request(void)
     /* Check TAMP registers first, then SRAM as fallback */
     if ((dfu_flag == DFU_REQUEST_MAGIC && dfu_magic2 == DFU_MAGIC2_VALUE) ||
         (sram_flag == DFU_REQUEST_MAGIC)) {
-        /* Clear all flags */
+        /* Clear all flags (including protocol selection) */
         DFU_FLAG_PTR = 0;
         DFU_FLAG_MAGIC2 = 0;
         SRAM_DFU_FLAG_PTR = 0;
+        SRAM_DFU_PROTO_PTR = 0;
 
         /* Get bootloader stack pointer and reset handler */
         uint32_t bl_stack = g_dfu_debug_bl_stack;
@@ -566,9 +574,10 @@ static void check_dfu_request(void)
 
 /**
  * @brief Request DFU mode - DIRECT JUMP to bootloader (no reset)
+ * @param protocol  DFU_PROTO_UART, DFU_PROTO_SPI, or DFU_PROTO_NONE (auto-detect)
  * @note  This avoids the reset which can be affected by debugger interference
  */
-void request_dfu_mode(void)
+void request_dfu_mode(uint32_t protocol)
 {
     typedef void (*pFunction)(void);
 
@@ -584,8 +593,9 @@ void request_dfu_mode(void)
         const char m1[] = "\r\n[DFU] DIRECT JUMP TO BOOTLOADER (no reset)\r\n";
         HAL_UART_Transmit(&hlpuart1, (uint8_t*)m1, sizeof(m1)-1, 100);
 
-        snprintf(buf, sizeof(buf), "[DFU] BL @0x%08lX: stack=0x%08lX entry=0x%08lX\r\n",
-                 (unsigned long)BOOTLOADER_ADDR, (unsigned long)bl_stack, (unsigned long)bl_entry);
+        snprintf(buf, sizeof(buf), "[DFU] BL @0x%08lX: stack=0x%08lX entry=0x%08lX proto=0x%08lX\r\n",
+                 (unsigned long)BOOTLOADER_ADDR, (unsigned long)bl_stack,
+                 (unsigned long)bl_entry, (unsigned long)protocol);
         HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), 100);
     }
 #endif
@@ -595,8 +605,9 @@ void request_dfu_mode(void)
         return;
     }
 
-    /* Write DFU flag to SRAM - will survive the direct jump (no reset) */
+    /* Write DFU flag + protocol selection to SRAM - survives direct jump */
     SRAM_DFU_FLAG_PTR = DFU_REQUEST_MAGIC;
+    SRAM_DFU_PROTO_PTR = protocol;
     __DSB();
 
     /* Disable all interrupts */

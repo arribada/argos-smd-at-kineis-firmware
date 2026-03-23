@@ -38,12 +38,20 @@ MEMORY
 /* Sections */
 SECTIONS
 {
-  /* Vector table at start of flash */
+  /* Vector table MUST be first - CPU reads SP + Reset_Handler from 0x08000000 */
   .isr_vector :
   {
     . = ALIGN(8);
     KEEP(*(.isr_vector))
+    . = ALIGN(256);    /* Pad to 0x200 so header is at known offset */
+  } >ROM
+
+  /* Application header at fixed offset 0x200 (after vector table) */
+  .app_header :
+  {
     . = ALIGN(8);
+    KEEP(*(.app_header))
+    . = ALIGN(256);    /* Pad to 0x100 so .text starts at 0x300 */
   } >ROM
 
   /* Program code */
