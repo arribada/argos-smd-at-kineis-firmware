@@ -278,8 +278,8 @@ static void IDLE_task(void)
       if (KNS_Q_isEvtInSomeQ() || MGR_AT_CMD_isPendingAt())
         return;
     }
-    /** Do the last check on event out of for loop. */
-    HAL_Delay(500);
+    /** Debounce + grace period for pending SPI/UART events before entering LPM */
+    HAL_Delay(50);
   }
 
   /** Disable interrupt for last occurence to avoid any interrup to be skipped */
