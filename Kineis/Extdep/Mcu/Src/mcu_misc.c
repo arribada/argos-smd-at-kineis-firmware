@@ -54,7 +54,7 @@ extern uint32_t SystemCoreClock;
 void MCU_MISC_turn_on_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
-#if defined(SMD_PA) || defined(SMD_STDALONE)
+#if defined(SMD_PA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 	MGR_LOG_DEBUG("[PA] turn_on_pa\r\n");
 
@@ -73,15 +73,12 @@ void MCU_MISC_turn_on_pa()
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
 
-
-	//Already defined in MX_GPIO_INIT
 	/*Configure GPIO pin : PtPin */
 	GPIO_InitStruct.Pin = PA_PSU_EN_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
-
 
 	GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -104,7 +101,7 @@ void MCU_MISC_turn_on_pa()
 void MCU_MISC_turn_off_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
-#if defined(SMD_PA) || defined(SMD_STDALONE)
+#if defined(SMD_PA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
 	MGR_LOG_DEBUG("[PA] turn_off_pa\r\n");
