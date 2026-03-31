@@ -26,6 +26,9 @@
 #include "mgr_log.h"
 #include "rtc.h"
 
+#if defined(USE_SPI_DRIVER)
+#include "spi.h"
+#endif
 #if defined(USE_UW_DOPPLER_APP)
 #include "adc.h"
 #endif
@@ -332,6 +335,26 @@ static void LPM_stop_enter() {
 	 *
 	 * */
 	LPM_configWakeUpUart();
+
+#if defined(USE_SPI_DRIVER)
+	/* Configure SPI NSS (PA15) as EXTI falling edge to wake from STOP.
+	 * The SPI peripheral is stopped during STOP mode, so the first NSS
+	 * assertion will only wake the MCU — the actual SPI transaction is lost.
+	 * The host must retry after the wakeup. */
+	{
+		GPIO_InitTypeDef GPIO_InitStruct = {0};
+		HAL_SPI_DeInit(&hspi1);
+		__HAL_RCC_GPIOA_CLK_ENABLE();
+		GPIO_InitStruct.Pin = GPIO_PIN_15;
+		GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+		GPIO_InitStruct.Pull = GPIO_PULLUP;
+		HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+		__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_15);
+		HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);
+		HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+	}
+#endif
+
 	__enable_fault_irq();
 	__enable_irq();
 }
@@ -352,6 +375,13 @@ static void LPM_stop_exit() {
 			 * AT command from UART link.
 			 * @note same delay used in STM32 examples
 			 */
+
+#if defined(USE_SPI_DRIVER)
+	/* Re-init SPI after STOP mode wakeup.
+	 * NSS was reconfigured as EXTI in stop_enter, restore it as SPI AF. */
+	HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
+	MX_SPI1_Init();
+#endif
 
 #if defined(USE_UW_DOPPLER_APP)
 	/* Re-init ADC after STOP mode */
