@@ -343,4 +343,21 @@ void SUBGHZ_Radio_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+#if defined(USE_SPI_DRIVER)
+/**
+ * @brief EXTI15_10 interrupt handler (SPI NSS wakeup from STOP mode)
+ *
+ * PA15 (NSS) is configured as EXTI falling edge before entering STOP.
+ * This handler only clears the flag — the actual SPI re-init happens
+ * in LPM_stop_exit(). The first SPI transaction that triggered wakeup
+ * is lost; the host must retry.
+ */
+void EXTI15_10_IRQHandler(void)
+{
+	if (__HAL_GPIO_EXTI_GET_IT(GPIO_PIN_15) != RESET) {
+		__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_15);
+	}
+}
+#endif
+
 /* USER CODE END 1 */
