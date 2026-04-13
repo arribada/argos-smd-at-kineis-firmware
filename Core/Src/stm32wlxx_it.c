@@ -122,10 +122,13 @@ void HardFault_Handler(void)
   extern UART_HandleTypeDef hlpuart1;
   static const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
   HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
-#if defined(USE_UW_DOPPLER_APP)
-  /* Log fault context to TAMP registers (direct write, no function calls) */
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   MGR_ERR_LOG_FAULT(ERR_HARDFAULT, g_uw_doppler_state_for_err);
 #endif
+  /* Auto-reset after fault so the device can recover.
+   * Without this, a fault during RF TX leaves the SPI completely
+   * unresponsive (while(1) loop) and the host cannot communicate. */
+  NVIC_SystemReset();
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -141,9 +144,10 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-#if defined(USE_UW_DOPPLER_APP)
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   MGR_ERR_LOG_FAULT(ERR_MEMMANAGE, g_uw_doppler_state_for_err);
 #endif
+  NVIC_SystemReset();
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -159,9 +163,10 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-#if defined(USE_UW_DOPPLER_APP)
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   MGR_ERR_LOG_FAULT(ERR_BUSFAULT, g_uw_doppler_state_for_err);
 #endif
+  NVIC_SystemReset();
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -177,9 +182,10 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-#if defined(USE_UW_DOPPLER_APP)
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   MGR_ERR_LOG_FAULT(ERR_USAGEFAULT, g_uw_doppler_state_for_err);
 #endif
+  NVIC_SystemReset();
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
