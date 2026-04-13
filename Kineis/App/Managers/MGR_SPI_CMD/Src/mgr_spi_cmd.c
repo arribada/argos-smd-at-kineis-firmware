@@ -44,10 +44,21 @@
 /** @brief Timeout for waiting for transaction (1 second) */
 #define TRANSACTION_TIMEOUT_MS  1000
 
+/** @brief SPI protocol watchdog timeout (5 seconds)
+ *  If no valid command received within this delay, auto-reset protocol state:
+ *  - Reset sequence counter and parser state
+ *  - Flush DMA buffers
+ *  - Return to initial "waiting for command" state
+ *  This allows the host (nRF) to reconnect without power cycling the SMD. */
+#define SPI_PROTOCOL_WATCHDOG_MS  5000
+
 /* Private variables ----------------------------------------------------------------------------*/
 volatile SpiState spiState = SPICMD_INIT;
 volatile MACStatus macStatus = MAC_OK;
 volatile CmdValue cmdInProgress = CMD_NONE;
+
+/** @brief Tick of last valid command received (for protocol watchdog) */
+static uint32_t lastValidCmdTick = 0;
 
 /** @brief Flag to track if terminal MAC status (TX_DONE, TX_TIMEOUT, etc.) has been acknowledged
  *  Terminal statuses are only cleared when:
@@ -122,6 +133,9 @@ static void MGR_SPI_CMD_process_transaction(uint8_t *data, uint16_t len)
     bool frame_ready = MGR_SPI_PROTOCOL_process_buffer(data, len);
 
     if (frame_ready) {
+        /* Valid frame received - reset protocol watchdog */
+        lastValidCmdTick = HAL_GetTick();
+
         if (MGR_SPI_PROTOCOL_is_legacy()) {
             /* Legacy protocol: direct command byte */
             cmdInProgress = MGR_SPI_PROTOCOL_get_legacy_cmd();
@@ -190,6 +204,7 @@ void MGR_SPI_CMD_state_handler(void)
     case SPICMD_INIT:
         MGR_LOG_DEBUG("SPI_CMD_INIT\r\n");
         if (MGR_SPI_CMD_start(NULL)) {
+            lastValidCmdTick = HAL_GetTick();
             spiState = SPICMD_IDLE;
         } else {
             spiState = SPICMD_ERROR;
@@ -231,6 +246,22 @@ void MGR_SPI_CMD_state_handler(void)
                 if ((HAL_GetTick() - startTickTimeout) > TRANSACTION_TIMEOUT_MS) {
                     SPI_LOG_VERBOSE("Waiting for transaction...\r\n");
                     startTickTimeout = HAL_GetTick();
+                }
+
+                /* Protocol watchdog: auto-reset if no valid command for too long.
+                 * This handles desync, glitches, noise - whatever the trigger.
+                 * After reset, host can reconnect with any SEQ number. */
+                if (lastValidCmdTick > 0 &&
+                    (HAL_GetTick() - lastValidCmdTick) > SPI_PROTOCOL_WATCHDOG_MS) {
+                    MGR_LOG_DEBUG("SPI watchdog: no cmd for %ums, resetting protocol\r\n",
+                                  SPI_PROTOCOL_WATCHDOG_MS);
+                    MGR_SPI_PROTOCOL_init();  /* Full reset: state, sequence, counters */
+                    MCU_SPI_DRIVER_abort_transfer();
+                    cmdInProgress = CMD_NONE;
+                    lastValidCmdTick = HAL_GetTick();
+                    startTickTimeout = 0;
+                    spi_stats.reset_count++;
+                    MCU_SPI_DRIVER_read();  /* Re-arm DMA with fresh buffers */
                 }
             }
         }

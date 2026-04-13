@@ -61,7 +61,10 @@ static volatile bool rx_activity_detected = false;
 static volatile uint16_t expected_transfer_size = SPI_TRANSACTION_SIZE;  /* Save transfer size */
 
 /* Stability timeout - transaction complete when no new bytes for this duration.
- * At 125kHz, 64 bytes takes ~4ms. Use 3ms for faster detection. */
+ * At 2 MHz, 64 bytes takes ~0.26ms. At 125kHz, ~4ms.
+ * HAL_GetTick() resolution is 1ms, so minimum practical value is 1-2ms.
+ * 3ms works for both speeds: detects end-of-transaction after CS goes high.
+ * nRF inter-transaction delay is 15ms, so 3ms is safe. */
 #define RX_STABLE_TIMEOUT_MS 3
 
 /* Private functions ---------------------------------------------------------*/
