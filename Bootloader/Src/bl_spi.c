@@ -223,14 +223,20 @@ static uint16_t bl_spi_poll_rx(void)
         return 0;
     }
 
-    /* NSS low - receive bytes */
-    timeout_start = HAL_GetTick();
+    /* NSS low - receive bytes.
+     * Tight loop without HAL_GetTick() to support higher SPI speeds (up to ~4 MHz).
+     * Loop count timeout ~200ms at 32 MHz CPU. */
+    uint32_t loop_timeout = SystemCoreClock / 16;
 
-    while (count < BL_SPI_TRANSACTION_SIZE && (HAL_GetTick() - timeout_start < 100)) {
+    while (count < BL_SPI_TRANSACTION_SIZE && --loop_timeout > 0) {
+        /* Feed TX FIFO to keep MISO driving (idle pattern) */
+        if (SPI1->SR & SPI_SR_TXE) {
+            *(__IO uint8_t *)&SPI1->DR = BL_SPI_IDLE_PATTERN;
+        }
+
         if (SPI1->SR & SPI_SR_RXNE) {
             rx_buffer[count++] = *(__IO uint8_t *)&SPI1->DR;
             got_data = true;
-            timeout_start = HAL_GetTick();
         }
 
         /* Check if NSS went high (transaction end) */
@@ -276,21 +282,29 @@ static void bl_spi_handle_tx_poll(void)
         return;
     }
 
-    timeout_start = HAL_GetTick();
+    /* Tight polling loop optimized for speed (supports up to ~4 MHz SPI).
+     * HAL_GetTick() is NOT called inside the loop to avoid slow memory
+     * accesses that would cause TX FIFO underrun at higher SPI speeds.
+     * Timeout is based on loop count instead (~200ms at 32 MHz CPU). */
+    uint32_t loop_timeout = SystemCoreClock / 16;
 
-    while (rx_idx < BL_SPI_TRANSACTION_SIZE && (HAL_GetTick() - timeout_start < 100)) {
-        if (SPI1->SR & SPI_SR_RXNE) {
-            (void)*(__IO uint8_t *)&SPI1->DR;
-            rx_idx++;
-            timeout_start = HAL_GetTick();
-
-            if (tx_index < tx_len && (SPI1->SR & SPI_SR_TXE)) {
+    while (rx_idx < BL_SPI_TRANSACTION_SIZE && --loop_timeout > 0) {
+        /* Keep TX FIFO fed FIRST to minimize underrun risk at high SPI speeds */
+        if (SPI1->SR & SPI_SR_TXE) {
+            if (tx_index < tx_len) {
                 *(__IO uint8_t *)&SPI1->DR = tx_buffer[tx_index++];
-            } else if (SPI1->SR & SPI_SR_TXE) {
+            } else {
                 *(__IO uint8_t *)&SPI1->DR = BL_SPI_IDLE_PATTERN;
             }
         }
 
+        /* Read RX data */
+        if (SPI1->SR & SPI_SR_RXNE) {
+            (void)*(__IO uint8_t *)&SPI1->DR;
+            rx_idx++;
+        }
+
+        /* Check if NSS went high (transaction end) */
         if (rx_idx > 0 && (GPIOA->IDR & GPIO_PIN_15)) {
             break;
         }
