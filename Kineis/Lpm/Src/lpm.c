@@ -490,6 +490,16 @@ void LPM_SystemClockConfig(void)
 	__HAL_RCC_LPUART1_CLK_SLEEP_ENABLE();
 	__HAL_RCC_RTCAPB_CLK_SLEEP_ENABLE();
 
+#if defined(USE_SPI_DRIVER)
+	/* Keep SPI1, DMA1/DMAMUX1 and SPI GPIO banks clocked in SLEEP mode,
+	 * otherwise the slave cannot shift data and no DMA IT fires to wake us. */
+	__HAL_RCC_SPI1_CLK_SLEEP_ENABLE();
+	__HAL_RCC_DMA1_CLK_SLEEP_ENABLE();
+	__HAL_RCC_DMAMUX1_CLK_SLEEP_ENABLE();
+	__HAL_RCC_GPIOA_CLK_SLEEP_ENABLE();   /* NSS PA15, SCK PA1 */
+	__HAL_RCC_GPIOB_CLK_SLEEP_ENABLE();   /* MISO PB4, MOSI PB5 */
+#endif
+
 
 	/* =================== STOP support ============================= */
 	/* Configure the wake up from stop clock, back to full speed HSI. From System clock MUX,
