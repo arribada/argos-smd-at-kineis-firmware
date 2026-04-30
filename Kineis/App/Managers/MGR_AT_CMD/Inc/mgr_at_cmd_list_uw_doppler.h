@@ -15,17 +15,28 @@
  */
 bool bMGR_AT_CMD_SWS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
-/** @brief AT+SWSCFG: Get/Set SWS configuration
+/** @brief AT+SWSCFG: Get/Set SWS configuration (10 fields)
  *
- * Status: +SWSCFG=<thr_min>,<thr_max>,<air_init>,<water_init>,<interval_ms>,<max_dive_s>,<min_surf_s>
- * Action: AT+SWSCFG=<thr_min>,<thr_max>,<air_init>,<water_init>,<interval_ms>,<max_dive_s>,<min_surf_s>
+ * Status / Action:
+ *   +SWSCFG=<thr_min>,<thr_max>,<air_init>,<water_init>,
+ *           <int_surface_ms>,<int_underwater_ms>,
+ *           <max_dive_s>,<min_surface_s>,
+ *           <delay_min_us>,<delay_max_us>
+ *
+ * Surface interval should be slow (e.g. 5000ms) to save power.
+ * Underwater interval should be fast (e.g. 1000ms) for rapid surface detection.
+ * Adaptive RC charge delay bounds (typical: 200-5000us).
  */
 bool bMGR_AT_CMD_SWSCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
-/** @brief AT+TXCFG: Get/Set TX scheduling configuration
+/** @brief AT+TXCFG: Get/Set TX scheduling configuration (5 fields)
  *
- * Status: +TXCFG=<interval_s>,<growth%>,<max_interval_s>,<max_count>
- * Action: AT+TXCFG=<interval_s>,<growth%>,<max_interval_s>,<max_count>
+ * Status: +TXCFG=<interval_s>,<growth%>,<max_interval_s>,<max_count>,<jitter%>
+ * Action: AT+TXCFG=<interval_s>,<growth%>,<max_interval_s>,<max_count>[,<jitter%>]
+ *
+ * jitter% applies +/-jitter% randomization on each TX interval (max 50%).
+ * Use 0 to disable jitter. Recommended 5-15% for multi-tag deployments.
+ * The 4-field legacy form is still accepted (sets jitter to 0).
  */
 bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 

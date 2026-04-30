@@ -4,6 +4,13 @@
  *
  * Stores UW_DOPPLER configuration parameters in flash so they survive
  * power cycles. Uses the last free page in the FLASH_USER region.
+ *
+ * Version history:
+ *   v1: TX, SWS, deploy, LED
+ *   v2: + bat_min_tx_mV
+ *   v3: + jitter_percent (TX), split surface/underwater intervals (SWS),
+ *        adaptive sample delay bounds (SWS),
+ *        adapted air/water baselines + observed peak (SWS calibration runtime)
  */
 
 #ifndef MGR_NVM_H
@@ -17,16 +24,13 @@
 #include "mgr_bat.h"
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 2
+#define NVM_VERSION 3
 
 /**
- * @brief NVM config structure stored in flash
+ * @brief NVM config structure stored in flash (v3)
  *
  * Layout is designed for 64-bit aligned flash writes.
  * Total size must stay within one flash page (2KB).
- *
- * @note Version 2 added: bat_min_tx_mV field.
- *       Version 1 configs are auto-migrated on load (bat_min_tx_mV = default).
  */
 typedef struct {
 	uint32_t magic;
@@ -34,25 +38,35 @@ typedef struct {
 	uint8_t  deploy_mode;
 	uint8_t  led_mode;
 	uint8_t  _pad0;
-	/* TX config (6 bytes + 2 pad) */
+	/* TX config (8 bytes) */
 	uint16_t tx_initial_interval_s;
 	uint8_t  tx_growth_percent;
 	uint8_t  tx_max_count;
 	uint16_t tx_max_interval_s;
-	uint8_t  _pad1[2];
-	/* SWS config */
+	uint8_t  tx_jitter_percent;       /**< v3: random +/- % on TX intervals (0=off) */
+	uint8_t  _pad1;
+	/* SWS config (28 bytes) */
 	uint16_t sws_threshold_min;
 	uint16_t sws_threshold_max;
 	uint16_t sws_initial_air_baseline;
 	uint16_t sws_initial_water_baseline;
-	uint32_t sws_test_interval_ms;
+	uint32_t sws_test_interval_surface_ms;     /**< v3: was test_interval_ms (surface state) */
+	uint32_t sws_test_interval_underwater_ms;  /**< v3: new (underwater state) */
 	uint32_t sws_max_dive_time_s;
 	uint32_t sws_min_surface_time_s;
+	uint16_t sws_sample_delay_min_us;          /**< v3 */
+	uint16_t sws_sample_delay_max_us;          /**< v3 */
+	uint16_t sws_sample_delay_default_us;      /**< v3 */
 	uint8_t  sws_enabled;
-	uint8_t  _pad2[3];
-	/* Battery config (v2) */
-	uint16_t bat_min_tx_mV;        /**< Min battery voltage for TX (0 = disabled) */
+	uint8_t  _pad2;
+	/* SWS runtime calibration persistence (v3, 6 bytes + 2 pad) */
+	uint16_t sws_run_air_baseline;             /**< Adapted air baseline */
+	uint16_t sws_run_water_baseline;           /**< Adapted water baseline */
+	uint16_t sws_run_observed_peak;            /**< Observed peak ADC */
 	uint8_t  _pad3[2];
+	/* Battery config */
+	uint16_t bat_min_tx_mV;
+	uint8_t  _pad4[2];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 
@@ -63,6 +77,13 @@ bool MGR_NVM_load(void);
  *  @return true on success
  */
 bool MGR_NVM_save(void);
+
+/** @brief Save only the SWS runtime calibration (baselines, peak) to flash,
+ *         debounced to prevent flash wear. Called from app loop on state change.
+ *  @param min_interval_s  Minimum interval between flash writes (e.g. 60 seconds).
+ *  @return true if saved, false if skipped (too soon) or failed.
+ */
+bool MGR_NVM_saveCalibDebounced(uint32_t min_interval_s);
 
 /** @brief Reset NVM to factory defaults (erases flash config) */
 bool MGR_NVM_reset(void);
