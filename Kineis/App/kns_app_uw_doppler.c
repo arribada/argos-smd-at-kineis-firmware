@@ -32,7 +32,17 @@
  *   - NVM config persistence with CRC32 integrity
  *   - Reed switch shutdown cancellable by removing magnet during blink
  *
- * TX payload: 9 bytes [state(1), adc(2), tx_count(1), vbat_mV(2), reserved(3)]
+ * TX payload (UW Doppler format, MSB-first bit-packed):
+ *   [0..2]    header = 0b011 (UW Doppler type indicator)
+ *   [3..10]   last_known_pos = 0 (8 bits, reserved for future GPS hint)
+ *   [11..17]  battery_encoded (mV - 2700) / 20, capped 0..127
+ *   [18]      is_low_battery flag
+ *   [19..]    zero pad up to modulation frame size
+ *   LDA2/LDA2L: CRC8 (linkit-style poly 0x8380) at byte 23
+ *   VLDA4(24)/LDK(128): modem-handled CRC
+ *
+ * Header value 0b011 is unused by linkit-v4 and reserved here for "UW Doppler"
+ * (battery-only telemetry, no GPS). Self-describing across all modulations.
  *
  * @see kns_app_uw_doppler.h
  * @see mgr_sws.h
@@ -45,6 +55,7 @@
  */
 
 #include <stdbool.h>
+#include <string.h>
 #include "kns_app_uw_doppler.h"
 #include "main.h"
 #include "mgr_sws.h"
@@ -297,6 +308,131 @@ static void reset_tx_scheduling(void)
 	surface_tx_pending = false;
 }
 
+/* ---- Linkit-v4 compatible Argos packet helpers ---- */
+
+/* Battery encoding (Argos/linkit-v4): (mV - 2700) / 20, clamped 0..127 (7 bits).
+ * Reference: linkit-v4-core/core/services/argos_packet_builder.cpp:38
+ */
+#define ARGOS_BATT_REF_MV    2700U
+#define ARGOS_BATT_MV_PER_UNIT  20U
+#define ARGOS_BATT_MAX_VAL    127U
+
+/* Low-battery margin above hard inhibit threshold. The flag warns receivers
+ * that the device is approaching cutoff so they can deprioritize the fix.
+ */
+#define LOW_BATT_MARGIN_MV    200U
+
+/* UW Doppler packet header — 3-bit type identifier so receivers can demux
+ * this packet from linkit's Short(000)/Sensor(001)/Fastloc(010)/RSPB(100-110)/
+ * CloudLocate(111) types. Value 0b011 is unused by linkit and reserved here
+ * for "UW Doppler" (battery-only, no GPS).
+ */
+#define UW_DOPPLER_PACKET_HEADER  0b011U
+
+/* LDA2 frame: data ends at bit 184, CRC8 at byte 23 (bits 184..191).
+ * Reference: linkit-v4-core/core/services/argos_packet_builder.hpp
+ */
+#define LDA2_FRAME_BYTES   24U
+#define LDA2_DATA_BITS    184U
+
+static uint8_t argos_convert_battery_voltage(uint16_t mV)
+{
+	if (mV <= ARGOS_BATT_REF_MV)
+		return 0;
+	uint32_t v = ((uint32_t)mV - ARGOS_BATT_REF_MV) / ARGOS_BATT_MV_PER_UNIT;
+	if (v > ARGOS_BATT_MAX_VAL) v = ARGOS_BATT_MAX_VAL;
+	return (uint8_t)v;
+}
+
+/* Pack `nbits` bits of `value` into `buf` at bit offset `*bit_pos`,
+ * MSB-first big-endian (same semantics as linkit's PACK_BITS macro).
+ * Updates *bit_pos by nbits.
+ */
+static void argos_pack_bits(uint8_t *buf, uint32_t *bit_pos,
+                            uint32_t value, uint8_t nbits)
+{
+	for (int i = (int)nbits - 1; i >= 0; i--) {
+		uint8_t bit = (uint8_t)((value >> i) & 1U);
+		uint32_t byte_idx = *bit_pos >> 3;
+		uint8_t  bit_in_byte = 7U - (uint8_t)(*bit_pos & 7U);
+		buf[byte_idx] = (uint8_t)((buf[byte_idx] & ~(1U << bit_in_byte)) |
+		                          (bit << bit_in_byte));
+		(*bit_pos)++;
+	}
+}
+
+/* CRC8 used by Argos LDA2 frames (linkit-v4 core/util/crc8.hpp).
+ * Polynomial 0x8380 in 16-bit accumulator (NOT the standard 0x07 CRC8-CCITT
+ * used by the SPI protocol layer). Final CRC = (acc >> 8) & 0xFF.
+ *
+ * Computes CRC over `nbits` bits of `data`, prepending zero pad to byte-align.
+ * Result is the CRC8 byte to be stored at byte 23 of the LDA2 frame.
+ */
+static uint8_t argos_crc8(const uint8_t *data, uint32_t nbits)
+{
+	/* Linkit's algorithm zero-pads at the START so total bit count becomes a
+	 * multiple of 8. We replicate by computing remainder up front, then
+	 * iterating bytes from the padded start.
+	 */
+	uint16_t crc = 0;
+	uint32_t remainder = (8U - (nbits % 8U)) % 8U;
+	uint32_t total_bits = nbits + remainder;
+	uint32_t total_bytes = total_bits / 8U;
+
+	/* Re-pack data with leading zero-pad of `remainder` bits */
+	uint8_t buffer[LDA2_FRAME_BYTES] = {0};
+	uint32_t op_pos = remainder;
+	uint32_t ip_pos = 0;
+	uint32_t left = nbits;
+	while (left) {
+		uint32_t bits = (left > 8U) ? 8U : left;
+		uint8_t byte = 0;
+		/* Extract `bits` from data starting at ip_pos (MSB-first) */
+		for (uint32_t k = 0; k < bits; k++) {
+			uint32_t b_idx = (ip_pos + k) >> 3;
+			uint8_t  b_off = 7U - (uint8_t)((ip_pos + k) & 7U);
+			byte = (uint8_t)((byte << 1) | ((data[b_idx] >> b_off) & 1U));
+		}
+		/* Pack `bits` into buffer at op_pos (MSB-first) */
+		for (int k = (int)bits - 1; k >= 0; k--) {
+			uint32_t b_idx = op_pos >> 3;
+			uint8_t  b_off = 7U - (uint8_t)(op_pos & 7U);
+			uint8_t bit = (uint8_t)((byte >> k) & 1U);
+			buffer[b_idx] = (uint8_t)((buffer[b_idx] & ~(1U << b_off)) | (bit << b_off));
+			op_pos++;
+		}
+		ip_pos += bits;
+		left -= bits;
+	}
+
+	for (uint32_t idx = 0; idx < total_bytes; idx++) {
+		crc ^= (uint16_t)((uint16_t)buffer[idx] << 8);
+		for (int i = 0; i < 8; i++) {
+			if (crc & 0x8000U)
+				crc ^= 0x8380U;
+			crc = (uint16_t)(crc << 1);
+		}
+	}
+	return (uint8_t)(crc >> 8);
+}
+
+/* Build the UW Doppler payload — battery telemetry only, with explicit
+ * 3-bit type header so receivers can identify it on any modulation.
+ *
+ * Bit layout (MSB-first):
+ *   [0..2]    header = 0b011  (UW Doppler type)
+ *   [3..10]   last_known_pos = 0  (8 bits, reserved for future GPS hint)
+ *   [11..17]  battery_encoded     (7 bits, (mV-2700)/20 capped to 127)
+ *   [18]      is_low_battery flag (1 bit)
+ *   [19..]    zero pad
+ *   For LDA2/LDA2L: CRC8 at byte 23 (computed over first 184 bits).
+ *
+ * Frame sizes per modulation:
+ *   VLDA4 → 24 bits  (3 bytes), modem handles CRC
+ *   LDK   → 128 bits (16 bytes), modem handles CRC
+ *   LDA2  → 192 bits (24 bytes), firmware embeds CRC8 at byte 23
+ *   LDA2L → 196 bits (24.5 bytes), firmware embeds CRC8 at byte 23
+ */
 static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 {
 	struct KNS_CFG_radio_t device_radio_cfg;
@@ -308,46 +444,75 @@ static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 	appEvt->id = KNS_MAC_SEND_DATA;
 	appEvt->data_ctxt.sf = KNS_SF_NO_SERVICE;
 
-	/* Build payload: [state(1B)][adc(2B)][tx_count(1B)][vbat_mV(2B)] + padding */
-	MGR_SWS_State_t state = MGR_SWS_getState();
-	uint16_t adc = MGR_SWS_getLastADC();
+	/* Zero the entire payload buffer (zero pad is the linkit convention) */
+	memset(appEvt->data_ctxt.usrdata, 0, KNS_MAC_USRDATA_MAXLEN);
 
-	appEvt->data_ctxt.usrdata[0] = (uint8_t)state;
-	appEvt->data_ctxt.usrdata[1] = (uint8_t)(adc >> 8);
-	appEvt->data_ctxt.usrdata[2] = (uint8_t)(adc & 0xFF);
-	appEvt->data_ctxt.usrdata[3] = (uint8_t)(tx_count & 0xFF);
+	/* Resolve battery + low-battery flag */
+	uint16_t batt_mV = 0;
+	bool is_low_battery = false;
 #if defined(BSP_HAS_VBAT_ADC)
-	appEvt->data_ctxt.usrdata[4] = (uint8_t)(last_vbat_mV >> 8);
-	appEvt->data_ctxt.usrdata[5] = (uint8_t)(last_vbat_mV & 0xFF);
-#else
-	appEvt->data_ctxt.usrdata[4] = 0;
-	appEvt->data_ctxt.usrdata[5] = 0;
+	batt_mV = last_vbat_mV;
+	uint16_t min_tx_mV = MGR_BAT_getMinTxVoltage_mV();
+	if (min_tx_mV > 0)
+		is_low_battery = (batt_mV < (uint16_t)(min_tx_mV + LOW_BATT_MARGIN_MV));
 #endif
 
-	/* Fill rest with zeros */
-	for (uint16_t i = 6; i < KNS_MAC_USRDATA_MAXLEN; i++)
-		appEvt->data_ctxt.usrdata[i] = 0;
+	uint8_t batt_encoded = argos_convert_battery_voltage(batt_mV);
 
-	/* Set bitlen based on modulation */
+	/* Pack UW Doppler layout (19 useful bits, MSB-first):
+	 *   header(3) + last_known_pos(8) + batt(7) + low_batt(1) = 19 bits
+	 */
+	uint32_t bit_pos = 0;
+	const uint32_t last_known_pos = 0;  /* placeholder, no GPS */
+	argos_pack_bits(appEvt->data_ctxt.usrdata, &bit_pos, UW_DOPPLER_PACKET_HEADER, 3);
+	argos_pack_bits(appEvt->data_ctxt.usrdata, &bit_pos, last_known_pos, 8);
+	argos_pack_bits(appEvt->data_ctxt.usrdata, &bit_pos, batt_encoded, 7);
+	argos_pack_bits(appEvt->data_ctxt.usrdata, &bit_pos, is_low_battery ? 1U : 0U, 1);
+
+	/* Set bitlen based on modulation. LDA2/LDA2L need a CRC8 byte at the end
+	 * because the modem doesn't add one for LDA2; LDK/VLDA4 modem handles CRC.
+	 */
+	bool needs_lda2_crc = false;
 	switch (device_radio_cfg.modulation) {
 	case KNS_TX_MOD_LDA2:
 		appEvt->data_ctxt.usrdata_bitlen = 192;
+		needs_lda2_crc = true;
 		break;
 	case KNS_TX_MOD_LDA2L:
 		appEvt->data_ctxt.usrdata_bitlen = 196;
+		needs_lda2_crc = true;
 		break;
 	case KNS_TX_MOD_VLDA4:
+		/* 24-bit frame: 19 useful + 5 zero pad. Modem handles CRC. */
 		appEvt->data_ctxt.usrdata_bitlen = 24;
 		break;
 	case KNS_TX_MOD_LDK:
+		/* 128-bit frame: 19 useful + 109 zero pad. Modem handles CRC. */
 		appEvt->data_ctxt.usrdata_bitlen = 128;
 		break;
 	default:
 		MGR_LOG_DEBUG("[UW_DPL] Unknown modulation %d, fallback to LDA2\r\n",
 			device_radio_cfg.modulation);
-		appEvt->data_ctxt.usrdata_bitlen = 192; /* LDA2 fallback */
+		appEvt->data_ctxt.usrdata_bitlen = 192;
+		needs_lda2_crc = true;
 		break;
 	}
+
+	/* LDA2/LDA2L: compute CRC8 over the first 184 bits, store at byte 23 */
+	if (needs_lda2_crc) {
+		uint8_t crc = argos_crc8(appEvt->data_ctxt.usrdata, LDA2_DATA_BITS);
+		appEvt->data_ctxt.usrdata[LDA2_FRAME_BYTES - 1] = crc;
+	}
+
+	MGR_LOG_DEBUG("[UW_DPL] TX payload: hdr=0x%X batt=%umV(enc=%u) low=%u "
+		"mod=%d bits=%u data=%02X%02X%02X...%02X\r\n",
+		UW_DOPPLER_PACKET_HEADER, batt_mV, batt_encoded,
+		is_low_battery ? 1 : 0, device_radio_cfg.modulation,
+		appEvt->data_ctxt.usrdata_bitlen,
+		appEvt->data_ctxt.usrdata[0], appEvt->data_ctxt.usrdata[1],
+		appEvt->data_ctxt.usrdata[2],
+		needs_lda2_crc ? appEvt->data_ctxt.usrdata[LDA2_FRAME_BYTES - 1] : 0);
+
 	return true;
 }
 
@@ -674,8 +839,10 @@ void KNS_APP_uw_doppler_loop(void)
 				/* Pre-warmup TCXO: start it now so it's stable by the time
 				 * the first TX fires. Save current warmup setting so we can
 				 * temporarily zero it for the first TX (avoid double wait).
+				 * Re-entrance guard: don't overwrite saved value if a previous
+				 * skip is still pending (would store the already-zeroed value).
 				 */
-				if (deploy_mode) {
+				if (deploy_mode && !tcxo_first_tx_skip) {
 					MCU_MISC_TCXO_get_warmup(&tcxo_warmup_saved_ms);
 					MCU_MISC_TCXO_Force_State(true);
 					tcxo_first_tx_skip = true;
@@ -785,6 +952,11 @@ void KNS_APP_uw_doppler_loop(void)
 			transition_to(UW_DOPPLER_WAIT_TX_DONE);
 		} else {
 			MGR_LOG_DEBUG("[UW_DPL] TX push failed: 0x%x\r\n", status);
+			/* Restore TCXO warmup since the MAC never picked up the request */
+			if (tcxo_first_tx_skip) {
+				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = false;
+			}
 #if defined(BSP_HAS_LED_RGB)
 			MGR_LED_off();
 #endif
@@ -807,6 +979,11 @@ void KNS_APP_uw_doppler_loop(void)
 			MGR_LOG_DEBUG("[UW_DPL] TX done timeout\r\n");
 			MGR_EVTLOG_log(EVT_TIMEOUT, (uint16_t)UW_DOPPLER_WAIT_TX_DONE);
 			MGR_ERR_log(ERR_TX_TIMEOUT);
+			/* Restore TCXO warmup: TX_DONE never fired, MAC may be stuck */
+			if (tcxo_first_tx_skip) {
+				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = false;
+			}
 #if defined(BSP_HAS_LED_RGB)
 			MGR_LED_off();
 #endif
