@@ -60,6 +60,7 @@
 #include KINEIS_SW_ASSERT_H
 #include "mgr_log.h"
 #include "mgr_lpm.h"
+#include "mcu_misc.h"
 #if defined(USE_UART_DRIVER)
 #include "mgr_at_cmd.h"
 #include "usart.h"
@@ -109,15 +110,18 @@ volatile uint32_t g_uw_doppler_state_for_err = 0;
 static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 	.tx_initial_interval_s = 10,
 	.tx_growth_percent     = 10,
-	.tx_max_interval_s     = 600,
-	.tx_max_count          = 0,  /* unlimited */
+	.tx_max_interval_s     = 180,  /**< 3min cap: better Argos pass coverage for Doppler */
+	.tx_max_count          = 0,    /**< unlimited */
+	.tx_jitter_percent     = 10,   /**< +/-10% randomization to avoid TX collisions */
 };
 
 /* Deploy mode: 1 = deployed (TX enabled), 0 = not deployed (SWS runs but no TX) */
 static uint8_t deploy_mode = 1;
 
 /* Boot window: AT command received during boot window keeps UART active */
+#if defined(USE_UART_DRIVER)
 static bool boot_window_at_received = false;
+#endif
 
 #define BOOT_WINDOW_MS  5000  /**< UART listen window at boot (5s) */
 
@@ -150,6 +154,22 @@ static bool     shutdown_triggered = false; /**< Shutdown sequence started */
 #if defined(BSP_HAS_VBAT_ADC)
 static uint16_t last_vbat_mV = 0;          /**< Last battery voltage reading */
 #endif
+
+/* TCXO pre-warmup: started on UW->SURFACE so 1st TX skips warmup wait */
+static bool     tcxo_first_tx_skip = false;   /**< Apply 0ms warmup for next TX */
+static uint32_t tcxo_warmup_saved_ms = 0;     /**< Original warmup, restored after 1st TX */
+
+/* Periodic SWS calibration save to flash (debounced) */
+#define NVM_CALIB_SAVE_MIN_INTERVAL_S  300  /**< Min 5 min between flash writes */
+
+/* Simple LCG for jitter (no need for cryptographic randomness) */
+static uint32_t prng_state = 0xA5A5A5A5UL;
+static uint32_t prng_next(void)
+{
+	/* Numerical Recipes LCG */
+	prng_state = prng_state * 1664525UL + 1013904223UL;
+	return prng_state;
+}
 
 /* LPM client: prevent SHUTDOWN during UW_DOPPLER operation */
 static enum MgrLpm_LPM_t uw_doppler_lpmReq(void)
@@ -250,6 +270,21 @@ static uint32_t compute_next_interval_ms(uint32_t n)
 			break;
 		}
 		interval_ms = (uint32_t)next;
+	}
+
+	/* Apply jitter: random +/- jitter_percent of base interval.
+	 * Avoids RF collisions when multiple tags surface together.
+	 */
+	if (tx_cfg.tx_jitter_percent > 0 && interval_ms > 0) {
+		uint32_t span_ms = (interval_ms * tx_cfg.tx_jitter_percent) / 100;
+		if (span_ms > 0) {
+			/* Map prng to [-span_ms, +span_ms] */
+			uint32_t r = prng_next();
+			int32_t delta = (int32_t)(r % (2 * span_ms + 1)) - (int32_t)span_ms;
+			int64_t jittered = (int64_t)interval_ms + delta;
+			if (jittered < 1000) jittered = 1000;  /* min 1s safety */
+			interval_ms = (uint32_t)jittered;
+		}
 	}
 	return interval_ms;
 }
@@ -369,6 +404,13 @@ static bool process_mac_events(void)
 		case KNS_MAC_TX_DONE:
 			MGR_LOG_DEBUG("[UW_DPL] TX done (#%lu)\r\n", tx_count);
 			MGR_EVTLOG_log(EVT_TX_DONE, 0);
+			/* Restore TCXO warmup after first TX completes */
+			if (tcxo_first_tx_skip) {
+				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = false;
+				MGR_LOG_DEBUG("[UW_DPL] TCXO warmup restored to %lums\r\n",
+					(unsigned long)tcxo_warmup_saved_ms);
+			}
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE)
 				transition_to(UW_DOPPLER_MONITORING);
 			break;
@@ -376,6 +418,10 @@ static bool process_mac_events(void)
 		case KNS_MAC_TX_TIMEOUT:
 			MGR_LOG_DEBUG("[UW_DPL] TX timeout\r\n");
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, 0);
+			if (tcxo_first_tx_skip) {
+				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = false;
+			}
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE)
 				transition_to(UW_DOPPLER_MONITORING);
 			break;
@@ -383,6 +429,10 @@ static bool process_mac_events(void)
 		case KNS_MAC_ERROR:
 			MGR_LOG_DEBUG("[UW_DPL] MAC error: %d\r\n", srvcEvt.status);
 			MGR_EVTLOG_log(EVT_MAC_ERROR, (uint16_t)srvcEvt.status);
+			if (tcxo_first_tx_skip) {
+				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = false;
+			}
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE)
 				transition_to(UW_DOPPLER_MONITORING);
 			else if (uw_doppler_state == UW_DOPPLER_WAIT_MAC_READY)
@@ -404,6 +454,14 @@ void KNS_APP_uw_doppler_init(void)
 	reset_tx_scheduling();
 	mac_init_retries = 0;
 	state_enter_tick = HAL_GetTick();
+
+	/* Seed PRNG with a runtime-varying value so each device/boot picks a
+	 * different jitter sequence — important to avoid clustered TX patterns
+	 * across a multi-tag deployment.
+	 */
+	prng_state ^= HAL_GetTick();
+	prng_state ^= (uint32_t)(uintptr_t)&prng_state;
+	(void)prng_next();  /* discard first value */
 
 	/* Start IWDG watchdog early (16s timeout) - before any slow init */
 	MGR_WDG_init();
@@ -612,6 +670,16 @@ void KNS_APP_uw_doppler_loop(void)
 				MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
 				reset_tx_scheduling();
 				surface_tx_pending = true;
+
+				/* Pre-warmup TCXO: start it now so it's stable by the time
+				 * the first TX fires. Save current warmup setting so we can
+				 * temporarily zero it for the first TX (avoid double wait).
+				 */
+				if (deploy_mode) {
+					MCU_MISC_TCXO_get_warmup(&tcxo_warmup_saved_ms);
+					MCU_MISC_TCXO_Force_State(true);
+					tcxo_first_tx_skip = true;
+				}
 #if defined(BSP_HAS_LED_RGB)
 				MGR_LED_blink(MGR_LED_CYAN, 3, 200, 200);
 #endif
@@ -620,10 +688,22 @@ void KNS_APP_uw_doppler_loop(void)
 				MGR_LOG_DEBUG("[UW_DPL] Underwater, stopping TX\r\n");
 				MGR_EVTLOG_log(EVT_SWS_UNDERWATER, MGR_SWS_getLastADC());
 				reset_tx_scheduling();
+				/* If a TCXO pre-warmup was pending, release it */
+				if (tcxo_first_tx_skip) {
+					MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+					MCU_MISC_TCXO_Force_State(false);
+					tcxo_first_tx_skip = false;
+				}
 #if defined(BSP_HAS_LED_RGB)
 				MGR_LED_blink(MGR_LED_YELLOW, 3, 200, 200);
 #endif
 			}
+
+			/* Persist updated baselines/peak to flash (debounced).
+			 * State changes are the natural moment to save: calibration just
+			 * finished applying for the previous state.
+			 */
+			(void)MGR_NVM_saveCalibDebounced(NVM_CALIB_SAVE_MIN_INTERVAL_S);
 		}
 
 		/* TX scheduling logic - only TX if deployed */
@@ -682,6 +762,15 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 			transition_to(UW_DOPPLER_MONITORING);
 			return;
+		}
+
+		/* For the very first TX after surface detection, the TCXO has been
+		 * pre-warmed since UW->SURFACE; tell the MAC to skip its warmup wait
+		 * by setting it to 0 just before the push. Restore on TX done.
+		 */
+		if (tcxo_first_tx_skip) {
+			MCU_MISC_TCXO_set_warmup(0);
+			MGR_LOG_DEBUG("[UW_DPL] First TX: TCXO warmup bypassed (was prewarmed)\r\n");
 		}
 
 		enum KNS_status_t status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);

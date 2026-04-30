@@ -27,8 +27,9 @@
 typedef struct {
 	uint16_t tx_initial_interval_s; /**< Interval before 2nd TX after surface (default 10s) */
 	uint8_t  tx_growth_percent;     /**< Interval growth % between TXs (default 10) */
-	uint16_t tx_max_interval_s;     /**< Max interval cap (default 600s) */
+	uint16_t tx_max_interval_s;     /**< Max interval cap (default 180s) */
 	uint8_t  tx_max_count;          /**< Max TX count per surface event (0 = unlimited) */
+	uint8_t  tx_jitter_percent;     /**< Random +/-% applied per TX interval (default 10, 0=off) */
 } KNS_APP_UwDopplerTxCfg_t;
 
 /* ---- API ---- */
