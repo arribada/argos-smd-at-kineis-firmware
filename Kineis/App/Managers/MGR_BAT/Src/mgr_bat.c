@@ -1,16 +1,24 @@
 /**
  * @file    mgr_bat.c
- * @brief   Battery monitoring via internal VBAT/3 ADC channel
+ * @brief   Battery monitoring via external resistor divider on PB13 (ADC_IN0)
  *
- * Uses the STM32WL55 internal ADC_CHANNEL_VBAT which reads VBAT/3.
- * VBAT_EN (PB9) is driven HIGH before measurement for external circuit.
+ * Hardware (SMD_STDALONE schematic):
+ *   VBAT --[Q2 PMOS]-- R4(120k) --+-- R5(300k) -- GND
+ *                                 |
+ *                                PB13 (ADC_IN0, BAT_SENSE)
+ *
+ *   PB9 (VBAT_EN) drives Q1 NPN that pulls Q2 gate low to enable the divider.
+ *   When disabled, Q2 is off and R5 pulls PB13 to GND (no idle current).
+ *
+ * Divider ratio: V_PB13 = VBAT * R5 / (R4 + R5) = VBAT * 300/420 = VBAT * 5/7
+ * Reverse:       VBAT   = V_PB13 * 7/5 = V_PB13 * 1.4
  *
  * Measurement sequence:
- *   1. Enable VBAT_EN (PB9 HIGH) + 2ms settle
- *   2. Read VREFINT (factory calibrated at 3300mV)
- *   3. Read VBAT/3 channel
- *   4. Compute: VDDA = 3300 * CAL / raw_vref
- *   5. Compute: VBAT = raw_vbat * VDDA * 3 / 4095
+ *   1. Enable VBAT_EN (PB9 HIGH) + ~2ms settle (R4*Cparasitic ~ µs, but generous)
+ *   2. Read VREFINT (factory calibrated at 3300mV on STM32WL5x)
+ *   3. Read PB13 via ADC_CHANNEL_0
+ *   4. Compute: VDDA   = 3300 * VREFINT_CAL / raw_vref
+ *   5. Compute: VBAT   = raw_pb13 * VDDA * (R4+R5) / (4095 * R5)
  *   6. Disable VBAT_EN (PB9 LOW)
  *   7. Restore ADC to SWS channel (ADC_CHANNEL_7)
  *
@@ -35,6 +43,13 @@
 #define VREFINT_CAL_ADDR  ((uint16_t *)0x1FFF75AAUL)
 #endif
 #define MGR_BAT_VREFINT_CAL_MV  3300  /* mV reference for factory calibration (STM32WL55) */
+
+/* External divider on PB13 (BAT_SENSE).
+ * R4=120k from VBAT, R5=300k to GND. ADC sees VBAT * R5 / (R4+R5).
+ * Recover VBAT by multiplying ADC voltage by (R4+R5)/R5.
+ * Values in kOhm; only the ratio matters for the formula. */
+#define MGR_BAT_DIV_R_TOP_KOHM   120
+#define MGR_BAT_DIV_R_BOT_KOHM   300
 
 /* Last known good reading — returned on ADC failure instead of 0 */
 static uint16_t last_good_vbat_mV = 0;
@@ -63,10 +78,10 @@ uint16_t MGR_BAT_readVoltage_mV(void)
 	uint32_t raw_vbat = 0;
 	uint32_t raw_vref = 0;
 
-	/* Enable external VBAT measurement circuit */
+	/* Enable external VBAT measurement circuit (PB9 HIGH -> Q1 ON -> Q2 ON -> divider live).
+	 * Settle: R4(120k) charging parasitic Cpb13 is ~µs, HAL_Delay(2) is generous. */
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_SET);
-	/* Busy-wait ~2ms for voltage settle (SysTick-independent) */
-	{ volatile uint32_t d = 2 * 8000; while (d--) __NOP(); }
+	HAL_Delay(2);
 
 	/* Read VREFINT first for accurate voltage calculation */
 	sConfig.Channel = ADC_CHANNEL_VREFINT;
@@ -81,8 +96,10 @@ uint16_t MGR_BAT_readVoltage_mV(void)
 		HAL_ADC_Stop(&hadc);
 	}
 
-	/* Read VBAT/3 internal channel */
-	sConfig.Channel = ADC_CHANNEL_VBAT;
+	/* Read external BAT_SENSE on PB13 = ADC_IN0 (NOT internal VBAT/3 channel).
+	 * The board routes VBAT through an external 120k/300k divider to PB13;
+	 * the chip's internal VBAT pin is NOT connected to the battery here. */
+	sConfig.Channel = ADC_CHANNEL_0;
 	sConfig.Rank = ADC_REGULAR_RANK_1;
 	sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 	if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
@@ -117,10 +134,17 @@ cleanup:
 	uint16_t vrefint_cal = *VREFINT_CAL_ADDR;
 	uint32_t vdda_mV = (uint32_t)MGR_BAT_VREFINT_CAL_MV * vrefint_cal / raw_vref;
 
-	/* VBAT = raw_vbat * VDDA / 4095 * 3 (internal /3 divider) */
-	uint32_t vbat_mV = raw_vbat * vdda_mV * 3 / 4095;
+	/* PB13 voltage from ADC: V_PB13 = raw * VDDA / 4095
+	 * Then de-divide:        VBAT   = V_PB13 * (R4+R5) / R5
+	 * Combined in one expression to keep integer precision (uint64 intermediate
+	 * because raw_vbat * vdda_mV * (R4+R5) overflows 32 bits at upper range:
+	 * 4095 * 3300 * 420 = 5.67e9). */
+	uint32_t div_num = MGR_BAT_DIV_R_TOP_KOHM + MGR_BAT_DIV_R_BOT_KOHM;
+	uint32_t div_den = MGR_BAT_DIV_R_BOT_KOHM;
+	uint32_t vbat_mV = (uint32_t)(
+		(uint64_t)raw_vbat * vdda_mV * div_num / ((uint64_t)4095 * div_den));
 
-	MGR_LOG_DEBUG("[BAT] raw_vref=%lu raw_vbat=%lu vdda=%lumV vbat=%lumV\r\n",
+	MGR_LOG_DEBUG("[BAT] raw_vref=%lu raw_pb13=%lu vdda=%lumV vbat=%lumV\r\n",
 		raw_vref, raw_vbat, vdda_mV, vbat_mV);
 
 	last_good_vbat_mV = (uint16_t)vbat_mV;

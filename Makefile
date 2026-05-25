@@ -10,6 +10,14 @@
 #   2015-07-22 - first version
 # ------------------------------------------------
 
+# Force bash as the shell on Windows (Git Bash). The Makefile uses bash syntax
+# (if !(...), [ -n ... ], command -v, single-quoted sed scripts, mkdir -p),
+# so running under cmd.exe breaks every $(shell ...) and recipe line.
+ifeq ($(OS),Windows_NT)
+SHELL := C:/Program Files/Git/bin/bash.exe
+.SHELLFLAGS := -c
+endif
+
 current_makefile := $(firstword $(MAKEFILE_LIST))
 current_repo_status := $(shell  if !(git status --porcelain); then echo ''; fi)
 current_repo_commit := $(shell  if !(git log -1 --format="%h"); then echo 'unknow'; fi)
@@ -28,8 +36,12 @@ DEBUG = 1
 VERBOSE = 1
 USE_BAREMETAL = 1
 
-# Python executable (auto-detect python3 on Linux/WSL)
-ifeq ($(shell command -v python3 2>/dev/null),)
+# Python executable
+# On Windows, `python3` is usually the Microsoft Store stub (exits 9009 with a
+# "install from Store" message), so prefer `python`. On Linux/macOS use python3.
+ifeq ($(OS),Windows_NT)
+PYTHON ?= python
+else ifeq ($(shell command -v python3 2>/dev/null),)
 PYTHON ?= python
 else
 PYTHON ?= python3
@@ -709,10 +721,22 @@ $(BOOTLOADER_BIN): bootloader
 #######################################
 # Flash targets
 #######################################
-# JLink executable - uses JLinkExe from PATH (install J-Link software)
-# JLink executable - auto-detect: Linux JLinkExe or Windows via WSL
+# JLink executable - auto-detect:
+#   1. JLinkExe on PATH (Linux/macOS, or Windows if user added it)
+#   2. JLink.exe on PATH (Windows)
+#   3. C:/Program Files/SEGGER/JLink/JLink.exe (stable Windows install path)
+#   4. Newest C:/Program Files/SEGGER/JLink_V*/JLink.exe (versioned fallback)
+# Override by passing JLINK_EXE=... on the make command line.
 ifeq ($(shell command -v JLinkExe 2>/dev/null),)
-JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe"
+ifeq ($(shell command -v JLink.exe 2>/dev/null),)
+JLINK_DEFAULT := C:/Program Files/SEGGER/JLink/JLink.exe
+ifeq ($(wildcard $(JLINK_DEFAULT)),)
+JLINK_DEFAULT := $(lastword $(sort $(wildcard C:/Program\ Files/SEGGER/JLink_V*/JLink.exe)))
+endif
+JLINK_EXE ?= "$(JLINK_DEFAULT)"
+else
+JLINK_EXE ?= JLink.exe
+endif
 else
 JLINK_EXE ?= JLinkExe
 endif

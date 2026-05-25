@@ -22,6 +22,7 @@
 #include "stm32wlxx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>  /* snprintf in HardFault_Handler */
 #if defined(USE_UW_DOPPLER_APP)
 #include "mgr_err.h"
 extern volatile uint32_t g_uw_doppler_state_for_err;
@@ -118,10 +119,31 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-  /* Direct UART output to detect HardFault */
+  /* Direct UART output to detect HardFault. The HAL_UART_Transmit calls are
+   * synchronous (blocking with timeout) so the bytes physically reach the
+   * host UART before NVIC_SystemReset() fires — log ring buffer would not. */
   extern UART_HandleTypeDef hlpuart1;
-  static const char msg[] = "\r\n!!! HARDFAULT !!!\r\n";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
+  static char buf[96];
+  static const char hdr[] = "\r\n!!! HARDFAULT !!!\r\n";
+  HAL_UART_Transmit(&hlpuart1, (uint8_t*)hdr, sizeof(hdr)-1, 100);
+
+  /* Dump Cortex-M4 fault registers to pinpoint the cause:
+   *   HFSR  - hard fault status (FORCED -> escalated from another fault)
+   *   CFSR  - configurable fault status (UFSR<<16 | BFSR<<8 | MMFSR)
+   *   BFAR  - bus-fault address (valid if BFSR.BFARVALID)
+   *   MMFAR - mem-manage address (valid if MMFSR.MMARVALID)
+   * Reference: ARMv7-M Architecture Reference Manual, B3.2.15-B3.2.18. */
+  uint32_t hfsr  = SCB->HFSR;
+  uint32_t cfsr  = SCB->CFSR;
+  uint32_t bfar  = SCB->BFAR;
+  uint32_t mmfar = SCB->MMFAR;
+  int n = snprintf(buf, sizeof(buf),
+    "HFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
+    (unsigned long)hfsr, (unsigned long)cfsr,
+    (unsigned long)bfar, (unsigned long)mmfar);
+  if (n > 0)
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, (uint16_t)n, 100);
+
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   MGR_ERR_LOG_FAULT(ERR_HARDFAULT, g_uw_doppler_state_for_err);
 #endif

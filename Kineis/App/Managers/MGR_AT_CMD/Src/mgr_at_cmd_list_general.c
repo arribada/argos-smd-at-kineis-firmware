@@ -320,19 +320,41 @@ bool bMGR_AT_CMD_LPM_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	uint16_t lpm; /** @todo PRODEV-88:need to keep uint16_t remove compilation error.
 	 	       * leads to hardfault error if using uint8_t
 	 	       */
+	uint16_t forced;
+	enum MgrLpm_LPM_t forced_cur;
 
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
-		MCU_AT_CONSOLE_send("+LPM=0x%X\r\n", lpm_config.allowedLPMbitmap);
+		forced_cur = LPM_getForcedMode();
+		if (forced_cur != LOW_POWER_MODE_NONE)
+			MCU_AT_CONSOLE_send("+LPM=0x%X,0x%X\r\n",
+				lpm_config.allowedLPMbitmap, (unsigned int)forced_cur);
+		else
+			MCU_AT_CONSOLE_send("+LPM=0x%X\r\n", lpm_config.allowedLPMbitmap);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 
-		/** Extract USER DATA from pu8_cmdParamString */
-		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString, (const char *)"AT+LPM=0x%hX", &lpm);
+		/** Two accepted forms:
+		 *   AT+LPM=0xXX          -> set allowed bitmap, clear forced mode
+		 *   AT+LPM=0xXX,0xYY     -> set bitmap AND force mode (YY=0 clears)
+		 */
+		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString,
+			(const char *)"AT+LPM=0x%hX,0x%hX", &lpm, &forced);
+		if (scanParamRes == 2) {
+			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
+				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
+			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
+			LPM_setForcedMode((enum MgrLpm_LPM_t)forced);
+			return bMGR_AT_CMD_logSucceedMsg();
+		}
+
+		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString,
+			(const char *)"AT+LPM=0x%hX", &lpm);
 		if (scanParamRes == 1) {
 			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
 				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
 			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
+			LPM_setForcedMode(LOW_POWER_MODE_NONE);
 			return bMGR_AT_CMD_logSucceedMsg();
 		}
 		return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);

@@ -2,6 +2,12 @@
 # Bootloader Makefile for STM32WL55
 ##########################################################################################################################
 
+# Force bash as the shell on Windows (Git Bash). Recipes use bash/Unix syntax.
+ifeq ($(OS),Windows_NT)
+SHELL := C:/Program Files/Git/bin/bash.exe
+.SHELLFLAGS := -c
+endif
+
 ######################################
 # target
 ######################################

@@ -24,9 +24,12 @@
 /* Includes ------------------------------------------------------------------------------------ */
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include "main.h"
 #include "mgr_log.h"
+#include "usart.h"
+#include "stm32wlxx_hal.h"
 
 #pragma GCC visibility push(default)
 
@@ -46,6 +49,13 @@
   */
 void kns_assert_failed(uint8_t *file, uint32_t line)
 {
+  /* Direct synchronous UART write so the file/line reaches the host before reset. */
+  static char ka_buf[160];
+  int ka_n = snprintf(ka_buf, sizeof(ka_buf),
+    "\r\n!!! KNS_ASSERT %s:%lu !!!\r\n",
+    (file ? (const char *)file : "(null)"), (unsigned long)line);
+  if (ka_n > 0)
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)ka_buf, (uint16_t)ka_n, 200);
   MGR_LOG_DEBUG("ASSERT FAIL: %ld %s\r\n", line, file);
   Error_Handler();
 }

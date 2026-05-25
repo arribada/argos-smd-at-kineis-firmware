@@ -18,6 +18,7 @@
 #include KINEIS_SW_ASSERT_H
 #include "kns_app_conf.h"  // for STM32 LPM definitions
 #include STM32_HAL_H
+#include "mgr_log.h"
 #ifdef USE_BAREMETAL
 #include "kns_q.h"
 #endif
@@ -117,6 +118,9 @@ enum KNS_status_t MGR_LPM_enter(struct MgrLpm_EnvConfig_t env_config,
 
 	//> Notify each client with the deepest chosen LPM
 	vMGR_LPM_clientNotifyEnter(deepest_lpm);
+
+	MGR_LOG_DEBUG("LPM enter: mode=0x%02X (allowed=0x%02X)\r\n",
+		(unsigned int)deepest_lpm, (unsigned int)env_config.allowedLPMbitmap);
 
 	switch (deepest_lpm) {
 	case LOW_POWER_MODE_NONE:

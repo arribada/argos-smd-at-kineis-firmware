@@ -248,8 +248,8 @@ static void migrate_v1_to_v3(const NVM_Config_v1_t *v1, NVM_Config_t *out)
 	out->sws_max_dive_time_s     = v1->sws_max_dive_time_s;
 	out->sws_min_surface_time_s  = v1->sws_min_surface_time_s;
 	out->sws_sample_delay_min_us     = 200;
-	out->sws_sample_delay_max_us     = 5000;
-	out->sws_sample_delay_default_us = 1000;
+	out->sws_sample_delay_max_us     = 1000;
+	out->sws_sample_delay_default_us = 500;
 	out->sws_enabled             = v1->sws_enabled;
 	out->bat_min_tx_mV           = MGR_BAT_DEFAULT_MIN_TX_MV;
 	/* Runtime calibration left at 0: not stored in v1 */
@@ -276,8 +276,8 @@ static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
 	out->sws_max_dive_time_s     = v2->sws_max_dive_time_s;
 	out->sws_min_surface_time_s  = v2->sws_min_surface_time_s;
 	out->sws_sample_delay_min_us     = 200;
-	out->sws_sample_delay_max_us     = 5000;
-	out->sws_sample_delay_default_us = 1000;
+	out->sws_sample_delay_max_us     = 1000;
+	out->sws_sample_delay_default_us = 500;
 	out->sws_enabled             = v2->sws_enabled;
 	out->bat_min_tx_mV           = v2->bat_min_tx_mV;
 }

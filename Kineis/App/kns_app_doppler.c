@@ -423,7 +423,10 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 	HAL_PWREx_EnablePullUpPullDownConfig();
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);  /* EXT_WKUP */
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);   /* PA off */
+#if !defined(SMD_STDALONE)
+	/* STDALONE: PC1 = TPS63901 SEL — pull held externally by R11 (10M to VBAT) */
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);    /* VSEL high */
+#endif
 
 #if defined(BSP_HAS_PWR_LATCH)
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);  /* PWR_LATCH off */

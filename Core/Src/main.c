@@ -273,11 +273,13 @@ static void IDLE_task(void)
 
   if (lpm_config.allowedLPMbitmap & (LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN))
   {
-    /** wait wakeup pin to turn low (unplug debugger or by user) */
-    while(HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET) {
-      if (KNS_Q_isEvtInSomeQ() || MGR_AT_CMD_isPendingAt())
-        return;
-    }
+    /** Don't enter STANDBY/SHUTDOWN while the wakeup pin is already asserted
+     *  HIGH — would cause immediate spurious wake. Yield back to the OS so
+     *  other tasks (notably the SPI command handler) keep running until the
+     *  master de-asserts PB3. The previous version busy-waited here, which
+     *  starved the APP task and broke SPI traffic. */
+    if (HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET)
+      return;
     /** Debounce + grace period for pending SPI/UART events before entering LPM */
     HAL_Delay(50);
   }
@@ -302,7 +304,8 @@ static void IDLE_task(void)
   }
 #else // end of USE_BAREMETAL
   if (lpm_config.allowedLPMbitmap & (LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN))
-    while(HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET);
+    if (HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET)
+      return;
 
   /** Enter low power mode has there is no event preempting */
   LPM_enter();
@@ -783,13 +786,21 @@ int main(void)
     break;
   }
 
+  /** Capture wake-source flags before they get cleared by HAL.
+   * Tagged unused so release builds (where MGR_LOG_DEBUG compiles out)
+   * don't trip -Werror=unused-variable. */
+  uint32_t boot_pwr_sr1 __attribute__((unused)) = PWR->SR1;
+  uint32_t boot_rcc_csr __attribute__((unused)) = RCC->CSR;
+
   /** Logging purpose only, mention which LPM exited */
   switch (LPM_getMode()) {
   case LOW_POWER_MODE_SHUTDOWN:
-    MGR_LOG_DEBUG("==== WAKEUP from SHUTDOWN ====\r\n");
+    MGR_LOG_DEBUG("==== WAKEUP from SHUTDOWN ==== PWR_SR1=0x%08lX RCC_CSR=0x%08lX\r\n",
+      (unsigned long)boot_pwr_sr1, (unsigned long)boot_rcc_csr);
     break;
   case LOW_POWER_MODE_STANDBY:
-    MGR_LOG_DEBUG("==== WAKEUP from STANDBY ====\r\n");
+    MGR_LOG_DEBUG("==== WAKEUP from STANDBY ==== PWR_SR1=0x%08lX RCC_CSR=0x%08lX\r\n",
+      (unsigned long)boot_pwr_sr1, (unsigned long)boot_rcc_csr);
     break;
   case LOW_POWER_MODE_STOP:
     MGR_LOG_DEBUG("==== WAKEUP from STOP MODE ====\r\n");
@@ -799,9 +810,11 @@ int main(void)
     break;
   default:
     if (bIsWakeUpFromReset)
-      MGR_LOG_DEBUG("==== WAKEUP from RESET ====\r\n");
+      MGR_LOG_DEBUG("==== WAKEUP from RESET ==== RCC_CSR=0x%08lX\r\n",
+        (unsigned long)boot_rcc_csr);
     else
-      MGR_LOG_DEBUG("==== WAKEUP from POWER OFF ====\r\n");
+      MGR_LOG_DEBUG("==== WAKEUP from POWER OFF ==== RCC_CSR=0x%08lX\r\n",
+        (unsigned long)boot_rcc_csr);
     MGR_LOG_DEBUG("Running build, versions:\r\n");
     MGR_LOG_DEBUG("- FW            %s\r\n", uc_fw_vers_commit_id);
     MGR_LOG_DEBUG("- libkineis.a   %s\r\n", libkineis_info);
@@ -867,6 +880,10 @@ int main(void)
 #endif
 #if defined(BSP_HAS_LED_RGB)
   MGR_LED_init();
+  /* HW sanity: cycle R, G, B, WHITE for 400ms each (blocking, ~1.6s).
+   * Bypasses led_mode check so it always runs — proves the GPIO/LED chain
+   * works independently of NVM-loaded led_mode and the blink state machine. */
+  MGR_LED_bootTest();
 #endif
   /* Initialize AT command parser for UW_DOPPLER AT commands (SWS, TXCFG, LED, etc.) */
 #if defined(USE_UART_DRIVER)
@@ -1008,10 +1025,28 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
+  extern volatile uint32_t g_uw_doppler_state_for_err;
+  extern UART_HandleTypeDef hlpuart1;
+  /* Direct synchronous UART write — bypasses MGR_LOG ring buffer so the
+   * message physically leaves the chip before NVIC_SystemReset(). At 9600
+   * baud, 80 bytes ≈ 80 ms, well within the 200 ms HAL timeout. */
+  static char err_buf[96];
+  int err_n = snprintf(err_buf, sizeof(err_buf),
+    "\r\n!!! Error_Handler: state=%lu tick=%lu !!!\r\n",
+    (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
+  if (err_n > 0)
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)err_buf, (uint16_t)err_n, 200);
+  MGR_LOG_DEBUG("!!! Error_Handler: state=%lu tick=%lu\r\n",
+    (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
+#else
   MGR_LOG_DEBUG("Error_Handler\r\n");
+#endif
 
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
-  /* Tracker must ALWAYS reset, even in DEBUG — device must never be stuck */
+  /* Tracker must ALWAYS reset, even in DEBUG — device must never be stuck.
+   * MGR_ERR_logAndReset() flushes the log ring buffer before resetting so
+   * the assert/file/line lines above actually reach the host UART. */
   MGR_ERR_logAndReset(ERR_ASSERT);
   /* Never reaches here */
 
@@ -1055,8 +1090,14 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* Direct synchronous UART write so the file/line reaches the host before reset. */
+  extern UART_HandleTypeDef hlpuart1;
+  static char af_buf[160];
+  int af_n = snprintf(af_buf, sizeof(af_buf),
+    "\r\n!!! HAL_ASSERT %s:%lu !!!\r\n",
+    (file ? (const char *)file : "(null)"), (unsigned long)line);
+  if (af_n > 0)
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)af_buf, (uint16_t)af_n, 200);
   MGR_LOG_DEBUG("ASSERT FAIL: %lu %s\r\n", line, file);
   Error_Handler();
   /* USER CODE END 6 */

@@ -135,16 +135,16 @@
 
 static MGR_SWS_Config_t sws_config = {
 	.threshold_min                = 0,
-	.threshold_max                = 2000,  /* 8000/4 */
+	.threshold_max                = 4095,  /* 12-bit ADC full scale — accept saturated readings (bench short, real seawater can hit ~4000). Lower to reject only truly invalid readings. */
 	.initial_air_baseline         = 50,    /* 200/4 */
 	.initial_water_baseline       = 750,   /* 3000/4 */
-	.test_interval_surface_ms     = 5000,  /**< Poll less often at surface (saves power) */
-	.test_interval_underwater_ms  = 1000,  /**< Poll fast underwater (rapid surface detection) */
+	.test_interval_surface_ms     = 1000,  /**< Poll every 1s at surface */
+	.test_interval_underwater_ms  = 500,   /**< Poll every 0.5s underwater (fast surface detection) */
 	.max_dive_time_s              = 7200,
 	.min_surface_time_s           = 10,
-	.sample_delay_min_us          = 200,
-	.sample_delay_max_us          = 5000,
-	.sample_delay_default_us      = 1000,
+	.sample_delay_min_us          = 200,   /**< RC charge floor */
+	.sample_delay_max_us          = 1000,  /**< RC charge ceiling */
+	.sample_delay_default_us      = 500,   /**< RC charge starting point */
 	.enabled                      = true,
 };
 
@@ -663,7 +663,7 @@ static bool detector_state(void)
 			if (CALIB_INTERVAL_S > 0 &&
 			    elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
 				/* Periodic full air recalibration with FLOOR clamp */
-				uint16_t old = air_baseline;
+				uint16_t old __attribute__((unused)) = air_baseline;
 				uint16_t new_air = avg;
 				if (new_air < AIR_BASELINE_FLOOR)
 					new_air = AIR_BASELINE_FLOOR;
@@ -723,8 +723,8 @@ static bool detector_state(void)
 	if (!is_underwater && air_baseline < AIR_BASELINE_FLOOR) {
 		air_collapse_count++;
 		if (air_collapse_count >= AIR_COLLAPSE_RECOVERY_SAMPLES) {
-			uint16_t old_air = air_baseline;
-			uint16_t old_water = water_baseline;
+			uint16_t old_air __attribute__((unused)) = air_baseline;
+			uint16_t old_water __attribute__((unused)) = water_baseline;
 
 			uint16_t recovered_air = (filtered >= AIR_BASELINE_FLOOR) ?
 				filtered : AIR_BASELINE_FLOOR;
@@ -832,7 +832,7 @@ static bool detector_state(void)
 		new_is_underwater = false;
 
 		/* Air recalib: gentle EMA toward raw with hard cap at AIR_RECALIB_MAX_RATIO_PCT * water */
-		uint16_t old_air = air_baseline;
+		uint16_t old_air __attribute__((unused)) = air_baseline;
 		uint16_t new_air = (uint16_t)(((uint32_t)air_baseline * (100 - AIR_RECALIB_EMA_WEIGHT_PCT) +
 			(uint32_t)raw_value * AIR_RECALIB_EMA_WEIGHT_PCT) / 100);
 		uint16_t hard_cap = (uint16_t)((uint32_t)water_baseline * AIR_RECALIB_MAX_RATIO_PCT / 100);
@@ -857,7 +857,7 @@ static bool detector_state(void)
 	if (is_underwater && sws_config.max_dive_time_s > 0 &&
 	    time_in_state >= sws_config.max_dive_time_s) {
 		consecutive_dive_timeouts++;
-		uint16_t old_water = water_baseline;
+		uint16_t old_water __attribute__((unused)) = water_baseline;
 
 		/* Always recalibrate water baseline from current reading */
 		if (filtered > air_baseline * 2) {
@@ -1007,6 +1007,14 @@ void MGR_SWS_task(void)
 	bool is_underwater = detector_state();
 
 	MGR_SWS_State_t new_state = is_underwater ? MGR_SWS_STATE_UNDERWATER : MGR_SWS_STATE_SURFACE;
+
+	/* Per-measurement ADC log so the dev can validate PA11 readings live.
+	 * Shows raw ADC, current baselines and threshold. Fires every measurement
+	 * (1s in surface, 500ms underwater per default config). */
+	MGR_LOG_DEBUG("[SWS] adc=%u %s air=%u water=%u th=%u\r\n",
+		last_raw_adc,
+		(new_state == MGR_SWS_STATE_UNDERWATER) ? "UW" : "SURF",
+		air_baseline, water_baseline, threshold_current);
 
 	if (new_state != sws_state) {
 		MGR_LOG_DEBUG("[SWS] %s -> %s (adc=%u air=%u water=%u th=%u peak=%u)\r\n",

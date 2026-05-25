@@ -55,6 +55,7 @@
  */
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include "kns_app_uw_doppler.h"
 #include "main.h"
@@ -147,12 +148,32 @@ static uint32_t state_enter_tick = 0;      /**< Tick when current state was ente
 static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
 
 #define TIMEOUT_BOOT_MS          10000  /**< Boot blink timeout */
-#define TIMEOUT_BOOT_DEPLOY_MS   5000   /**< Deploy LED timeout */
-#define BOOT_DEPLOY_LED_MS       2000   /**< Deploy color display duration */
+#define TIMEOUT_BOOT_DEPLOY_MS   8000   /**< Deploy LED timeout (was 5000) — extra margin for MAC/RF subsystems to fully init */
+#define BOOT_DEPLOY_LED_MS       5000   /**< Deploy color display duration (was 2000) — give the radio subsystem extra time to settle before MAC init */
 #define TIMEOUT_MAC_READY_MS     30000  /**< Wait for MAC ready */
-#define TIMEOUT_TX_DONE_MS       60000  /**< Wait for TX done */
+#define TIMEOUT_TX_DONE_MS       10000  /**< Wait for TX done — MUST be < IWDG (16s) so app times out gracefully instead of getting reset by watchdog */
 #define TIMEOUT_SHUTDOWN_BLINK_MS 10000 /**< Shutdown blink timeout */
 #define MAX_MAC_INIT_RETRIES     3      /**< Max MAC init retries before reset */
+#define MIN_INTER_TX_INTERVAL_MS 5000   /**< Hard floor between two consecutive TX requests AND between MAC-ready and first TX — protects against MAC stack re-entry and PA back-to-back inrush */
+
+/* Direct synchronous UART log macro for tracing crash-prone code paths.
+ * Writes a fixed-tag line straight to the LPUART without going through the
+ * MGR_LOG ring buffer, so the message physically reaches the host even if
+ * the device freezes or power-cycles immediately after.
+ * Tag should be a short literal (≤32 chars) to keep the UART burst short. */
+#if defined(USE_UART_DRIVER)
+#define UWDPL_TRACE(tag) do { \
+	static const char _trace_msg[] = "[TRACE] " tag " t=%lu\r\n"; \
+	static char _trace_buf[64]; \
+	int _trace_n = snprintf(_trace_buf, sizeof(_trace_buf), \
+		_trace_msg, (unsigned long)HAL_GetTick()); \
+	if (_trace_n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET) \
+		HAL_UART_Transmit(&hlpuart1, (uint8_t *)_trace_buf, \
+			(uint16_t)_trace_n, 100); \
+} while (0)
+#else
+#define UWDPL_TRACE(tag) do {} while (0)
+#endif
 
 /* Reed switch shutdown tracking */
 #if defined(BSP_HAS_REED_SWITCH)
@@ -303,7 +324,10 @@ static uint32_t compute_next_interval_ms(uint32_t n)
 static void reset_tx_scheduling(void)
 {
 	tx_count = 0;
-	last_tx_tick = 0;
+	/* IMPORTANT: don't reset last_tx_tick. Preserving it makes the inter-TX
+	 * minimum interval check honor the configured tx_initial_interval_s even
+	 * across dive/surface cycles — a re-surface within X seconds after the
+	 * previous TX won't trigger a new one until X has elapsed. */
 	current_interval_ms = 0;
 	surface_tx_pending = false;
 }
@@ -560,6 +584,10 @@ static bool process_mac_events(void)
 				MGR_LOG_DEBUG("[UW_DPL] MAC ready\r\n");
 				MGR_EVTLOG_log(EVT_MAC_READY, 0);
 				mac_init_retries = 0;
+				/* Set last_tx_tick so the MIN_INTER_TX_INTERVAL_MS check
+				 * makes the first TX wait POST_MAC_READY_SETTLE_MS after
+				 * MAC ready — gives radio/TCXO time to fully come up. */
+				last_tx_tick = HAL_GetTick();
 				transition_to(UW_DOPPLER_MONITORING);
 			} else if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
 				MGR_LOG_DEBUG("[UW_DPL] TX accepted\r\n");
@@ -569,6 +597,12 @@ static bool process_mac_events(void)
 		case KNS_MAC_TX_DONE:
 			MGR_LOG_DEBUG("[UW_DPL] TX done (#%lu)\r\n", tx_count);
 			MGR_EVTLOG_log(EVT_TX_DONE, 0);
+			/* CRITICAL: turn off external PA — MAC stack enables it via
+			 * MCU_MISC_turn_on_pa() at TX start but does NOT auto-disable it.
+			 * If we don't disable it here, the PA stays drawing ~60 mA forever.
+			 * GUI mode calls turn_off_pa from AT TX handler; UW_DOPPLER must
+			 * also do it on every TX exit path. */
+			MCU_MISC_turn_off_pa();
 			/* Restore TCXO warmup after first TX completes */
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
@@ -583,6 +617,7 @@ static bool process_mac_events(void)
 		case KNS_MAC_TX_TIMEOUT:
 			MGR_LOG_DEBUG("[UW_DPL] TX timeout\r\n");
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, 0);
+			MCU_MISC_turn_off_pa();
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
 				tcxo_first_tx_skip = false;
@@ -594,6 +629,10 @@ static bool process_mac_events(void)
 		case KNS_MAC_ERROR:
 			MGR_LOG_DEBUG("[UW_DPL] MAC error: %d\r\n", srvcEvt.status);
 			MGR_EVTLOG_log(EVT_MAC_ERROR, (uint16_t)srvcEvt.status);
+			/* Always cleanup PA on error — MAC may have already turned it on */
+			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE ||
+			    srvcEvt.app_evt == KNS_MAC_SEND_DATA)
+				MCU_MISC_turn_off_pa();
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
 				tcxo_first_tx_skip = false;
@@ -605,6 +644,13 @@ static bool process_mac_events(void)
 			break;
 
 		default:
+			/* Unhandled MAC event during WAIT_TX_DONE — safer to assume the
+			 * TX cycle is over and force PA off to prevent stuck 60 mA drain. */
+			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE) {
+				MGR_LOG_DEBUG("[UW_DPL] Unknown MAC evt %d during WAIT_TX_DONE, cleanup PA\r\n",
+					srvcEvt.id);
+				MCU_MISC_turn_off_pa();
+			}
 			break;
 		}
 	}
@@ -670,6 +716,28 @@ void KNS_APP_uw_doppler_loop(void)
 {
 	/* Refresh watchdog every loop iteration */
 	MGR_WDG_refresh();
+
+#if defined(USE_UART_DRIVER)
+	/* Heartbeat: direct synchronous UART, bypasses MGR_LOG ring buffer.
+	 * Survives silent power resets — last "hb" line tells us the exact tick
+	 * at which the device died. ~1s cadence to limit noise.
+	 * Skipped when UART has been de-init'd in deploy mode (huart Instance NULL). */
+	{
+		static uint32_t hb_last_tick = 0;
+		uint32_t now = HAL_GetTick();
+		if (now - hb_last_tick >= 1000 && hlpuart1.gState != HAL_UART_STATE_RESET) {
+			hb_last_tick = now;
+			static char hb_buf[64];
+			int hb_n = snprintf(hb_buf, sizeof(hb_buf),
+				"hb t=%lu s=%lu\r\n",
+				(unsigned long)now,
+				(unsigned long)uw_doppler_state);
+			if (hb_n > 0)
+				HAL_UART_Transmit(&hlpuart1, (uint8_t *)hb_buf,
+					(uint16_t)hb_n, 50);
+		}
+	}
+#endif
 
 	/* Process pending AT commands */
 #if defined(USE_UART_DRIVER)
@@ -780,7 +848,17 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 #if defined(USE_UART_DRIVER)
 			/* If deployed and no AT command received during boot window,
-			 * disable UART to save power for multi-year deployment */
+			 * disable UART to save power for multi-year deployment.
+			 *
+			 * Exception: in DEBUG builds keep UART alive unconditionally so
+			 * the developer can observe state transitions, TX events and any
+			 * post-boot crashes. Production builds (no -DDEBUG) get the
+			 * power-saving deinit. */
+#ifdef DEBUG
+			if (deploy_mode) {
+				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART KEPT (DEBUG build)\r\n");
+			}
+#else
 			if (deploy_mode && !boot_window_at_received) {
 				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART disabled\r\n");
 				HAL_NVIC_DisableIRQ(LPUART1_IRQn);
@@ -789,6 +867,7 @@ void KNS_APP_uw_doppler_loop(void)
 			} else if (deploy_mode) {
 				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART kept (AT received)\r\n");
 			}
+#endif
 #endif
 			transition_to(UW_DOPPLER_INIT_MAC);
 		}
@@ -830,6 +909,7 @@ void KNS_APP_uw_doppler_loop(void)
 		/* Check for surface detection */
 		if (MGR_SWS_stateChanged()) {
 			if (sws_state == MGR_SWS_STATE_SURFACE) {
+				UWDPL_TRACE("SURF detected");
 				/* Surface detected! Schedule immediate TX */
 				MGR_LOG_DEBUG("[UW_DPL] Surface detected, starting TX\r\n");
 				MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
@@ -842,27 +922,41 @@ void KNS_APP_uw_doppler_loop(void)
 				 * Re-entrance guard: don't overwrite saved value if a previous
 				 * skip is still pending (would store the already-zeroed value).
 				 */
-				if (deploy_mode && !tcxo_first_tx_skip) {
-					MCU_MISC_TCXO_get_warmup(&tcxo_warmup_saved_ms);
-					MCU_MISC_TCXO_Force_State(true);
-					tcxo_first_tx_skip = true;
-				}
+				/* TCXO pre-warmup DISABLED on this app/board combination.
+				 *
+				 * Why: on STM32WL5x the TCXO power rail (VDDTCXO) is gated by
+				 * the SubGHz radio peripheral via SUBGHZ_Set_TcxoMode, NOT by
+				 * a GPIO the MCU can drive. Between TX bursts the radio is in
+				 * sleep mode, so VDDTCXO is LOW and the TCXO does NOT oscillate.
+				 * Calling MCU_MISC_TCXO_Force_State(true) at that moment makes
+				 * HAL_RCC_OscConfig wait for HSERDY which never asserts and
+				 * times out — and even more critically, when MAC later processes
+				 * the queued TX request, its own TCXO management may assert
+				 * because of the partially-configured clock state, resetting
+				 * the chip.
+				 *
+				 * GUI mode (mgr_at_cmd_list_user_data.c:150) calls this
+				 * successfully because TX happens immediately after MAC init,
+				 * before the radio goes to sleep.
+				 *
+				 * Fix: let the Kineis MAC stack wake the radio and manage TCXO
+				 * itself when it processes the TX request. We do NOT set
+				 * tcxo_first_tx_skip so SURFACE_TX leaves the warmup at its
+				 * configured value (no `set_warmup(0)` optimisation). */
+				(void)tcxo_warmup_saved_ms;  /* unused now */
 #if defined(BSP_HAS_LED_RGB)
-				MGR_LED_blink(MGR_LED_CYAN, 3, 200, 200);
+				MGR_LED_blink(MGR_LED_GREEN, 1, 500, 0);
 #endif
 			} else {
 				/* Went underwater, stop TX scheduling */
 				MGR_LOG_DEBUG("[UW_DPL] Underwater, stopping TX\r\n");
 				MGR_EVTLOG_log(EVT_SWS_UNDERWATER, MGR_SWS_getLastADC());
 				reset_tx_scheduling();
-				/* If a TCXO pre-warmup was pending, release it */
-				if (tcxo_first_tx_skip) {
-					MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
-					MCU_MISC_TCXO_Force_State(false);
-					tcxo_first_tx_skip = false;
-				}
+				/* TCXO pre-warmup is disabled (see surface branch note above)
+				 * so there is nothing to release here. The MAC stack manages
+				 * TCXO power-down itself when the radio re-enters sleep. */
 #if defined(BSP_HAS_LED_RGB)
-				MGR_LED_blink(MGR_LED_YELLOW, 3, 200, 200);
+				MGR_LED_blink(MGR_LED_BLUE, 1, 500, 0);
 #endif
 			}
 
@@ -873,18 +967,33 @@ void KNS_APP_uw_doppler_loop(void)
 			(void)MGR_NVM_saveCalibDebounced(NVM_CALIB_SAVE_MIN_INTERVAL_S);
 		}
 
-		/* TX scheduling logic - only TX if deployed */
+		/* TX scheduling logic - only TX if deployed. */
 		if (deploy_mode && sws_state == MGR_SWS_STATE_SURFACE) {
 			bool should_tx = false;
+			uint32_t since_last_tx = HAL_GetTick() - last_tx_tick;
+
+			/* Effective minimum interval between any two TX requests.
+			 * Uses the larger of MIN_INTER_TX_INTERVAL_MS (safety floor) and
+			 * the user-configured tx_initial_interval_s. This way a 30s config
+			 * is respected even if SWS oscillates UW/SURF in <30s — re-surface
+			 * doesn't trigger immediate TX if the configured interval hasn't
+			 * elapsed yet. */
+			uint32_t effective_min_ms = MIN_INTER_TX_INTERVAL_MS;
+			uint32_t configured_min_ms = (uint32_t)tx_cfg.tx_initial_interval_s * 1000;
+			if (configured_min_ms > effective_min_ms)
+				effective_min_ms = configured_min_ms;
 
 			if (surface_tx_pending) {
-				/* Immediate first TX */
-				should_tx = true;
-				surface_tx_pending = false;
+				/* Surface detected (first ever, or re-surface) — only TX if
+				 * enough time elapsed since last_tx_tick (MAC ready or last TX). */
+				if (since_last_tx >= effective_min_ms) {
+					should_tx = true;
+					surface_tx_pending = false;
+				}
 			} else if (tx_count > 0 && current_interval_ms > 0) {
-				/* Check if interval has elapsed */
-				uint32_t elapsed = HAL_GetTick() - last_tx_tick;
-				if (elapsed >= current_interval_ms)
+				/* Periodic TX while still SURFACE — use the schedule's
+				 * current_interval_ms (which grows with tx_count). */
+				if (since_last_tx >= current_interval_ms)
 					should_tx = true;
 			}
 
@@ -904,6 +1013,7 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 			}
 			if (should_tx) {
+				UWDPL_TRACE("TX should=yes");
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
 				transition_to(UW_DOPPLER_SURFACE_TX);
 				/* Fall through to SURFACE_TX */
@@ -918,9 +1028,41 @@ void KNS_APP_uw_doppler_loop(void)
 
 	case UW_DOPPLER_SURFACE_TX:
 	{
+		UWDPL_TRACE("SURF_TX enter");
 #if defined(BSP_HAS_LED_RGB)
 		MGR_LED_set(MGR_LED_VIOLET);
 #endif
+		UWDPL_TRACE("SURF_TX LED set");
+
+		/* TCXO pre-warmup BEFORE pushing to MAC — replicates GUI flow at
+		 * mgr_at_cmd_list_user_data.c:150. Ensures TCXO is fully stable
+		 * when MAC starts the actual RF TX. Without this, MAC's internal
+		 * TCXO handling appears to hang on this board, leading to the loop
+		 * starvation + IWDG reset pattern observed. */
+		{
+			uint32_t warmup_ms = 0;
+			MCU_MISC_TCXO_Force_State(true);
+			MCU_MISC_TCXO_get_warmup(&warmup_ms);
+			/* Cap at 14s to stay under the 16s IWDG timeout. Configurable
+			 * via AT+TCXO=N up to 30s, but our code only honors up to 14s
+			 * so the WDG doesn't fire during the blocking HAL_Delay. */
+			if (warmup_ms > 14000)
+				warmup_ms = 14000;
+			{
+				static char _tcxo_buf[48];
+				int _n = snprintf(_tcxo_buf, sizeof(_tcxo_buf),
+					"[TRACE] TCXO warmup %lums\r\n",
+					(unsigned long)warmup_ms);
+				if (_n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
+					HAL_UART_Transmit(&hlpuart1,
+						(uint8_t *)_tcxo_buf,
+						(uint16_t)_n, 100);
+			}
+			if (warmup_ms > 0)
+				HAL_Delay(warmup_ms);
+			UWDPL_TRACE("TCXO ready");
+		}
+
 		struct KNS_MAC_appEvt_t appEvt;
 		if (!build_tx_payload(&appEvt)) {
 			/* Radio config error - skip TX, go back to monitoring */
@@ -940,7 +1082,9 @@ void KNS_APP_uw_doppler_loop(void)
 			MGR_LOG_DEBUG("[UW_DPL] First TX: TCXO warmup bypassed (was prewarmed)\r\n");
 		}
 
+		UWDPL_TRACE("KNS_Q_push start");
 		enum KNS_status_t status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
+		UWDPL_TRACE("KNS_Q_push done");
 		if (status == KNS_STATUS_OK) {
 			MGR_LOG_DEBUG("[UW_DPL] TX #%lu sent (interval=%lums)\r\n",
 				tx_count, current_interval_ms);
@@ -949,6 +1093,7 @@ void KNS_APP_uw_doppler_loop(void)
 			current_interval_ms = compute_next_interval_ms(tx_count);
 			tx_count++;
 
+			UWDPL_TRACE("→ WAIT_TX_DONE");
 			transition_to(UW_DOPPLER_WAIT_TX_DONE);
 		} else {
 			MGR_LOG_DEBUG("[UW_DPL] TX push failed: 0x%x\r\n", status);
@@ -979,6 +1124,9 @@ void KNS_APP_uw_doppler_loop(void)
 			MGR_LOG_DEBUG("[UW_DPL] TX done timeout\r\n");
 			MGR_EVTLOG_log(EVT_TIMEOUT, (uint16_t)UW_DOPPLER_WAIT_TX_DONE);
 			MGR_ERR_log(ERR_TX_TIMEOUT);
+			/* MAC stack never fired TX_DONE/TIMEOUT/ERROR. PA may have been
+			 * left enabled (drains ~60 mA continuously). Force cleanup. */
+			MCU_MISC_turn_off_pa();
 			/* Restore TCXO warmup: TX_DONE never fired, MAC may be stuck */
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);

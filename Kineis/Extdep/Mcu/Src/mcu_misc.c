@@ -14,9 +14,14 @@
  */
 
 #include <stdbool.h>
+#include <stdio.h>  /* snprintf for direct UART diagnostic in TCXO_Force_State */
 #include "mcu_misc.h"
 #include "main.h"
 #include "mgr_log.h"
+#include "usart.h"
+#if defined(SMD_STDALONE)
+#include "mgr_led.h"  /* MGR_LED_off() — shed LED current right before PA inrush */
+#endif
 
 /* Defines -------------------------------------------------------------------------------------- */
 
@@ -45,17 +50,32 @@ extern uint32_t SystemCoreClock;
 
 /* Functions ------------------------------------------------------------------------------------ */
 
-/** @brief Additional delay after PA enable for TCXO stabilization with GR5504 load
+/** @brief Additional delay after PA enable for TCXO stabilization with GR5504 load.
  *  The PA draws significant current which can cause TCXO drift. This delay allows
  *  the power supply and TCXO to stabilize after the initial PA boot current surge.
- */
-#define MCU_PA_TCXO_STABILIZATION_MS  50
+ *  Extended from 50ms to 200ms: with TPS22904 load switch + only ~3 µF reservoir
+ *  cap on PA rail, VSYS needs more time to fully recover and let chip + TCXO
+ *  settle before MAC stack starts the RF transmission. */
+#define MCU_PA_TCXO_STABILIZATION_MS  200
+
+/** @brief Pre-charge delay BEFORE driving PSU_EN HIGH.
+ *  Idle time to make sure VSYS is rock-solid and TPS63901 is in steady-state
+ *  before the inrush event. Costs ~5 ms per TX. */
+#define MCU_PA_PRECHARGE_DELAY_MS  5
 
 void MCU_MISC_turn_on_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
 #if defined(SMD_PA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	/* Direct sync UART trace — runs even under ISR so we know exactly when
+	 * MAC calls into PA and how far we get before any crash. */
+	{
+		static const char _pa_enter[] = "\r\n[PA-TRACE] turn_on_pa ENTER\r\n";
+		if (hlpuart1.gState != HAL_UART_STATE_RESET)
+			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_enter,
+				sizeof(_pa_enter) - 1, 100);
+	}
 	MGR_LOG_DEBUG("[PA] turn_on_pa\r\n");
 
 #ifdef USE_SMPS_BYPASS_TX
@@ -71,7 +91,13 @@ void MCU_MISC_turn_on_pa()
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
+#if !defined(SMD_STDALONE)
+	/* SMD_STDALONE: PC1 is wired to TPS63901 SEL (VSYS regulator setpoint).
+	 * Driving it would re-program the buck-boost output while the PA pulls
+	 * its inrush — guaranteed brownout. R11 (10M pull-up to VBAT) holds SEL
+	 * HIGH naturally, so leave PC1 high-Z (analog) on this board. */
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
+#endif
 
 	/*Configure GPIO pin : PtPin */
 	GPIO_InitStruct.Pin = PA_PSU_EN_Pin;
@@ -80,6 +106,7 @@ void MCU_MISC_turn_on_pa()
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
 
+#if !defined(SMD_STDALONE)
 	GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
@@ -88,13 +115,49 @@ void MCU_MISC_turn_on_pa()
 
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
 	DELAY_MS(10);
+#endif
+
+#if defined(SMD_STDALONE)
+	/* Shed every non-essential consumer right before the PA inrush. The RGB
+	 * LED sinks ~5-15 mA per color and TPS63901 is only rated 400 mA — the PA
+	 * peak alone is already eating most of the budget. */
+	MGR_LED_off();
+#endif
+
+	/* Pre-charge wait: give VSYS time to be fully steady before the inrush. */
+	DELAY_MS(MCU_PA_PRECHARGE_DELAY_MS);
+	{
+		/* Single-char trace just before — tiniest UART payload so it physically
+		 * leaves the chip in microseconds, telling us we reached this point. */
+		static const char _pa_pre[] = "[<\r\n";
+		if (hlpuart1.gState != HAL_UART_STATE_RESET)
+			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_pre,
+				sizeof(_pa_pre) - 1, 50);
+	}
+
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_SET);
+
+	{
+		/* Single-char trace right after — if this comes out, the chip survived
+		 * the PA_PSU_EN HIGH transition. If absent → brownout during inrush. */
+		static const char _pa_post[] = "[>\r\n";
+		if (hlpuart1.gState != HAL_UART_STATE_RESET)
+			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_post,
+				sizeof(_pa_post) - 1, 50);
+	}
+
+	/* Boot delay: TPS22904 soft-start + PA bias-up + supply recovery */
 	DELAY_MS(MCU_PA_BOOTDELAY_MS);
 
-	/* Additional delay for TCXO stabilization after GR5504 PA startup.
-	 * The PA draws ~300-500mA which can cause voltage droop affecting TCXO.
-	 * This allows the power supply to stabilize before RF transmission. */
+	/* Additional delay for TCXO stabilization after PA startup.
+	 * Power supply needs to stabilize before RF transmission. */
 	DELAY_MS(MCU_PA_TCXO_STABILIZATION_MS);
+	{
+		static const char _pa_done[] = "[PA-TRACE] turn_on_pa DONE\r\n";
+		if (hlpuart1.gState != HAL_UART_STATE_RESET)
+			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_done,
+				sizeof(_pa_done) - 1, 100);
+	}
 #endif
 }
 
@@ -116,12 +179,14 @@ void MCU_MISC_turn_off_pa()
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
 
+#if !defined(SMD_STDALONE)
 	GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_SEL_GPIO_Port, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
+#endif
 
 #ifdef USE_SMPS_BYPASS_TX
 	/* Restore SMPS to step-down mode for better power efficiency after TX.
@@ -185,8 +250,23 @@ void MCU_MISC_TCXO_Force_State(bool enable)
         RCC_OscInitStruct.HSEState = RCC_HSE_OFF;
     }
 
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)  {
-            Error_Handler();
+    HAL_StatusTypeDef st = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+    if (st != HAL_OK) {
+        /* Direct synchronous UART: bypass MGR_LOG so the diagnostic survives.
+         * Previously: Error_Handler() -> reset. That masked the actual cause
+         * since the reset wiped any context. Logging without reset lets the
+         * MAC stack continue (it has its own TCXO control internally) and
+         * tells us whether this call is the culprit for the silent crashes. */
+        extern UART_HandleTypeDef hlpuart1;
+        static char tcxo_buf[80];
+        int tcxo_n = snprintf(tcxo_buf, sizeof(tcxo_buf),
+            "\r\n!!! TCXO_Force_State(%d) HAL_RCC_OscConfig=%d tick=%lu !!!\r\n",
+            (int)enable, (int)st, (unsigned long)HAL_GetTick());
+        if (tcxo_n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
+            HAL_UART_Transmit(&hlpuart1, (uint8_t *)tcxo_buf,
+                (uint16_t)tcxo_n, 200);
+        MGR_LOG_DEBUG("[MCU_MISC] TCXO_Force_State(%d) failed: HAL=%d\r\n",
+            (int)enable, (int)st);
     }
     return;
 }

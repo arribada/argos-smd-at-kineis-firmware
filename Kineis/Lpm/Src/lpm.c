@@ -28,6 +28,7 @@
 
 #if defined(USE_SPI_DRIVER)
 #include "spi.h"
+#include "mcu_spi_driver.h"
 #endif
 #if defined(USE_UW_DOPPLER_APP)
 #include "adc.h"
@@ -111,6 +112,11 @@ __attribute__((__section__(".lpmSection")))
 struct LPM_retentionReg_t lpm_ctxt = {
 	.low_power_mode = LOW_POWER_MODE_NONE
 };
+
+/** Forced LPM mode override consulted by KSTK_lpmReq. LOW_POWER_MODE_NONE
+ * (0) means no override active.
+ */
+static enum MgrLpm_LPM_t lpm_forced_mode = LOW_POWER_MODE_NONE;
 
 /* Private functions --------------------------------------------------------------------------- */
 
@@ -378,9 +384,12 @@ static void LPM_stop_exit() {
 
 #if defined(USE_SPI_DRIVER)
 	/* Re-init SPI after STOP mode wakeup.
-	 * NSS was reconfigured as EXTI in stop_enter, restore it as SPI AF. */
+	 * NSS was reconfigured as EXTI in stop_enter, restore it as SPI AF.
+	 * Re-arm the slave DMA so the next master transaction is captured —
+	 * MX_SPI1_Init() alone leaves the peripheral idle with no DMA armed. */
 	HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
 	MX_SPI1_Init();
+	MCU_SPI_DRIVER_read();
 #endif
 
 #if defined(USE_UW_DOPPLER_APP)
@@ -400,18 +409,37 @@ static void LPM_stop_exit() {
 //	MGR_LOG_DEBUG("==== STOP exit ====\r\n");
 }
 
-/** @brief System callback invoked by MGR_LPM at STANDBY mode entering */
+/** @brief System callback invoked by MGR_LPM at STANDBY mode entering
+ *
+ * @attention Wake-up source is WKUP3 (PB3) with rising-edge polarity. On
+ * STM32WL55, enabling EWUP3 **automatically disables the internal pull on PB3**
+ * (RM0453 §5.4). PB3 is therefore floating during STANDBY unless an external
+ * pull-down resistor (10 kΩ to GND) is wired, or the master holds PB3 LOW
+ * actively between wake-up events. Otherwise noise on PB3 can either:
+ *   - Trigger a spurious immediate wake-up (false wake)
+ *   - Fail to register a clean rising edge from the master (no wake)
+ */
 static void LPM_standby_enter() {
-	MGR_LOG_DEBUG("==== STANDBY enter ====\r\n");
+	/* Log PB3 state and SR1 right before entry so user can verify pin is
+	 * LOW (mandatory for rising-edge wake) and no WUFx is pending */
+	GPIO_PinState pb3_state __attribute__((unused)) = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3);
+	uint32_t pwr_sr1 __attribute__((unused)) = PWR->SR1;
+	MGR_LOG_DEBUG("==== STANDBY enter ==== PB3=%u PWR_SR1=0x%08lX\r\n",
+		(unsigned int)pb3_state, (unsigned long)pwr_sr1);
 
 	GPIO_DisableAllToAnalogInput();
 	HAL_PWREx_EnablePullUpPullDownConfig();
-	/** Force pull down on wakeup pin: PB3, or PC13 or PA0 */
+	/** Force pull down on wakeup pin: PB3, or PC13 or PA0
+	 *  NOTE: this is overridden by HAL_PWR_EnableWakeUpPin() below — see
+	 *  function docstring. Kept for non-WKUP wake configurations. */
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);
 
 	// 2) Program the desired pulls for Standby via PWR (per port/bit)
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);      // example: PA0 pull-up
+#if !defined(SMD_STDALONE)
+	/* On STDALONE PC1 = TPS63901 SEL: pull is held externally (R11 to VBAT) */
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);      // example: PB3 pull-down
+#endif
 #if defined(STM32WL55xx)
 	HAL_PWREx_EnableSRAMRetention();
 #else
@@ -448,7 +476,10 @@ static void LPM_shutdown_enter() {
 
 	// 2) Program the desired pulls for Standby via PWR (per port/bit)
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);      // example: PA0 pull-up
+#if !defined(SMD_STDALONE)
+	/* On STDALONE PC1 = TPS63901 SEL: pull is held externally (R11 to VBAT) */
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);      // example: PB3 pull-down
+#endif
 
 #if defined(BSP_HAS_PWR_LATCH)
 	/* Pull PWR_LATCH (PB7) LOW to cut power on STDALONE board */
@@ -585,8 +616,14 @@ void GPIO_DisableAllToAnalogInput(void)
 
 	/* ---- GPIOC: Set all unused pins to analog ----
 	 * Active pins NOT set to analog: PC0 = PA_PSU_EN, PC1 = PA_PSU_SEL
+	 * On STDALONE, PC1 also goes to analog because it's wired to TPS63901 SEL
+	 * and must stay high-Z (R11 10M pull-up holds it HIGH externally).
 	 */
-	GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 |
+	GPIO_InitStruct.Pin =
+#if defined(SMD_STDALONE)
+	                      GPIO_PIN_1 |
+#endif
+	                      GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 |
 	                      GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9 |
 	                      GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 |
 	                      GPIO_PIN_14 | GPIO_PIN_15;
@@ -607,6 +644,7 @@ void GPIO_DisableAllToAnalogInput(void)
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
 
+#if !defined(SMD_STDALONE)
 	GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
@@ -614,6 +652,7 @@ void GPIO_DisableAllToAnalogInput(void)
 	HAL_GPIO_Init(PA_PSU_SEL_GPIO_Port, &GPIO_InitStruct);
 
 	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
+#endif
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
 }
 
@@ -636,6 +675,27 @@ void LPM_forceMode(enum MgrLpm_LPM_t low_power_mode)
 inline enum MgrLpm_LPM_t LPM_getMode(void)
 {
 	return (enum MgrLpm_LPM_t) lpm_ctxt.low_power_mode;
+}
+
+void LPM_setForcedMode(enum MgrLpm_LPM_t mode)
+{
+	switch (mode) {
+	case LOW_POWER_MODE_NONE:
+	case LOW_POWER_MODE_SLEEP:
+	case LOW_POWER_MODE_STOP:
+	case LOW_POWER_MODE_STANDBY:
+	case LOW_POWER_MODE_SHUTDOWN:
+		lpm_forced_mode = mode;
+		break;
+	default:
+		/* Invalid value silently ignored to keep the API misuse-safe */
+		break;
+	}
+}
+
+enum MgrLpm_LPM_t LPM_getForcedMode(void)
+{
+	return lpm_forced_mode;
 }
 #pragma GCC visibility pop
 

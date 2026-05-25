@@ -37,7 +37,7 @@
 #define ERR_BKP_TICK    (TAMP->BKP6R)   /* Last tick */
 #define ERR_BKP_CRASH   (TAMP->BKP7R)   /* Consecutive crash counter */
 
-static const char *err_code_str(MGR_ERR_Code_t code)
+__attribute__((unused)) static const char *err_code_str(MGR_ERR_Code_t code)
 {
 	switch (code) {
 	case ERR_NONE:           return "NONE";
@@ -56,7 +56,7 @@ static const char *err_code_str(MGR_ERR_Code_t code)
 	}
 }
 
-static const char *reset_cause_str(uint32_t csr)
+__attribute__((unused)) static const char *reset_cause_str(uint32_t csr)
 {
 	if (csr & RCC_CSR_IWDGRSTF) return "IWDG";
 	if (csr & RCC_CSR_SFTRSTF)  return "SOFTWARE";
@@ -69,18 +69,33 @@ void MGR_ERR_init(void)
 {
 	/* Backup access must already be enabled (enable_backup_access() in main.c) */
 
-	/* Read previous session info before modifying */
+	/* Read previous session info before modifying. The `unused` attribute
+	 * silences -Werror=unused-variable in DEBUG=0 builds where all
+	 * MGR_LOG_DEBUG calls below collapse to do{}while(0). */
 	uint32_t prev_count = ERR_BKP_COUNT;
-	uint32_t prev_csr   = ERR_BKP_CSR;
+	uint32_t prev_csr   __attribute__((unused)) = ERR_BKP_CSR;
 	MGR_ERR_Code_t prev_err = (MGR_ERR_Code_t)ERR_BKP_CODE;
-	uint32_t prev_state = ERR_BKP_STATE;
+	uint32_t prev_state __attribute__((unused)) = ERR_BKP_STATE;
 	uint32_t prev_tick  = ERR_BKP_TICK;
 
 	/* Read current reset cause from RCC_CSR */
 	uint32_t csr = RCC->CSR;
 
+	/* If THIS boot was caused by IWDG but the previous session never logged
+	 * an error code, the previous boot hung silently — surface that as
+	 * WDG_RESET so the user sees it instead of last_err=NONE. tick stays 0
+	 * because the previous boot never got far enough to record one. */
+	if ((csr & RCC_CSR_IWDGRSTF) && prev_err == ERR_NONE) {
+		prev_err = ERR_WDG_RESET;
+	}
+
+	/* Log the reset cause for THIS boot (most useful diagnostic).
+	 * The previous-session summary follows for context. */
+	MGR_LOG_DEBUG("[ERR] Boot #%lu reset_cause=%s csr=0x%08lx\r\n",
+		prev_count + 1, reset_cause_str(csr), (unsigned long)csr);
+
 	/* Log previous session info */
-	MGR_LOG_DEBUG("[ERR] Boot #%lu: last_reset=%s last_err=%s last_state=%lu tick=%lu\r\n",
+	MGR_LOG_DEBUG("[ERR] Boot #%lu: prev_reset=%s last_err=%s last_state=%lu tick=%lu\r\n",
 		prev_count + 1,
 		reset_cause_str(prev_csr),
 		err_code_str(prev_err),
@@ -125,6 +140,14 @@ void MGR_ERR_log(MGR_ERR_Code_t code)
 void MGR_ERR_logAndReset(MGR_ERR_Code_t code)
 {
 	MGR_ERR_log(code);
+
+	/* Drain the log ring buffer synchronously so the assert message reaches
+	 * the host UART before reset. Without this the user only sees the next
+	 * boot's banner with no clue what failed. Bounded loop: cap iterations
+	 * to avoid wedging here if the UART itself is the failure cause. */
+	for (int i = 0; i < 32 && MGR_LOG_has_pending(); i++)
+		(void)MGR_LOG_flush();
+
 	__disable_irq();
 	NVIC_SystemReset();
 	/* Never reaches here */

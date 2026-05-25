@@ -117,6 +117,25 @@ void LPM_forceMode(enum MgrLpm_LPM_t low_power_mode);
  */
 enum MgrLpm_LPM_t LPM_getMode(void);
 
+/**
+ * @brief Override the LPM mode requested by clients on next LPM_enter
+ *
+ * When set to a value other than LOW_POWER_MODE_NONE, the Kineis stack LPM
+ * client returns this mode instead of computing it from rsrcStatus. The chosen
+ * mode is still masked by lpm_config.allowedLPMbitmap in MGR_LPM_enter, so the
+ * mode must also be enabled in the bitmap to actually be entered.
+ *
+ * @param[in] mode forced mode (LOW_POWER_MODE_NONE clears the override)
+ */
+void LPM_setForcedMode(enum MgrLpm_LPM_t mode);
+
+/**
+ * @brief Get the current forced mode override
+ *
+ * @return Currently forced mode, or LOW_POWER_MODE_NONE if no override active
+ */
+enum MgrLpm_LPM_t LPM_getForcedMode(void);
+
 #endif /* LPM_KSTK_H */
 
 /**
