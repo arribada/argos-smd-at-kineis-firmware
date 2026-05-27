@@ -15,6 +15,8 @@
 #ifndef MGR_WDG_H
 #define MGR_WDG_H
 
+#include <stdint.h>
+
 /**
  * @brief Start the IWDG with ~16s timeout
  *
@@ -32,5 +34,19 @@ void MGR_WDG_init(void);
  * Call from the main application loop.
  */
 void MGR_WDG_refresh(void);
+
+/**
+ * @brief Blocking delay that periodically kicks the watchdog.
+ *
+ * Use this in place of HAL_Delay() when a blocking wait can exceed (or come
+ * close to) the IWDG timeout. The watchdog is refreshed every ~1 s, so the
+ * total wait can run up to UINT32_MAX ms without nuisance reset.
+ *
+ * Granularity is 50 ms (the inner HAL_Delay step), so callers asking for
+ * shorter waits should still use HAL_Delay directly to avoid rounding.
+ *
+ * @param total_ms Total wait time in milliseconds.
+ */
+void MGR_WDG_delayWithKick(uint32_t total_ms);
 
 #endif /* MGR_WDG_H */

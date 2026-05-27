@@ -2,10 +2,13 @@
  * Linker script for STM32WL55 Application (with bootloader after app)
  * Application starts at 0x08000000 (for Kineis library compatibility)
  *
- * Memory Layout:
- * 0x08000000 - 0x08032FFF : Application Code (204KB)
+ * Memory Layout (Sprint 4: app shrunk by 4 KB to carve out post-mortem log pages):
+ * 0x08000000 - 0x08031FFF : Application Code (200KB)
+ * 0x08032000 - 0x08032FFF : Flash extension log (4KB = 2 erase pages)
+ *                           - page 0 (2KB @ 0x08032000) : MGR_PMLOG post-mortem
+ *                           - page 1 (2KB @ 0x08032800) : reserved for BAT_LOG
  * 0x08033000 - 0x0803AFFF : Bootloader (32KB)
- * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB) - PRESERVED
+ * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB) - PRESERVED (Kineis lib + NVM)
  */
 
 /* Entry Point */
@@ -23,8 +26,12 @@ _bootloader_addr = 0x08033000;
 /* Memory regions for application */
 MEMORY
 {
-  /* Application code at start of flash (Kineis compatible) */
-  ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 204K      /* 204KB for app */
+  /* Application code at start of flash (Kineis compatible).
+   * Shrunk from 204K to 200K to carve out FLASH_PMLOG below. */
+  ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 200K
+  /* Flash extension log region — 4KB = 2 erase pages.
+   * Address constants are duplicated in mgr_pmlog.h so they must stay in sync. */
+  FLASH_PMLOG (rw)  : ORIGIN = 0x08032000, LENGTH = 4K
   /* Bootloader region (not used by app, just reserved) */
   /* BL_ROM   (rx)  : ORIGIN = 0x08033000, LENGTH = 32K */
   /* Flash user data - PRESERVED at original location */

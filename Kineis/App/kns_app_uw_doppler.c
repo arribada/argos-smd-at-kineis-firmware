@@ -87,6 +87,9 @@
 #if defined(BSP_HAS_VBAT_ADC)
 #include "mgr_bat.h"
 #endif
+#include "mgr_rate.h"
+#include "mgr_txstats.h"
+#include "mgr_pmlog.h"
 
 /* ---- State Machine ---- */
 
@@ -116,6 +119,145 @@ struct {
 	uint16_t observed_peak_adc;  /**< Highest ADC ever seen (dynamic cap) */
 } sws_retained;
 
+/* ---- Boot-loop protection -----------------------------------------------
+ * Counts consecutive boots that never reached MONITORING. A reset between
+ * boot and "MONITORING reached" is treated as a failure. Two thresholds:
+ *   - BOOT_FAIL_FACTORY_RESET   : wipe NVM (defaults restored, SWS calib
+ *                                 survives via sws_retained above). The tag
+ *                                 keeps the same Argos ID/credentials because
+ *                                 those live in the Kineis lib's own area,
+ *                                 not in MGR_NVM.
+ *   - BOOT_FAIL_PERMANENT_OFF   : assume hard fault, cut power via PWR_LATCH
+ *                                 and wait for reed magnet to repower.
+ * Stored in SRAM2 retention so it survives every reset class except
+ * VBAT removal. CRC32 detects accidental corruption / first-power-on. */
+#define BOOT_RETAIN_MAGIC          0x424F4F54UL  /* "BOOT" */
+#define BOOT_FAIL_FACTORY_RESET    5
+#define BOOT_FAIL_PERMANENT_OFF    10
+
+static __attribute__((__section__(".retentionRamData")))
+struct {
+	uint32_t magic;
+	uint16_t consecutive_failures;
+	uint8_t  factory_reset_attempted;
+	uint8_t  permanent_off_armed;
+	uint32_t crc32;
+} boot_retained;
+
+static uint32_t boot_retained_crc(void)
+{
+	/* CRC of all fields before crc32. Simple Adler-style sum is enough —
+	 * we only need to catch first-boot garbage, not adversarial corruption. */
+	uint32_t s = boot_retained.magic;
+	s = s * 31u + boot_retained.consecutive_failures;
+	s = s * 31u + boot_retained.factory_reset_attempted;
+	s = s * 31u + boot_retained.permanent_off_armed;
+	return s;
+}
+
+static bool boot_retained_valid(void)
+{
+	return boot_retained.magic == BOOT_RETAIN_MAGIC &&
+	       boot_retained.crc32 == boot_retained_crc();
+}
+
+static void boot_retained_commit(void)
+{
+	boot_retained.magic = BOOT_RETAIN_MAGIC;
+	boot_retained.crc32 = boot_retained_crc();
+}
+
+static bool boot_success_logged = false;  /**< Latched: ignore repeat calls. */
+
+/* Forward decl — used by boot_loop_handle() to wipe NVM on factory reset. */
+extern bool MGR_NVM_reset(void);
+
+/**
+ * @brief Boot-loop guard. Called once early in init.
+ *
+ * Increments consecutive_failures (boots that didn't reach MONITORING are
+ * still pending so they count). Two escalations:
+ *   1. ≥ BOOT_FAIL_FACTORY_RESET  →  wipe NVM and reset. Defaults will be
+ *      re-applied on next boot; SWS calibration survives via sws_retained.
+ *      Done ONCE only — subsequent boots keep counting up.
+ *   2. ≥ BOOT_FAIL_PERMANENT_OFF →  cut PWR_LATCH (board powers off entirely
+ *      until reed magnet re-arms it). Last-resort defense against a hard
+ *      fault we can't software-fix.
+ *
+ * boot_success() resets the counter to 0 when MONITORING is first reached.
+ */
+static void boot_loop_handle(void)
+{
+	if (!boot_retained_valid()) {
+		/* First power-on or RAM2 lost: start from zero. */
+		boot_retained.magic = BOOT_RETAIN_MAGIC;
+		boot_retained.consecutive_failures = 0;
+		boot_retained.factory_reset_attempted = 0;
+		boot_retained.permanent_off_armed = 0;
+		boot_retained_commit();
+		return;
+	}
+
+	if (boot_retained.consecutive_failures < 0xFFFFu)
+		boot_retained.consecutive_failures++;
+	boot_retained_commit();
+
+	MGR_EVTLOG_log(EVT_BOOT_FAIL, boot_retained.consecutive_failures);
+	MGR_LOG_DEBUG("[BOOT-LOOP] consecutive_failures=%u factory_done=%u\r\n",
+		boot_retained.consecutive_failures,
+		boot_retained.factory_reset_attempted);
+
+	if (boot_retained.consecutive_failures >= BOOT_FAIL_PERMANENT_OFF) {
+		/* Hard fault we can't recover — power off and wait for reed magnet. */
+		MGR_LOG_DEBUG("[BOOT-LOOP] PERMANENT OFF triggered\r\n");
+		MGR_EVTLOG_log(EVT_FACTORY_RESET, 0xFFFFu);
+		boot_retained.permanent_off_armed = 1;
+		boot_retained_commit();
+#if defined(BSP_HAS_REED_SWITCH)
+		MGR_REED_releasePower();
+		HAL_PWREx_EnablePullUpPullDownConfig();
+		HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
+		HAL_PWREx_EnterSHUTDOWNMode();
+#else
+		MGR_ERR_logAndReset(ERR_BOOT_LOOP);
+#endif
+		/* Never returns */
+		return;
+	}
+
+	if (boot_retained.consecutive_failures >= BOOT_FAIL_FACTORY_RESET &&
+	    !boot_retained.factory_reset_attempted) {
+		MGR_LOG_DEBUG("[BOOT-LOOP] FACTORY RESET (SWS calib preserved)\r\n");
+		MGR_EVTLOG_log(EVT_FACTORY_RESET, boot_retained.consecutive_failures);
+		boot_retained.factory_reset_attempted = 1;
+		boot_retained_commit();
+		/* Wipe app config in flash. SWS calibration is preserved through
+		 * sws_retained (SRAM2). The Kineis stack credentials (Argos ID,
+		 * address, MAC profile, message counter) live in their own flash
+		 * area (FLASH_USER for MSG/WKU pages) and are NOT touched here. */
+		(void)MGR_NVM_reset();
+		MGR_ERR_logAndReset(ERR_BOOT_LOOP);
+		/* Never returns */
+	}
+}
+
+/**
+ * @brief Latch boot success when MONITORING is reached for the first time.
+ *
+ * Resets consecutive_failures and clears factory_reset_attempted so the next
+ * fail series gets a fresh chance to escalate. Idempotent within a boot.
+ */
+static void boot_loop_mark_success(void)
+{
+	if (boot_success_logged)
+		return;
+	boot_success_logged = true;
+	boot_retained.consecutive_failures = 0;
+	boot_retained.factory_reset_attempted = 0;
+	boot_retained_commit();
+	MGR_LOG_DEBUG("[BOOT-LOOP] Boot success latched\r\n");
+}
+
 /* Exported for fault handlers (MGR_ERR_LOG_FAULT macro in stm32wlxx_it.c) */
 volatile uint32_t g_uw_doppler_state_for_err = 0;
 
@@ -125,7 +267,23 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 	.tx_max_interval_s     = 180,  /**< 3min cap: better Argos pass coverage for Doppler */
 	.tx_max_count          = 0,    /**< unlimited */
 	.tx_jitter_percent     = 10,   /**< +/-10% randomization to avoid TX collisions */
+	.tx_cooldown_s         = 60,   /**< 60s quiet time between TX, survives dive/surface */
 };
+
+/* LB mode (low-battery) config. Defaults engage LB at 2.9V (just above the
+ * existing min_tx_mV=2.8V hard floor) with 200 mV hysteresis. In LB mode TX
+ * timing is slower and capped at 3 TX per surface event. */
+static KNS_APP_UwDopplerLbCfg_t lb_cfg = {
+	.lb_enter_mV       = 2900,
+	.lb_exit_mV        = 3100,
+	.lb_tx_interval_s  = 60,   /**< 6x slower than normal 10s */
+	.lb_tx_max_s       = 600,  /**< 10 min cap vs normal 3 min */
+	.lb_tx_max_count   = 3,
+};
+static bool lb_active = false; /**< Hysteretic state, updated each TX cycle. */
+/* Forward decl: lb_update is defined alongside the LB getters/setters near the
+ * bottom of the file, but referenced from the TX scheduling loop above. */
+static bool lb_update(uint16_t bat_mV);
 
 /* Deploy mode: 1 = deployed (TX enabled), 0 = not deployed (SWS runs but no TX) */
 static uint8_t deploy_mode = 1;
@@ -142,6 +300,61 @@ static uint32_t tx_count = 0;              /**< Number of TXs sent in current su
 static uint32_t last_tx_tick = 0;          /**< Tick of last TX */
 static uint32_t current_interval_ms = 0;   /**< Current interval between TXs in ms */
 static bool     surface_tx_pending = false; /**< Immediate TX needed on surface detection */
+/* Sprint 3: anti-collision random offset added to effective_min_ms for the
+ * very first TX of each surface event. Drawn fresh from the (UID-seeded)
+ * PRNG at surface detection. Up to FIRST_TX_RANDOM_WINDOW_MS. */
+#define FIRST_TX_RANDOM_WINDOW_MS  5000u
+static uint32_t first_tx_random_offset_ms = 0;
+
+/* Sprint 4: forced-TX counter set by KNS_APP_uw_doppler_startTestBurst().
+ * Bypasses surface/deploy/rate/cooldown/backoff gates — used for AT+TEST. */
+#define TEST_BURST_MAX_COUNT  10u
+static uint8_t test_tx_remaining = 0;
+
+/* Exponential backoff on consecutive device errors (TX_TIMEOUT / MAC_ERROR).
+ * Constants defined here (rather than with the other state-machine timeouts
+ * below) so the static helpers right after see them. */
+#define TX_BACKOFF_BASE_MS       60000  /**< First backoff after a consecutive TX error: 1 min. Doubles each error up to TX_BACKOFF_MAX_MS. */
+#define TX_BACKOFF_MAX_MS       600000  /**< Backoff cap (10 min). Prevents months-long lock-outs while still throttling a sustained RF failure mode (e.g. dead transceiver, bad antenna match). */
+#define TX_BACKOFF_MAX_SHIFT         4  /**< Max left-shift on the base — 60s -> 16x = 16min, capped at TX_BACKOFF_MAX_MS = 10min anyway. */
+static uint8_t  consecutive_tx_errors = 0;     /**< Reset on TX_DONE or surface event. */
+static uint32_t tx_backoff_until_tick = 0;     /**< Block any TX request until this tick. */
+
+static void tx_backoff_arm(void)
+{
+	uint8_t shift = consecutive_tx_errors;
+	if (shift > 0) shift--;            /* first error = base, second = base*2 */
+	if (shift > TX_BACKOFF_MAX_SHIFT)
+		shift = TX_BACKOFF_MAX_SHIFT;
+	uint32_t backoff_ms = TX_BACKOFF_BASE_MS << shift;
+	if (backoff_ms > TX_BACKOFF_MAX_MS)
+		backoff_ms = TX_BACKOFF_MAX_MS;
+	tx_backoff_until_tick = HAL_GetTick() + backoff_ms;
+	MGR_EVTLOG_log(EVT_TX_BACKOFF, (uint16_t)(backoff_ms / 1000));
+	MGR_LOG_DEBUG("[UW_DPL] TX backoff armed: %lus (errors=%u)\r\n",
+		(unsigned long)(backoff_ms / 1000), consecutive_tx_errors);
+}
+
+static void tx_backoff_reset(void)
+{
+	consecutive_tx_errors = 0;
+	tx_backoff_until_tick = 0;
+}
+
+static bool tx_backoff_blocked(uint32_t *retry_in_s)
+{
+	if (tx_backoff_until_tick == 0)
+		return false;
+	uint32_t now = HAL_GetTick();
+	if ((int32_t)(tx_backoff_until_tick - now) <= 0) {
+		/* Expired — clear so the next blocked() call short-circuits. */
+		tx_backoff_until_tick = 0;
+		return false;
+	}
+	if (retry_in_s)
+		*retry_in_s = (tx_backoff_until_tick - now) / 1000u;
+	return true;
+}
 
 /* State timeout tracking */
 static uint32_t state_enter_tick = 0;      /**< Tick when current state was entered */
@@ -155,6 +368,13 @@ static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
 #define TIMEOUT_SHUTDOWN_BLINK_MS 10000 /**< Shutdown blink timeout */
 #define MAX_MAC_INIT_RETRIES     3      /**< Max MAC init retries before reset */
 #define MIN_INTER_TX_INTERVAL_MS 5000   /**< Hard floor between two consecutive TX requests AND between MAC-ready and first TX — protects against MAC stack re-entry and PA back-to-back inrush */
+#define PA_WDG_THRESHOLD_MS      30000  /**< Max time PA can stay ON without a TX_DONE before we force-off + reset. A normal Argos TX is < 1 s; 30 s leaves ample room for the longest BLIND retx pattern while still cutting silent 60 mA drain quickly enough to spare battery. */
+#define MAX_STATE_HANG_MS       300000  /**< 5 min cap on any non-steady state. MONITORING is excluded (steady state). Anything longer means the SM is wedged — log + reset rather than silently hang. */
+/* TX_BACKOFF_* macros are defined earlier in the file so the static helpers
+ * (tx_backoff_arm etc.) can see them. Kept the originals below as docs:
+ * #define TX_BACKOFF_BASE_MS  60000
+ * #define TX_BACKOFF_MAX_MS  600000
+ * #define TX_BACKOFF_MAX_SHIFT     4 */
 
 /* Direct synchronous UART log macro for tracing crash-prone code paths.
  * Writes a fixed-tag line straight to the LPUART without going through the
@@ -249,6 +469,12 @@ static void transition_to(UwDopplerState_t new_state)
 	state_enter_tick = HAL_GetTick();
 	g_uw_doppler_state_for_err = (uint32_t)new_state;
 	MGR_EVTLOG_log(EVT_STATE_CHANGE, (uint16_t)new_state);
+
+	/* First time we reach steady-state operation — disarm the boot-loop
+	 * guard. Putting the hook in transition_to() (rather than the loop)
+	 * guarantees one call per real transition, not per loop tick. */
+	if (new_state == UW_DOPPLER_MONITORING)
+		boot_loop_mark_success();
 }
 
 static uint32_t state_elapsed_ms(void)
@@ -292,9 +518,16 @@ static uint32_t compute_next_interval_ms(uint32_t n)
 	/* T_n = T_initial * (1 + growth/100)^n
 	 * Computed iteratively to avoid floating point.
 	 * Each step: interval = interval * (100 + growth) / 100
+	 *
+	 * LB mode override: when low-battery mode is active, swap the initial/max
+	 * for the lb_* variants (no growth applied — just fixed slower cadence).
 	 */
-	uint32_t interval_ms = (uint32_t)tx_cfg.tx_initial_interval_s * 1000;
-	uint32_t max_ms = (uint32_t)tx_cfg.tx_max_interval_s * 1000;
+	uint32_t interval_ms = lb_active
+		? (uint32_t)lb_cfg.lb_tx_interval_s * 1000
+		: (uint32_t)tx_cfg.tx_initial_interval_s * 1000;
+	uint32_t max_ms = lb_active
+		? (uint32_t)lb_cfg.lb_tx_max_s * 1000
+		: (uint32_t)tx_cfg.tx_max_interval_s * 1000;
 	for (uint32_t i = 0; i < n; i++) {
 		uint64_t next = (uint64_t)interval_ms * (100 + tx_cfg.tx_growth_percent) / 100;
 		if (next >= max_ms) {
@@ -597,6 +830,18 @@ static bool process_mac_events(void)
 		case KNS_MAC_TX_DONE:
 			MGR_LOG_DEBUG("[UW_DPL] TX done (#%lu)\r\n", tx_count);
 			MGR_EVTLOG_log(EVT_TX_DONE, 0);
+			MGR_TXSTATS_recordDone();  /* Sprint 4 */
+			/* Sprint 4: consume one test-burst slot if any. The next
+			 * MONITORING loop iteration will fire the following TX. */
+			if (test_tx_remaining > 0)
+				test_tx_remaining--;
+			/* Rate limiter: count successful TX only. TX_TIMEOUT/TX_ERROR
+			 * are NOT counted — they don't consume air-time / battery the
+			 * same way, and the backoff path handles their throttling. */
+			MGR_RATE_recordTx();
+			/* Successful TX → clear the consecutive-error counter so the
+			 * next failure starts fresh at the base backoff. */
+			tx_backoff_reset();
 			/* CRITICAL: turn off external PA — MAC stack enables it via
 			 * MCU_MISC_turn_on_pa() at TX start but does NOT auto-disable it.
 			 * If we don't disable it here, the PA stays drawing ~60 mA forever.
@@ -617,11 +862,23 @@ static bool process_mac_events(void)
 		case KNS_MAC_TX_TIMEOUT:
 			MGR_LOG_DEBUG("[UW_DPL] TX timeout\r\n");
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, 0);
+			MGR_TXSTATS_recordTimeout();  /* Sprint 4 */
+			/* Sprint 4: decrement test burst on failure too, otherwise a
+			 * broken radio could keep the burst spinning forever. */
+			if (test_tx_remaining > 0)
+				test_tx_remaining--;
 			MCU_MISC_turn_off_pa();
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
 				tcxo_first_tx_skip = false;
 			}
+			/* Device-error backoff: a TX timeout is the canonical "device
+			 * misbehaving" signal — could be a stuck radio, bad antenna
+			 * match, supply droop. Backoff prevents thrashing the MAC
+			 * stack and the PA in a tight loop. */
+			if (consecutive_tx_errors < 0xFFu)
+				consecutive_tx_errors++;
+			tx_backoff_arm();
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE)
 				transition_to(UW_DOPPLER_MONITORING);
 			break;
@@ -636,6 +893,16 @@ static bool process_mac_events(void)
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
 				tcxo_first_tx_skip = false;
+			}
+			/* Count this as a TX error only if it was actually tied to a
+			 * SEND_DATA request (others may be benign init-time errors). */
+			if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
+				if (consecutive_tx_errors < 0xFFu)
+					consecutive_tx_errors++;
+				tx_backoff_arm();
+				MGR_TXSTATS_recordError();  /* Sprint 4 */
+				if (test_tx_remaining > 0)
+					test_tx_remaining--;  /* don't loop forever */
 			}
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE)
 				transition_to(UW_DOPPLER_MONITORING);
@@ -666,12 +933,21 @@ void KNS_APP_uw_doppler_init(void)
 	mac_init_retries = 0;
 	state_enter_tick = HAL_GetTick();
 
-	/* Seed PRNG with a runtime-varying value so each device/boot picks a
-	 * different jitter sequence — important to avoid clustered TX patterns
-	 * across a multi-tag deployment.
-	 */
+	/* Seed PRNG so each device/boot picks a different jitter sequence —
+	 * important to avoid clustered TX patterns across a multi-tag deployment.
+	 * Sprint 3: pull the STM32WL55 96-bit factory unique ID and fold it in.
+	 * Without this, two tags freshly powered at the same moment would have
+	 * very similar seeds (HAL_GetTick() identical + same .bss address). */
+	{
+		uint32_t uid = *(volatile uint32_t *)(UID_BASE)
+		             ^ *(volatile uint32_t *)(UID_BASE + 4u)
+		             ^ *(volatile uint32_t *)(UID_BASE + 8u);
+		prng_state ^= uid;
+	}
 	prng_state ^= HAL_GetTick();
 	prng_state ^= (uint32_t)(uintptr_t)&prng_state;
+	/* Mix once more so the first prng_next() output already depends on UID. */
+	prng_state = prng_state * 1664525UL + 1013904223UL;
 	(void)prng_next();  /* discard first value */
 
 	/* Start IWDG watchdog early (16s timeout) - before any slow init */
@@ -680,6 +956,20 @@ void KNS_APP_uw_doppler_init(void)
 	/* Init event log (SRAM2 retention - survives resets) */
 	MGR_EVTLOG_init();
 	MGR_EVTLOG_log(EVT_BOOT, 0);
+
+	/* Boot-loop guard: increments per-boot failure counter, optionally
+	 * triggers factory reset or permanent off. Must run BEFORE MGR_NVM_load()
+	 * so a wiped flash leads to default config on this very boot. */
+	boot_loop_handle();
+
+	/* Rate limiter: init retention ring BEFORE NVM_load so apply_config can
+	 * push the persisted config (window_s / max_tx) into it. */
+	MGR_RATE_init();
+
+	/* Sprint 4: persistent TX stats + post-mortem flash log. Init order
+	 * doesn't matter relative to NVM_load — neither uses NVM config. */
+	MGR_TXSTATS_init();
+	MGR_PMLOG_init();
 
 	/* Load saved config from flash (if valid) */
 	MGR_NVM_load();
@@ -716,6 +1006,36 @@ void KNS_APP_uw_doppler_loop(void)
 {
 	/* Refresh watchdog every loop iteration */
 	MGR_WDG_refresh();
+
+	/* PA watchdog: catch the case where the MAC stack enabled the PA but
+	 * never fired TX_DONE/TIMEOUT/ERROR. Without this the GR5504 bias keeps
+	 * drawing ~60 mA until IWDG eventually resets (16 s) — and on STDALONE
+	 * we've seen freezes where IWDG does fire but the same hang recurs on
+	 * the next TX. Forcing PA off + logging + resetting gives a clean recovery
+	 * with full diagnostic context. */
+	if (MCU_MISC_PA_isStuck(PA_WDG_THRESHOLD_MS)) {
+		uint32_t on_ms = MCU_MISC_PA_onDuration_ms();
+		MGR_LOG_DEBUG("[UW_DPL] PA watchdog tripped (on=%lums)\r\n",
+			(unsigned long)on_ms);
+		MGR_EVTLOG_log(EVT_PA_STUCK, (uint16_t)(on_ms / 100));
+		MCU_MISC_turn_off_pa();
+		MGR_ERR_logAndReset(ERR_PA_STUCK);
+		/* Never returns */
+	}
+
+	/* Generic state-hang detector: any non-MONITORING state lingering past
+	 * MAX_STATE_HANG_MS is interpreted as a wedged state machine. Per-state
+	 * timeouts (TIMEOUT_BOOT_MS, TIMEOUT_MAC_READY_MS, TIMEOUT_TX_DONE_MS,
+	 * etc.) catch the common cases sooner; this is the long-tail safety net. */
+	if (uw_doppler_state != UW_DOPPLER_MONITORING &&
+	    state_elapsed_ms() > MAX_STATE_HANG_MS) {
+		MGR_LOG_DEBUG("[UW_DPL] State hang: state=%u elapsed=%lums\r\n",
+			(unsigned)uw_doppler_state, (unsigned long)state_elapsed_ms());
+		MGR_EVTLOG_log(EVT_STATE_HANG, (uint16_t)uw_doppler_state);
+		MCU_MISC_turn_off_pa();  /* defensive: PA may be stuck on */
+		MGR_ERR_logAndReset(ERR_STATE_HANG);
+		/* Never returns */
+	}
 
 #if defined(USE_UART_DRIVER)
 	/* Heartbeat: direct synchronous UART, bypasses MGR_LOG ring buffer.
@@ -915,6 +1235,10 @@ void KNS_APP_uw_doppler_loop(void)
 				MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
 				reset_tx_scheduling();
 				surface_tx_pending = true;
+				/* Draw a fresh anti-collision delay for the first TX of
+				 * this surface burst. UID-seeded PRNG gives per-tag spread. */
+				first_tx_random_offset_ms =
+					prng_next() % FIRST_TX_RANDOM_WINDOW_MS;
 
 				/* Pre-warmup TCXO: start it now so it's stable by the time
 				 * the first TX fires. Save current warmup setting so we can
@@ -967,26 +1291,52 @@ void KNS_APP_uw_doppler_loop(void)
 			(void)MGR_NVM_saveCalibDebounced(NVM_CALIB_SAVE_MIN_INTERVAL_S);
 		}
 
+		/* Sprint 4: forced test burst. If queued, fire immediately bypassing
+		 * deploy_mode / surface / rate / cooldown / backoff. Still respects
+		 * MIN_INTER_TX_INTERVAL_MS so the PA isn't hammered back-to-back. */
+		if (test_tx_remaining > 0) {
+			uint32_t since = HAL_GetTick() - last_tx_tick;
+			if (since >= MIN_INTER_TX_INTERVAL_MS) {
+				MGR_LOG_DEBUG("[UW_DPL] Test TX %u remaining\r\n",
+					test_tx_remaining);
+				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
+				transition_to(UW_DOPPLER_SURFACE_TX);
+				return;  /* loop again next tick to enter SURFACE_TX */
+			}
+			return;  /* still waiting on safety floor */
+		}
+
 		/* TX scheduling logic - only TX if deployed. */
 		if (deploy_mode && sws_state == MGR_SWS_STATE_SURFACE) {
 			bool should_tx = false;
 			uint32_t since_last_tx = HAL_GetTick() - last_tx_tick;
 
 			/* Effective minimum interval between any two TX requests.
-			 * Uses the larger of MIN_INTER_TX_INTERVAL_MS (safety floor) and
-			 * the user-configured tx_initial_interval_s. This way a 30s config
-			 * is respected even if SWS oscillates UW/SURF in <30s — re-surface
-			 * doesn't trigger immediate TX if the configured interval hasn't
-			 * elapsed yet. */
+			 * Uses the largest of:
+			 *   - MIN_INTER_TX_INTERVAL_MS  (safety floor, hardcoded)
+			 *   - tx_initial_interval_s     (user-configured initial gap)
+			 *   - tx_cooldown_s             (global post-TX quiet time, also
+			 *                                applies across surface/dive cycles)
+			 * The cooldown is what stops a turtle that oscillates UW/SURF
+			 * every few seconds from spamming TX bursts each time it surfaces. */
 			uint32_t effective_min_ms = MIN_INTER_TX_INTERVAL_MS;
-			uint32_t configured_min_ms = (uint32_t)tx_cfg.tx_initial_interval_s * 1000;
+			/* In LB mode the initial interval is replaced by lb_tx_interval_s. */
+			uint32_t configured_min_ms = lb_active
+				? (uint32_t)lb_cfg.lb_tx_interval_s * 1000
+				: (uint32_t)tx_cfg.tx_initial_interval_s * 1000;
+			uint32_t cooldown_ms = (uint32_t)tx_cfg.tx_cooldown_s * 1000;
 			if (configured_min_ms > effective_min_ms)
 				effective_min_ms = configured_min_ms;
+			if (cooldown_ms > effective_min_ms)
+				effective_min_ms = cooldown_ms;
 
 			if (surface_tx_pending) {
 				/* Surface detected (first ever, or re-surface) — only TX if
-				 * enough time elapsed since last_tx_tick (MAC ready or last TX). */
-				if (since_last_tx >= effective_min_ms) {
+				 * enough time elapsed since last_tx_tick (MAC ready or last TX).
+				 * Sprint 3: add the UID-derived random offset so two tags
+				 * surfacing at the same moment fire their 1st TX seconds apart. */
+				uint32_t first_tx_min_ms = effective_min_ms + first_tx_random_offset_ms;
+				if (since_last_tx >= first_tx_min_ms) {
 					should_tx = true;
 					surface_tx_pending = false;
 				}
@@ -997,20 +1347,47 @@ void KNS_APP_uw_doppler_loop(void)
 					should_tx = true;
 			}
 
-			/* Check max TX count */
-			if (should_tx && tx_cfg.tx_max_count > 0 && tx_count >= tx_cfg.tx_max_count)
-				should_tx = false;
+			/* Check max TX count — LB mode swaps in lb_tx_max_count. */
+			{
+				uint8_t cap = lb_active ? lb_cfg.lb_tx_max_count : tx_cfg.tx_max_count;
+				if (should_tx && cap > 0 && tx_count >= cap)
+					should_tx = false;
+			}
 
 			if (should_tx) {
 #if defined(BSP_HAS_VBAT_ADC)
 				last_vbat_mV = MGR_BAT_readVoltage_mV();
 				MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
+				/* Update LB hysteretic state on every fresh reading. */
+				lb_update(last_vbat_mV);
 				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
 					MGR_LOG_DEBUG("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
 						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
 					should_tx = false;
 				}
 #endif
+			}
+			if (should_tx) {
+				/* Rate limiter: hard cap on TX bursts over the rolling window.
+				 * Survives resets, so a crash-loop can't bypass it. */
+				uint32_t retry_in_s = 0;
+				if (MGR_RATE_isBlocked(&retry_in_s)) {
+					MGR_LOG_DEBUG("[UW_DPL] Rate limit hit, retry in %lus\r\n",
+						(unsigned long)retry_in_s);
+					MGR_EVTLOG_log(EVT_RATE_BLOCKED,
+						(uint16_t)(retry_in_s > 0xFFFFu ? 0xFFFFu : retry_in_s));
+					should_tx = false;
+				}
+			}
+			if (should_tx) {
+				/* Device-error backoff: skip TX while we're inside a
+				 * post-error quiet window (exponential, capped). */
+				uint32_t retry_in_s = 0;
+				if (tx_backoff_blocked(&retry_in_s)) {
+					MGR_LOG_DEBUG("[UW_DPL] Backoff active, retry in %lus\r\n",
+						(unsigned long)retry_in_s);
+					should_tx = false;
+				}
 			}
 			if (should_tx) {
 				UWDPL_TRACE("TX should=yes");
@@ -1043,11 +1420,11 @@ void KNS_APP_uw_doppler_loop(void)
 			uint32_t warmup_ms = 0;
 			MCU_MISC_TCXO_Force_State(true);
 			MCU_MISC_TCXO_get_warmup(&warmup_ms);
-			/* Cap at 14s to stay under the 16s IWDG timeout. Configurable
-			 * via AT+TCXO=N up to 30s, but our code only honors up to 14s
-			 * so the WDG doesn't fire during the blocking HAL_Delay. */
-			if (warmup_ms > 14000)
-				warmup_ms = 14000;
+			/* The 14s cap is no longer required now that we use
+			 * MGR_WDG_delayWithKick (refreshes IWDG every 1s). Kept a
+			 * generous 30s cap to match what AT+TCXO=N allows. */
+			if (warmup_ms > 30000)
+				warmup_ms = 30000;
 			{
 				static char _tcxo_buf[48];
 				int _n = snprintf(_tcxo_buf, sizeof(_tcxo_buf),
@@ -1059,7 +1436,7 @@ void KNS_APP_uw_doppler_loop(void)
 						(uint16_t)_n, 100);
 			}
 			if (warmup_ms > 0)
-				HAL_Delay(warmup_ms);
+				MGR_WDG_delayWithKick(warmup_ms);
 			UWDPL_TRACE("TCXO ready");
 		}
 
@@ -1089,6 +1466,7 @@ void KNS_APP_uw_doppler_loop(void)
 			MGR_LOG_DEBUG("[UW_DPL] TX #%lu sent (interval=%lums)\r\n",
 				tx_count, current_interval_ms);
 
+			MGR_TXSTATS_recordAttempt();  /* Sprint 4 — count the request */
 			last_tx_tick = HAL_GetTick();
 			current_interval_ms = compute_next_interval_ms(tx_count);
 			tx_count++;
@@ -1196,6 +1574,73 @@ void KNS_APP_uw_doppler_setDeployMode(uint8_t mode)
 {
 	deploy_mode = mode ? 1 : 0;
 	MGR_LOG_DEBUG("[UW_DPL] Deploy mode: %u\r\n", deploy_mode);
+}
+
+uint8_t KNS_APP_uw_doppler_getStateRaw(void)
+{
+	return (uint8_t)uw_doppler_state;
+}
+
+uint32_t KNS_APP_uw_doppler_getTxCountSession(void)
+{
+	return tx_count;
+}
+
+KNS_APP_UwDopplerLbCfg_t KNS_APP_uw_doppler_getLbCfg(void)
+{
+	return lb_cfg;
+}
+
+void KNS_APP_uw_doppler_setLbCfg(const KNS_APP_UwDopplerLbCfg_t *cfg)
+{
+	if (!cfg) return;
+	lb_cfg = *cfg;
+	/* Force-reevaluate on next reading rather than keeping stale state. */
+	lb_active = false;
+	MGR_LOG_DEBUG("[UW_DPL] LB cfg: enter=%umV exit=%umV intvl=%us max=%us cnt=%u\r\n",
+		lb_cfg.lb_enter_mV, lb_cfg.lb_exit_mV,
+		lb_cfg.lb_tx_interval_s, lb_cfg.lb_tx_max_s, lb_cfg.lb_tx_max_count);
+}
+
+bool KNS_APP_uw_doppler_isLbActive(void)
+{
+	return lb_active;
+}
+
+uint8_t KNS_APP_uw_doppler_startTestBurst(uint8_t count)
+{
+	if (count == 0) count = 1;
+	if (count > TEST_BURST_MAX_COUNT) count = TEST_BURST_MAX_COUNT;
+	test_tx_remaining = count;
+	MGR_LOG_DEBUG("[UW_DPL] Test burst started: %u TX queued\r\n", count);
+	return count;
+}
+
+uint8_t KNS_APP_uw_doppler_getTestBurstRemaining(void)
+{
+	return test_tx_remaining;
+}
+
+/* Update LB hysteretic state from a fresh battery reading. Returns the new
+ * active state for convenience. lb_enter_mV=0 disables LB entirely. */
+static bool lb_update(uint16_t bat_mV)
+{
+	if (lb_cfg.lb_enter_mV == 0) {
+		lb_active = false;
+		return false;
+	}
+	if (!lb_active && bat_mV > 0 && bat_mV < lb_cfg.lb_enter_mV) {
+		lb_active = true;
+		MGR_LOG_DEBUG("[UW_DPL] LB mode ENTER (%umV < %umV)\r\n",
+			bat_mV, lb_cfg.lb_enter_mV);
+		MGR_EVTLOG_log(EVT_LB_ENTER, bat_mV);
+	} else if (lb_active && bat_mV > lb_cfg.lb_exit_mV) {
+		lb_active = false;
+		MGR_LOG_DEBUG("[UW_DPL] LB mode EXIT (%umV > %umV)\r\n",
+			bat_mV, lb_cfg.lb_exit_mV);
+		MGR_EVTLOG_log(EVT_LB_EXIT, bat_mV);
+	}
+	return lb_active;
 }
 
 void KNS_APP_uw_doppler_restoreSwsBaselines(void)

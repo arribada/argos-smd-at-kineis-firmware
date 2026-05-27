@@ -44,6 +44,7 @@
 #include "adc.h"
 #include "main.h"
 #include "mgr_log.h"
+#include "mgr_evtlog.h"
 #include "stm32wlxx_hal.h"
 
 /* ---- Pin Definitions ---- */
@@ -421,10 +422,87 @@ static uint16_t sws_read_adc(void)
 
 /* ---- Core Detection (5-level + hardening) ---- */
 
+/* ---- Sensor fault detection (Sprint 3) ---------------------------------- */
+
+#define SWS_FAULT_STUCK_SAMPLES   20u  /* same ADC for N consecutive reads → stuck */
+#define SWS_FAULT_OOR_SAMPLES     10u  /* rail-low/high for N reads → broken sensor */
+#define SWS_FAULT_OOR_LOW         5u
+#define SWS_FAULT_OOR_HIGH        4090u
+#define SWS_FAULT_VAR_WINDOW      30u  /* rolling window for variance check */
+#define SWS_FAULT_VAR_MIN         3u   /* dead if variance < 3 LSB² */
+
+static uint8_t  sws_current_fault    = MGR_SWS_FAULT_NONE;
+static uint16_t sws_fault_stuck_last = 0xFFFFu;
+static uint16_t sws_fault_stuck_cnt  = 0;
+static uint16_t sws_fault_oor_cnt    = 0;
+static uint16_t sws_fault_var_buf[SWS_FAULT_VAR_WINDOW];
+static uint16_t sws_fault_var_idx    = 0;
+static uint16_t sws_fault_var_filled = 0;
+
+static void sws_fault_update(uint16_t adc)
+{
+	uint8_t new_fault = MGR_SWS_FAULT_NONE;
+
+	/* STUCK: identical ADC for N reads. Counter saturates at u16 max. */
+	if (adc == sws_fault_stuck_last) {
+		if (sws_fault_stuck_cnt < 0xFFFFu)
+			sws_fault_stuck_cnt++;
+	} else {
+		sws_fault_stuck_cnt = 0;
+		sws_fault_stuck_last = adc;
+	}
+	if (sws_fault_stuck_cnt >= SWS_FAULT_STUCK_SAMPLES)
+		new_fault |= MGR_SWS_FAULT_STUCK;
+
+	/* OUT-OF-RANGE: rail-low or rail-high for N reads. */
+	if (adc <= SWS_FAULT_OOR_LOW || adc >= SWS_FAULT_OOR_HIGH) {
+		if (sws_fault_oor_cnt < 0xFFFFu)
+			sws_fault_oor_cnt++;
+	} else {
+		sws_fault_oor_cnt = 0;
+	}
+	if (sws_fault_oor_cnt >= SWS_FAULT_OOR_SAMPLES)
+		new_fault |= MGR_SWS_FAULT_OUT_OF_RANGE;
+
+	/* NO_VARIANCE: rolling window, dead-sensor detection. */
+	sws_fault_var_buf[sws_fault_var_idx] = adc;
+	sws_fault_var_idx = (uint16_t)((sws_fault_var_idx + 1u) % SWS_FAULT_VAR_WINDOW);
+	if (sws_fault_var_filled < SWS_FAULT_VAR_WINDOW)
+		sws_fault_var_filled++;
+	if (sws_fault_var_filled >= SWS_FAULT_VAR_WINDOW) {
+		uint32_t sum = 0;
+		for (uint16_t i = 0; i < SWS_FAULT_VAR_WINDOW; i++)
+			sum += sws_fault_var_buf[i];
+		uint16_t mean = (uint16_t)(sum / SWS_FAULT_VAR_WINDOW);
+		uint32_t ssq = 0;
+		for (uint16_t i = 0; i < SWS_FAULT_VAR_WINDOW; i++) {
+			int32_t d = (int32_t)sws_fault_var_buf[i] - (int32_t)mean;
+			ssq += (uint32_t)(d * d);
+		}
+		uint32_t variance = ssq / SWS_FAULT_VAR_WINDOW;
+		if (variance < SWS_FAULT_VAR_MIN)
+			new_fault |= MGR_SWS_FAULT_NO_VARIANCE;
+	}
+
+	/* Log only on rising edge (a fault bit that wasn't set before).
+	 * Avoids spamming the log every single measurement once a sensor is broken. */
+	uint8_t rising = (uint8_t)(new_fault & ~sws_current_fault);
+	if (rising) {
+		MGR_EVTLOG_log(EVT_SWS_FAULT, (uint16_t)new_fault);
+	}
+	sws_current_fault = new_fault;
+}
+
+uint8_t MGR_SWS_getFault(void)
+{
+	return sws_current_fault;
+}
+
 static bool detector_state(void)
 {
 	uint16_t raw_value = sws_read_adc();
 	last_raw_adc = raw_value;
+	sws_fault_update(raw_value);
 
 	/* 1. Validate ADC */
 	if (raw_value > sws_config.threshold_max)

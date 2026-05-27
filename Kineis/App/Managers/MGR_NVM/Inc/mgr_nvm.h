@@ -11,6 +11,9 @@
  *   v3: + jitter_percent (TX), split surface/underwater intervals (SWS),
  *        adaptive sample delay bounds (SWS),
  *        adapted air/water baselines + observed peak (SWS calibration runtime)
+ *   v4: + rate_window_s + rate_max_tx (persistent TX rate limiter config)
+ *   v5: + lb_enter_mV/lb_exit_mV/lb_tx_interval_s/lb_tx_max_s/lb_tx_max_count
+ *       (low-battery mode config — hysteretic switch to slower TX cadence)
  */
 
 #ifndef MGR_NVM_H
@@ -24,7 +27,7 @@
 #include "mgr_bat.h"
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 3
+#define NVM_VERSION 5
 
 /**
  * @brief NVM config structure stored in flash (v3)
@@ -38,13 +41,15 @@ typedef struct {
 	uint8_t  deploy_mode;
 	uint8_t  led_mode;
 	uint8_t  _pad0;
-	/* TX config (8 bytes) */
+	/* TX config (12 bytes) */
 	uint16_t tx_initial_interval_s;
 	uint8_t  tx_growth_percent;
 	uint8_t  tx_max_count;
 	uint16_t tx_max_interval_s;
 	uint8_t  tx_jitter_percent;       /**< v3: random +/- % on TX intervals (0=off) */
 	uint8_t  _pad1;
+	uint16_t tx_cooldown_s;           /**< v4: global post-TX quiet time (s, 0=off) */
+	uint8_t  _pad1b[2];
 	/* SWS config (28 bytes) */
 	uint16_t sws_threshold_min;
 	uint16_t sws_threshold_max;
@@ -67,6 +72,17 @@ typedef struct {
 	/* Battery config */
 	uint16_t bat_min_tx_mV;
 	uint8_t  _pad4[2];
+	/* v4: Rate limiter persistent config (8 bytes) */
+	uint32_t rate_window_s;
+	uint16_t rate_max_tx;
+	uint8_t  _pad5[2];
+	/* v5: Low-battery mode config (12 bytes) */
+	uint16_t lb_enter_mV;
+	uint16_t lb_exit_mV;
+	uint16_t lb_tx_interval_s;
+	uint16_t lb_tx_max_s;
+	uint8_t  lb_tx_max_count;
+	uint8_t  _pad6[3];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 

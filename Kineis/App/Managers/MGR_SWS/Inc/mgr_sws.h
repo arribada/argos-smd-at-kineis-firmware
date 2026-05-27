@@ -120,6 +120,20 @@ void MGR_SWS_enterLowPower(void);
 /** @brief Restore SWS GPIO after STOP mode wakeup */
 void MGR_SWS_exitLowPower(void);
 
+/* ---- Sensor fault detection (Sprint 3) ----------------------------------- */
+
+/** Bitfield of detected SWS sensor faults. 0 = healthy. */
+#define MGR_SWS_FAULT_NONE          0x00u
+#define MGR_SWS_FAULT_STUCK         0x01u  /**< Same ADC value for N consecutive reads */
+#define MGR_SWS_FAULT_OUT_OF_RANGE  0x02u  /**< ADC rails low (<5) or high (>4090) */
+#define MGR_SWS_FAULT_NO_VARIANCE   0x04u  /**< Variance over window too low (dead sensor) */
+
+/**
+ * @brief Get the OR'ed bitfield of currently detected sensor faults.
+ * @return One of MGR_SWS_FAULT_* (NONE if all checks pass).
+ */
+uint8_t MGR_SWS_getFault(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -35,7 +35,38 @@ typedef enum {
 	EVT_SHUTDOWN,        /**< Shutdown triggered (data = 0) */
 	EVT_TIMEOUT,         /**< State timeout (data = timed-out state) */
 	EVT_ERROR,           /**< Error logged (data = MGR_ERR_Code_t) */
+	EVT_PA_STUCK,        /**< PA watchdog tripped (data = on-duration / 100 ms) */
+	EVT_RATE_BLOCKED,    /**< TX blocked by rate limiter (data = retry_in_s capped to u16) */
+	EVT_COOLDOWN_BLOCK,  /**< TX blocked by surface cooldown (data = remaining_s) */
+	EVT_TX_BACKOFF,      /**< Backoff applied after consecutive errors (data = backoff_s) */
+	EVT_BOOT_FAIL,       /**< Boot reached fail counter (data = consecutive_failures) */
+	EVT_FACTORY_RESET,   /**< Factory reset triggered by boot-loop (data = reason) */
+	EVT_LB_ENTER,        /**< Entered low-battery mode (data = bat_mV) */
+	EVT_LB_EXIT,         /**< Left low-battery mode (data = bat_mV) */
+	EVT_STATE_HANG,      /**< State machine hung > MAX_STATE_HANG_MS (data = state) */
+	EVT_SWS_FAULT,       /**< SWS sensor fault detected (data = MGR_SWS_Fault_t bits) */
 } MGR_EVTLOG_Type_t;
+
+/**
+ * @brief Severity classification for an event type.
+ *
+ * Implicit severity (looked up from the type, not stored in the entry) so the
+ * on-RAM struct stays at 8 bytes and we don't break existing retention buffers.
+ * The GUI can use the same enum to colour-code rows; the AT+LOG dumper prefixes
+ * each line with a single character (T/I/W/E) for quick visual scanning.
+ */
+typedef enum {
+	EVT_SEV_TRACE = 0,   /**< Fine-grain debug, normally filtered out */
+	EVT_SEV_INFO,        /**< Expected operational event */
+	EVT_SEV_WARN,        /**< Recoverable anomaly (retry, blocked, etc) */
+	EVT_SEV_ERROR,       /**< Failure that triggered or will trigger a reset */
+} MGR_EVTLOG_Severity_t;
+
+/** @brief Lookup the canonical severity for an event type. */
+MGR_EVTLOG_Severity_t MGR_EVTLOG_getSeverity(MGR_EVTLOG_Type_t type);
+
+/** @brief Single-character tag for severity (T/I/W/E). */
+char MGR_EVTLOG_severityChar(MGR_EVTLOG_Severity_t sev);
 
 typedef struct {
 	uint32_t tick;    /**< HAL_GetTick() timestamp */

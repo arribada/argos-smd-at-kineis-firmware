@@ -293,6 +293,9 @@ ifeq ($(APP),UW_DOPPLER)
 	$(KINEIS_DIR)/App/Managers/MGR_ERR/Src/mgr_err.c \
 	$(KINEIS_DIR)/App/Managers/MGR_WDG/Src/mgr_wdg.c \
 	$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Src/mgr_evtlog.c \
+	$(KINEIS_DIR)/App/Managers/MGR_RATE/Src/mgr_rate.c \
+	$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Src/mgr_txstats.c \
+	$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Src/mgr_pmlog.c \
 	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
 	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
 endif
@@ -464,6 +467,9 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_ERR/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_WDG/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_RATE/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Inc
 endif
 
 ifeq ($(APP),DOPPLER)

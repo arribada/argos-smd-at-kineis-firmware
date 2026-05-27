@@ -52,6 +52,9 @@ __attribute__((unused)) static const char *err_code_str(MGR_ERR_Code_t code)
 	case ERR_TX_TIMEOUT:     return "TX_TIMEOUT";
 	case ERR_STACK_OVERFLOW: return "STACK_OVERFLOW";
 	case ERR_WDG_RESET:      return "WDG_RESET";
+	case ERR_PA_STUCK:       return "PA_STUCK";
+	case ERR_BOOT_LOOP:      return "BOOT_LOOP";
+	case ERR_STATE_HANG:     return "STATE_HANG";
 	default:                 return "UNKNOWN";
 	}
 }

@@ -30,6 +30,7 @@
 
 #include "mgr_wdg.h"
 #include "stm32wlxx.h"
+#include "stm32wlxx_hal.h"
 #include "mgr_log.h"
 
 /* IWDG key values */
@@ -81,6 +82,22 @@ void MGR_WDG_init(void)
 void MGR_WDG_refresh(void)
 {
 	IWDG->KR = IWDG_KEY_REFRESH;
+}
+
+void MGR_WDG_delayWithKick(uint32_t total_ms)
+{
+	/* Kick before starting so we have the full IWDG window for the first chunk
+	 * even if the caller hadn't kicked recently. */
+	IWDG->KR = IWDG_KEY_REFRESH;
+
+	uint32_t start = HAL_GetTick();
+	while ((HAL_GetTick() - start) < total_ms) {
+		uint32_t elapsed = HAL_GetTick() - start;
+		uint32_t remaining = (elapsed < total_ms) ? (total_ms - elapsed) : 0;
+		uint32_t chunk = remaining > 1000 ? 1000 : remaining;
+		HAL_Delay(chunk);
+		IWDG->KR = IWDG_KEY_REFRESH;
+	}
 }
 
 /**

@@ -76,6 +76,21 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+LOG",           6, bMGR_AT_CMD_LOG_cmd},
 	{ "AT+SAVE",          7, bMGR_AT_CMD_SAVE_cmd},
 	{ "AT+BATCFG",        9, bMGR_AT_CMD_BATCFG_cmd},
+	/* Rate limiter — RATECLEAR / RATECFG before RATE to win prefix match */
+	{ "AT+RATECLEAR",    12, bMGR_AT_CMD_RATECLEAR_cmd},
+	{ "AT+RATECFG",      10, bMGR_AT_CMD_RATECFG_cmd},
+	{ "AT+RATE",          7, bMGR_AT_CMD_RATE_cmd},
+	/* Sprint 2 diagnostic / control */
+	{ "AT+STATUS",        9, bMGR_AT_CMD_STATUS_cmd},
+	{ "AT+DIAG",          7, bMGR_AT_CMD_DIAG_cmd},
+	{ "AT+RESET",         8, bMGR_AT_CMD_RESET_cmd},
+	/* LB mode — LBCFG before LB to win prefix match */
+	{ "AT+LBCFG",         8, bMGR_AT_CMD_LBCFG_cmd},
+	{ "AT+LB",            5, bMGR_AT_CMD_LB_cmd},
+	/* Sprint 4 telemetry / post-mortem / test burst */
+	{ "AT+TXSTATS",      10, bMGR_AT_CMD_TXSTATS_cmd},
+	{ "AT+PMLOG",         8, bMGR_AT_CMD_PMLOG_cmd},
+	{ "AT+TEST",          7, bMGR_AT_CMD_TEST_cmd},
 #endif
 
 #ifdef USE_DOPPLER_APP

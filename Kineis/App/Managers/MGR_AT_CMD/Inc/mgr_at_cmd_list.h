@@ -70,6 +70,17 @@ enum  atcmd_idx_t {
 	AT_LOG,          /**< Event log dump / clear */
 	AT_SAVE,         /**< Save config to NVM */
 	AT_BATCFG,       /**< Battery protection config */
+	AT_RATECLEAR,    /**< Wipe rate-limiter ring */
+	AT_RATECFG,      /**< Rate-limiter config (window_s, max_tx) */
+	AT_RATE,         /**< Rate-limiter live query */
+	AT_STATUS,       /**< Sprint 2: snapshot of runtime state */
+	AT_DIAG,         /**< Sprint 2: self-test (SWS/LED/REED/BAT) */
+	AT_RESET,        /**< Sprint 2: software reset */
+	AT_LBCFG,        /**< Sprint 2: low-battery mode config */
+	AT_LB,           /**< Sprint 2: live LB mode state */
+	AT_TXSTATS,      /**< Sprint 4: persistent TX counters */
+	AT_PMLOG,        /**< Sprint 4: post-mortem flash log */
+	AT_TEST,         /**< Sprint 4: forced TX burst */
 #endif
 
 #ifdef USE_DOPPLER_APP

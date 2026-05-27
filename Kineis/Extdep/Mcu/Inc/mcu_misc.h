@@ -27,6 +27,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include <stdint.h>
+#include <stdbool.h>
 #include "kns_types.h"
 
 #define MCU_PA_BOOTDELAY_MS 250  /* extended from 100ms: gives TPS22904 soft-start + PA bias + supply recovery extra margin against brownout */
@@ -120,6 +121,25 @@ void MCU_MISC_TCXO_set_warmup(uint32_t time_ms);
  * @param[out] time_ms Pointer to a variable where the warmup time (in milliseconds) will be stored.
  */
 void MCU_MISC_TCXO_get_warmup(uint32_t *time_ms);
+
+/* ---- PA watchdog --------------------------------------------------------- */
+
+/**
+ * @brief Check whether the external PA has been ON longer than the threshold.
+ *
+ * The PA-on timestamp is set by MCU_MISC_turn_on_pa() and cleared by
+ * MCU_MISC_turn_off_pa(). If the MAC stack hangs after enabling the PA, the
+ * 60 mA bias keeps draining the battery silently until IWDG eventually fires.
+ * This wrapper lets the application enforce its own bound and react earlier.
+ *
+ * @param[in] threshold_ms Max allowed duration with PA on (no TX_DONE).
+ * @return true if PA has been on longer than threshold_ms, false otherwise
+ *         (or if PA is currently off).
+ */
+bool MCU_MISC_PA_isStuck(uint32_t threshold_ms);
+
+/** @brief Return how long the PA has been ON (ms), or 0 if currently off. */
+uint32_t MCU_MISC_PA_onDuration_ms(void);
 
 #endif /* MCU_MISC_H_ */
 

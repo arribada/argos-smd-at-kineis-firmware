@@ -20,6 +20,7 @@
  */
 
 #include "mgr_evtlog.h"
+#include "mgr_pmlog.h"
 #include "stm32wlxx_hal.h"
 
 /* State exported by kns_app_uw_doppler.c for fault/error context */
@@ -65,6 +66,14 @@ void MGR_EVTLOG_log(MGR_EVTLOG_Type_t type, uint16_t data)
 	evtlog_buf.head = (evtlog_buf.head + 1) % MGR_EVTLOG_MAX_ENTRIES;
 	if (evtlog_buf.count < MGR_EVTLOG_MAX_ENTRIES)
 		evtlog_buf.count++;
+
+	/* Sprint 4: mirror ERROR-severity events to the post-mortem flash log so
+	 * forensics are possible on a recovered tag whose SRAM2 has been wiped
+	 * (full power-off / SHUTDOWN / VBAT loss). Lower severities stay only in
+	 * SRAM2 to avoid burning the page. */
+	MGR_EVTLOG_Severity_t sev = MGR_EVTLOG_getSeverity(type);
+	if (sev == EVT_SEV_ERROR)
+		MGR_PMLOG_log(sev, (uint8_t)type, e->state, data);
 }
 
 uint16_t MGR_EVTLOG_count(void)
@@ -88,6 +97,57 @@ void MGR_EVTLOG_clear(void)
 	evtlog_buf.head  = 0;
 	evtlog_buf.count = 0;
 	/* Keep magic valid - no need to zero entries */
+}
+
+MGR_EVTLOG_Severity_t MGR_EVTLOG_getSeverity(MGR_EVTLOG_Type_t type)
+{
+	/* Switch-based lookup so the compiler can warn if a new enum value lands
+	 * here without an explicit severity (-Wswitch). The default branch handles
+	 * future additions defensively as INFO. */
+	switch (type) {
+	case EVT_BOOT:
+	case EVT_STATE_CHANGE:
+	case EVT_REED_ON:
+	case EVT_REED_OFF:
+	case EVT_SWS_SURFACE:
+	case EVT_SWS_UNDERWATER:
+	case EVT_TX_START:
+	case EVT_TX_DONE:
+	case EVT_MAC_READY:
+	case EVT_BAT:
+	case EVT_SHUTDOWN:
+	case EVT_LB_ENTER:
+	case EVT_LB_EXIT:
+		return EVT_SEV_INFO;
+
+	case EVT_TX_TIMEOUT:
+	case EVT_MAC_ERROR:
+	case EVT_TIMEOUT:
+	case EVT_RATE_BLOCKED:
+	case EVT_COOLDOWN_BLOCK:
+	case EVT_TX_BACKOFF:
+	case EVT_BOOT_FAIL:
+	case EVT_SWS_FAULT:
+		return EVT_SEV_WARN;
+
+	case EVT_ERROR:
+	case EVT_PA_STUCK:
+	case EVT_FACTORY_RESET:
+	case EVT_STATE_HANG:
+		return EVT_SEV_ERROR;
+	}
+	return EVT_SEV_INFO;
+}
+
+char MGR_EVTLOG_severityChar(MGR_EVTLOG_Severity_t sev)
+{
+	switch (sev) {
+	case EVT_SEV_TRACE: return 'T';
+	case EVT_SEV_INFO:  return 'I';
+	case EVT_SEV_WARN:  return 'W';
+	case EVT_SEV_ERROR: return 'E';
+	}
+	return '?';
 }
 
 /**

@@ -21,6 +21,7 @@
 #define KNS_APP_UW_DOPPLER_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* ---- BLIND-DOPPLER TX Config ---- */
 
@@ -30,7 +31,27 @@ typedef struct {
 	uint16_t tx_max_interval_s;     /**< Max interval cap (default 180s) */
 	uint8_t  tx_max_count;          /**< Max TX count per surface event (0 = unlimited) */
 	uint8_t  tx_jitter_percent;     /**< Random +/-% applied per TX interval (default 10, 0=off) */
+	uint16_t tx_cooldown_s;         /**< Global post-TX quiet time (default 60s, 0=off).
+	                                     Survives surface/dive cycles so a turtle that
+	                                     resurfaces immediately can't burst-TX. */
 } KNS_APP_UwDopplerTxCfg_t;
+
+/** @brief Low-battery (LB) mode config.
+ *
+ * When VBAT drops below lb_enter_mV, the TX scheduler switches to slower /
+ * fewer-TX values (lb_tx_*). It exits LB mode only above lb_exit_mV
+ * (hysteresis), so a transient droop during TX doesn't oscillate the mode.
+ *
+ * Set lb_enter_mV=0 to disable LB mode entirely.
+ */
+typedef struct {
+	uint16_t lb_enter_mV;        /**< Enter LB mode at this voltage (0=disabled) */
+	uint16_t lb_exit_mV;         /**< Exit LB mode above this voltage (must > enter_mV) */
+	uint16_t lb_tx_interval_s;   /**< Replaces tx_initial_interval_s while in LB mode */
+	uint16_t lb_tx_max_s;        /**< Replaces tx_max_interval_s while in LB mode */
+	uint8_t  lb_tx_max_count;    /**< Replaces tx_max_count while in LB mode */
+	uint8_t  _pad;
+} KNS_APP_UwDopplerLbCfg_t;
 
 /* ---- API ---- */
 
@@ -63,5 +84,36 @@ void KNS_APP_uw_doppler_setDeployMode(uint8_t mode);
 
 /** @brief Restore SWS baselines from retention RAM (call after MGR_SWS_init()) */
 void KNS_APP_uw_doppler_restoreSwsBaselines(void);
+
+/** @brief Get current state-machine state (numeric, for AT+STATUS).
+ *  Avoids exporting the enum: callers only need the integer for reporting. */
+uint8_t KNS_APP_uw_doppler_getStateRaw(void);
+
+/** @brief Current TX count since boot (in current surface event window). */
+uint32_t KNS_APP_uw_doppler_getTxCountSession(void);
+
+/** @brief LB mode getters / setters */
+KNS_APP_UwDopplerLbCfg_t KNS_APP_uw_doppler_getLbCfg(void);
+void KNS_APP_uw_doppler_setLbCfg(const KNS_APP_UwDopplerLbCfg_t *cfg);
+bool KNS_APP_uw_doppler_isLbActive(void);
+
+/**
+ * @brief Sprint 4: trigger a forced TX burst (test / validation).
+ *
+ * Queues `count` test transmissions that bypass the rate limiter, the post-TX
+ * cooldown, the error backoff, the surface check and the deploy_mode gate.
+ * Each TX still goes through the standard MAC/PA path so it really hits the
+ * antenna — useful for at-deployment validation and RF debugging.
+ *
+ * The MIN_INTER_TX_INTERVAL_MS safety floor (5 s) is still honored to protect
+ * the PA from back-to-back inrush.
+ *
+ * @param count  Number of TXs to send (clamped to [1..10]).
+ * @return       The clamped count actually queued.
+ */
+uint8_t KNS_APP_uw_doppler_startTestBurst(uint8_t count);
+
+/** @brief How many test TXs are still pending in the current burst. */
+uint8_t KNS_APP_uw_doppler_getTestBurstRemaining(void);
 
 #endif /* KNS_APP_UW_DOPPLER_H */

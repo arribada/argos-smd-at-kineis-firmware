@@ -53,6 +53,9 @@ typedef enum {
 	ERR_TX_TIMEOUT,
 	ERR_STACK_OVERFLOW,
 	ERR_WDG_RESET,
+	ERR_PA_STUCK,        /**< External PA stayed ON beyond watchdog threshold */
+	ERR_BOOT_LOOP,       /**< Application never reached MONITORING after factory reset */
+	ERR_STATE_HANG,      /**< State machine stuck in a non-steady state past MAX_STATE_HANG_MS */
 } MGR_ERR_Code_t;
 
 /**

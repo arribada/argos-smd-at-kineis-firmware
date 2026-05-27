@@ -63,6 +63,12 @@ extern uint32_t SystemCoreClock;
  *  before the inrush event. Costs ~5 ms per TX. */
 #define MCU_PA_PRECHARGE_DELAY_MS  5
 
+/** @brief PA-on timestamp for the watchdog.
+ *  Volatile because turn_on_pa()/turn_off_pa() may be called from the MAC
+ *  stack ISR context, while MCU_MISC_PA_isStuck() is polled from main loop.
+ *  0 = PA currently off; any other value = HAL_GetTick() at turn-on. */
+static volatile uint32_t pa_on_tick = 0;
+
 void MCU_MISC_turn_on_pa()
 {
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
@@ -136,6 +142,14 @@ void MCU_MISC_turn_on_pa()
 	}
 
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_SET);
+	/* Arm PA watchdog: if turn_off_pa() isn't called within the threshold the
+	 * application loop will force the PA off and reset (avoids the 60 mA
+	 * silent drain when the MAC stack hangs mid-TX). HAL_GetTick()==0 is a
+	 * legitimate value at boot, so we bias by 1 to keep 0 as the "off" sentinel. */
+	{
+		uint32_t t = HAL_GetTick();
+		pa_on_tick = (t == 0) ? 1 : t;
+	}
 
 	{
 		/* Single-char trace right after — if this comes out, the chip survived
@@ -168,6 +182,8 @@ void MCU_MISC_turn_off_pa()
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
 	MGR_LOG_DEBUG("[PA] turn_off_pa\r\n");
+	/* Disarm PA watchdog: any subsequent isStuck() call will return false. */
+	pa_on_tick = 0;
 	/* Disable PA: drive PSU_EN LOW actively to ensure PA stays off.
 	 * Keep pins as OUTPUT_PP (not analog) so pull-up/pull-down are effective
 	 * and the pin actively drives the level. */
@@ -277,6 +293,22 @@ void MCU_MISC_TCXO_set_warmup(uint32_t time_ms) {
 void MCU_MISC_TCXO_get_warmup(uint32_t *time_ms) {
 	*time_ms = tcxo_warmup_time_ms;
 	return;
+}
+
+uint32_t MCU_MISC_PA_onDuration_ms(void)
+{
+	uint32_t armed = pa_on_tick;  /* single read, value can be torn but OK at uint32 */
+	if (armed == 0)
+		return 0;
+	return HAL_GetTick() - armed;
+}
+
+bool MCU_MISC_PA_isStuck(uint32_t threshold_ms)
+{
+	uint32_t armed = pa_on_tick;
+	if (armed == 0)
+		return false;
+	return (HAL_GetTick() - armed) > threshold_ms;
 }
 
 /**

@@ -80,4 +80,95 @@ bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
  */
 bool bMGR_AT_CMD_BATCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+RATECFG: Get/Set persistent TX rate limiter (sliding window)
+ *
+ * Status: +RATECFG=<window_s>,<max_tx>
+ * Action: AT+RATECFG=<window_s>,<max_tx>
+ *   window_s : 60 .. 604800 (1 minute .. 7 days)
+ *   max_tx   : 1  .. 256
+ * Persisted to NVM via AT+SAVE.
+ */
+bool bMGR_AT_CMD_RATECFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+RATE: Query live rate-limiter state (read-only)
+ *
+ * Status: +RATE=<current_count>,<max_tx>,<window_s>,<blocked>,<retry_in_s>
+ *   blocked    : 0 if a TX is allowed right now, 1 if rate-limited
+ *   retry_in_s : 0 unless blocked, else seconds until the oldest entry expires
+ */
+bool bMGR_AT_CMD_RATE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+RATECLEAR: Wipe the rate limiter ring buffer
+ *
+ * Action only. Doesn't reset configuration. Use after a deliberate event
+ * (deployment, recovery, RTC resync) where past TX timestamps no longer
+ * reflect real budget consumption.
+ */
+bool bMGR_AT_CMD_RATECLEAR_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+STATUS: One-shot snapshot of every interesting runtime value.
+ *
+ * Status only. Format (single line, comma-separated, machine-parseable):
+ *  +STATUS=<state>,<uptime_s>,<reset_count>,<crash_count>,
+ *          <last_err>,<sws_state>,<sws_adc>,<bat_mV>,<deploy>,
+ *          <tx_session>,<rate_count>,<rate_max>,<rate_blocked>
+ */
+bool bMGR_AT_CMD_STATUS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+DIAG: Quick self-test of subsystems.
+ *
+ * Action only. Triggers fresh measurements (SWS, BAT) and a short LED cycle
+ * (R,G,B 200ms each). Returns:
+ *  +DIAG=<sws_ok>,<sws_adc>,<bat_ok>,<bat_mV>,<reed_present>,<led_ok>
+ */
+bool bMGR_AT_CMD_DIAG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+RESET: Force a software reset.
+ *
+ * Action only. NVIC_SystemReset() with a tiny pre-delay so the +OK reply
+ * physically leaves the UART. No confirmation required (per design choice).
+ */
+bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LBCFG: Low-battery mode configuration.
+ *
+ * Status: +LBCFG=<enter_mV>,<exit_mV>,<lb_interval_s>,<lb_max_s>,<lb_max_count>
+ * Action: AT+LBCFG=<enter_mV>,<exit_mV>,<lb_interval_s>,<lb_max_s>,<lb_max_count>
+ *   enter_mV=0  → disable LB mode entirely
+ *   exit_mV    must be > enter_mV (hysteresis)
+ * Persisted to NVM via AT+SAVE.
+ */
+bool bMGR_AT_CMD_LBCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LB: Query live LB mode state (read-only).
+ *
+ * +LB=<active>,<current_mV>,<enter_mV>,<exit_mV>
+ */
+bool bMGR_AT_CMD_LB_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+TXSTATS: persistent TX counters (Sprint 4).
+ *
+ * Status: +TXSTATS=<attempts>,<done>,<timeouts>,<errors>,<consec_fail>,<worst_consec>
+ * Action: AT+TXSTATS  → clear all counters
+ */
+bool bMGR_AT_CMD_TXSTATS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+PMLOG: post-mortem flash log (Sprint 4).
+ *
+ * Status: dumps every valid entry, oldest first:
+ *   +PMLOG=<count>
+ *   #NNN s=SEV t=TYPE st=STATE d=DATA tk=TICK_S seq=SEQ
+ * Action: erases the entire log page.
+ */
+bool bMGR_AT_CMD_PMLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+TEST=<count>: trigger a forced TX burst for radio validation (Sprint 4).
+ *
+ * Action only. count clamped to [1..10].
+ *   +TEST=<queued_count>
+ * Bypasses rate limiter / cooldown / backoff / deploy mode / surface check.
+ * Each TX still respects the 5 s MIN_INTER_TX_INTERVAL safety floor.
+ */
+bool bMGR_AT_CMD_TEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */
