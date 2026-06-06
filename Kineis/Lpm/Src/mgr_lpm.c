@@ -119,8 +119,12 @@ enum KNS_status_t MGR_LPM_enter(struct MgrLpm_EnvConfig_t env_config,
 	//> Notify each client with the deepest chosen LPM
 	vMGR_LPM_clientNotifyEnter(deepest_lpm);
 
-	MGR_LOG_DEBUG("LPM enter: mode=0x%02X (allowed=0x%02X)\r\n",
-		(unsigned int)deepest_lpm, (unsigned int)env_config.allowedLPMbitmap);
+	/* Silence the "mode=NONE" spam: it fires every main-loop iteration
+	 * (~10/s) when STOP is disabled, drowning every other trace. Only log
+	 * mode transitions away from NONE which is the interesting case. */
+	if (deepest_lpm != LOW_POWER_MODE_NONE)
+		MGR_LOG_DEBUG("LPM enter: mode=0x%02X (allowed=0x%02X)\r\n",
+			(unsigned int)deepest_lpm, (unsigned int)env_config.allowedLPMbitmap);
 
 	switch (deepest_lpm) {
 	case LOW_POWER_MODE_NONE:
@@ -248,6 +252,20 @@ static void vMGR_LPM_enterStop(struct MgrLpm_EnvConfig_t env_config)
 {
 	if (env_config.fp_stop_enter != NULL)
 		env_config.fp_stop_enter();
+
+	/* Preventive hardening (dormant — STOP is disabled in the production
+	 * MONITORING profile via uw_doppler_lpmReq() returning NONE).
+	 *
+	 * Without these clears, a stale PWR_FLAG_STOPF / WUFI sticky from a
+	 * previous wake makes WFI return immediately on the second STOP entry,
+	 * which is the symptom captured in memory/lpm_stop_known_issue.md
+	 * ("works once, never again on subsequent boots").
+	 *
+	 * STANDBY/SHUTDOWN paths below already do this clear. Adding it here
+	 * means the moment someone re-enables STOP in MONITORING (by flipping
+	 * uw_doppler_lpmReq()) the trap doesn't re-arm. */
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 
 #if defined(STM32L476xx) || defined(STM32WLE5xx) || defined(STM32G491xx)
 #ifdef USE_BAREMETAL

@@ -33,6 +33,10 @@
 #include "mgr_sws.h"
 #include "mgr_nvm.h"
 #include "mgr_evtlog.h"
+#include "lpm.h"
+#if defined(BSP_HAS_REED_SWITCH)
+#include "mgr_reed.h"
+#endif
 #include "mgr_wdg.h"
 #include "kns_app_uw_doppler.h"
 #include "main.h"
@@ -540,11 +544,22 @@ bool bMGR_AT_CMD_DIAG_cmd(uint8_t *pu8_cmdParamString,
 #endif
 
 #if defined(BSP_HAS_LED_RGB)
-	/* Quick visual cycle: R, G, B 200 ms each. Blocks ~600 ms — acceptable for a
-	 * deliberate diag command, and short enough to stay well under IWDG. */
-	MGR_LED_set(MGR_LED_RED);   HAL_Delay(200);
-	MGR_LED_set(MGR_LED_GREEN); HAL_Delay(200);
-	MGR_LED_set(MGR_LED_BLUE);  HAL_Delay(200);
+	/* Visual cycle exercising every code path:
+	 *   Solid:    R, G, B    (direct GPIO drive, 250 ms each)
+	 *   Soft PWM: W, V, C, Y (SysTick time-mux, 700 ms each)
+	 * Soft PWM colours get a longer slot so the user can confirm the
+	 * persistence-of-vision blend looks continuous (no visible flicker).
+	 * Total blocking time ~3.6 s — comfortably under IWDG (16 s). The
+	 * WDG is refreshed at each step so even the longer composite holds
+	 * leave headroom. */
+	MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_RED);    HAL_Delay(250); MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_GREEN);  HAL_Delay(250); MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_BLUE);   HAL_Delay(250); MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_WHITE);  HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_VIOLET); HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_CYAN);   HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_set(MGR_LED_YELLOW); HAL_Delay(700); MGR_WDG_refresh();
 	MGR_LED_off();
 	uint8_t led_ok = 1;
 #else
@@ -574,6 +589,37 @@ bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString,
 	HAL_Delay(100);
 	NVIC_SystemReset();
 	/* Never returns */
+	return true;
+}
+
+bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode != ATCMD_ACTION_MODE)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+
+	/* Optional parameter: AT+SHUTDOWN=<wake_seconds>
+	 *   0   (or omitted)  → no RTC auto-wake; wake only on reed magnet.
+	 *   N   (1..131072)   → RTC fires after N seconds, chip cold-boots.
+	 * Useful to validate the wake path without needing 24 h of patience. */
+	uint32_t wake_s = 0;
+	if (pu8_cmdParamString != NULL) {
+		(void)sscanf((const char *)pu8_cmdParamString,
+			"AT+SHUTDOWN=%lu", &wake_s);
+	}
+
+	MGR_LOG_DEBUG("[AT] SHUTDOWN requested (wake=%lus)\r\n",
+		(unsigned long)wake_s);
+	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)(wake_s & 0xFFFFu));
+	bMGR_AT_CMD_logSucceedMsg();
+	/* Same 100 ms TX-flush delay as AT+RESET, then persist + release. */
+	HAL_Delay(100);
+	(void)MGR_NVM_save();
+#if defined(BSP_HAS_REED_SWITCH)
+	MGR_REED_releasePower();
+#endif
+	LPM_shutdownWithAutoWake(wake_s);
+	/* Never returns — board loses power. */
 	return true;
 }
 

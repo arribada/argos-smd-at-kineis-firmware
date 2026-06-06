@@ -115,16 +115,16 @@ SECTIONS
 
   _sidata2 = LOADADDR(.data2); /* used by the startup to initialize data */
 
-  .data2 : 
+  .data2 :
   {
     . = ALIGN(4);
     _sdata2 = .;        /* create a global symbol at data start */
 
-    *(.knsCtxtData)
-    *(.retentionRamData)
+    KEEP(*(.knsCtxtData))
+    KEEP(*(.retentionRamData))
 
     . = ALIGN(4);
-    
+
     _edata2 = .;        /* define a global symbol at data end */
   } >RAM2 AT> ROM
 
@@ -157,12 +157,27 @@ SECTIONS
     _sbss2 = .;         /* define a global symbol at bss2 start */
     __bss2_start__ = _sbss2;
 
-    *(.knsCtxtBss)
-    *(.retentionRamBss)
+    KEEP(*(.knsCtxtBss))
+    KEEP(*(.retentionRamBss))
 
     . = ALIGN(4);
     _ebss2 = .;         /* define a global symbol at bss2 end */
     __bss2_end__ = _ebss2;
+  } >RAM2
+
+  /* Application "TRUE retention" RAM — NOLOAD, never touched by Sram2_Init.
+   * Survives every software-class reset (IWDG, SFT, OBL, BOR, PIN).
+   * Place items with __attribute__((__section__(".retentionRamNoload"))).
+   * Items MUST self-validate (magic + CRC). KEEP() guards --gc-sections. */
+  . = ALIGN(8);
+  .retention_noload (NOLOAD) :
+  {
+    _sretention = .;
+    __retention_start__ = _sretention;
+    KEEP(*(.retentionRamNoload))
+    . = ALIGN(8);
+    _eretention = .;
+    __retention_end__ = _eretention;
   } >RAM2
 
   . = ALIGN(8);

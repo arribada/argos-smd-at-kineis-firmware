@@ -42,6 +42,50 @@
 #define IWDG_PRESCALER     6U
 #define IWDG_RELOAD        2000U
 
+bool MGR_WDG_ensureIwdgStopOptionByte(void)
+{
+	/* If the bit is already set we're done — no flash write needed. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) != 0U) {
+		return false;
+	}
+
+	MGR_LOG_DEBUG("[WDG] IWDG_STOP option byte not set — programming...\r\n");
+
+	/* Unlock FLASH for option-byte access. Order matters: FLASH first,
+	 * then option-byte. Both must succeed before any HAL_FLASHEx_OBProgram. */
+	if (HAL_FLASH_Unlock() != HAL_OK) {
+		MGR_LOG_DEBUG("[WDG] FLASH unlock failed\r\n");
+		return false;
+	}
+	if (HAL_FLASH_OB_Unlock() != HAL_OK) {
+		MGR_LOG_DEBUG("[WDG] OB unlock failed\r\n");
+		HAL_FLASH_Lock();
+		return false;
+	}
+
+	FLASH_OBProgramInitTypeDef obInit = {0};
+	obInit.OptionType = OPTIONBYTE_USER;
+	obInit.UserType   = OB_USER_IWDG_STOP;
+	obInit.UserConfig = OB_IWDG_STOP_FREEZE;  /* 1 = freeze IWDG during STOP */
+
+	if (HAL_FLASHEx_OBProgram(&obInit) != HAL_OK) {
+		MGR_LOG_DEBUG("[WDG] OB program failed\r\n");
+		HAL_FLASH_OB_Lock();
+		HAL_FLASH_Lock();
+		return false;
+	}
+
+	/* Launch: reload the option bytes. This call triggers a SYSTEM RESET
+	 * — it does not return. On the next boot the bit will be set and this
+	 * function will see it and skip the entire path. */
+	(void)HAL_FLASH_OB_Launch();
+
+	/* If we somehow reach here (Launch did not reset), best effort cleanup. */
+	HAL_FLASH_OB_Lock();
+	HAL_FLASH_Lock();
+	return false;
+}
+
 void MGR_WDG_init(void)
 {
 	/* Start the IWDG first — activates LSI clock automatically.

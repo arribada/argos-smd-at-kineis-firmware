@@ -132,15 +132,19 @@ SECTIONS
     . = ALIGN(8);
   } >ROM
 
-  /* RAM2 data (Kineis context - retention) */
+  /* RAM2 data — copy-from-ROM-initialised by Sram2_Init.
+   * Contains Kineis stack context AND application items that *want* their
+   * C initialiser applied on every cold/factory boot (e.g. lpm_config,
+   * user_data FIFO). Items that must SURVIVE all software resets must
+   * instead live in `.retention_noload` below. */
   _sidata2 = LOADADDR(.data2);
 
   .data2 :
   {
     . = ALIGN(4);
     _sdata2 = .;
-    *(.knsCtxtData)
-    *(.retentionRamData)
+    KEEP(*(.knsCtxtData))
+    KEEP(*(.retentionRamData))
     . = ALIGN(4);
     _edata2 = .;
   } >RAM2 AT> ROM
@@ -158,17 +162,38 @@ SECTIONS
     _edata = .;
   } >RAM1 AT> ROM
 
-  /* RAM2 BSS (Kineis context) */
+  /* RAM2 BSS — zeroed by Sram2_Init on every cold/factory boot. */
   . = ALIGN(4);
   .bss2 :
   {
     _sbss2 = .;
     __bss2_start__ = _sbss2;
-    *(.knsCtxtBss)
-    *(.retentionRamBss)
+    KEEP(*(.knsCtxtBss))
+    KEEP(*(.retentionRamBss))
     . = ALIGN(4);
     _ebss2 = .;
     __bss2_end__ = _ebss2;
+  } >RAM2
+
+  /* Application "TRUE retention" RAM — NOLOAD, never touched by Sram2_Init.
+   * Survives every software-class reset (IWDG / SFT / OBL / BOR / PIN) so
+   * crash forensics, boot-loop counter, SWS calibration etc. don't silently
+   * lose their state on the reset paths that re-run Sram2_Init.
+   * Cleared ONLY by power-off (VBAT loss) or by an explicit memset.
+   *
+   * Trade-off: items here get NO C initialiser at boot. They MUST self-
+   * validate via magic + CRC (see boot_retained / sws_retained / crash_info).
+   *
+   * Place items with __attribute__((__section__(".retentionRamNoload"))). */
+  . = ALIGN(8);
+  .retention_noload (NOLOAD) :
+  {
+    _sretention = .;
+    __retention_start__ = _sretention;
+    KEEP(*(.retentionRamNoload))
+    . = ALIGN(8);
+    _eretention = .;
+    __retention_end__ = _eretention;
   } >RAM2
 
   /* RAM1 BSS */

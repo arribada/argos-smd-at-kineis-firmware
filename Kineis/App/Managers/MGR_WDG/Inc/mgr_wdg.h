@@ -16,6 +16,30 @@
 #define MGR_WDG_H
 
 #include <stdint.h>
+#include <stdbool.h>
+
+/**
+ * @brief Ensure the IWDG_STOP option byte is set (IWDG frozen during STOP).
+ *
+ * Reads FLASH_OPTR bit 17. If already set, returns false (no action). If
+ * NOT set, unlocks FLASH + option-byte registers, programs the bit, then
+ * calls HAL_FLASH_OB_Launch() which **triggers a system reset** to reload
+ * the option byte. The function does NOT return on the success-program
+ * path; the next boot sees the bit set and proceeds normally.
+ *
+ * Must be called early in init, BEFORE MGR_WDG_init() and BEFORE any LPM
+ * client is active.
+ *
+ * Without the IWDG_STOP bit, IWDG keeps counting in STOP mode. The MAC
+ * stack may keep the chip in STOP > 16 s between events, which would fire
+ * the watchdog and silently reset the chip. With IWDG_STOP=1 the watchdog
+ * freezes during STOP and only counts CPU-active time.
+ *
+ * @return false if the option byte was already correct OR if the program
+ *         sequence failed (logged via MGR_LOG_DEBUG). The function does
+ *         not return on the success-program path.
+ */
+bool MGR_WDG_ensureIwdgStopOptionByte(void);
 
 /**
  * @brief Start the IWDG with ~16s timeout

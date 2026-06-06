@@ -7,6 +7,7 @@
  */
 
 #include "adc.h"
+#include "main.h"   /* Error_Handler() prototype */
 
 ADC_HandleTypeDef hadc;
 
@@ -35,24 +36,41 @@ void MX_ADC_Init(void)
 	hadc.Init.TriggerFrequencyMode = ADC_TRIGGER_FREQ_LOW;
 
 	if (HAL_ADC_Init(&hadc) != HAL_OK) {
+		Error_Handler();
 		return;
 	}
 
-	/* Run ADC calibration for better accuracy */
-	HAL_ADCEx_Calibration_Start(&hadc);
+	/* Enable VREFINT internal channel path. Required before reading
+	 * ADC_CHANNEL_VREFINT (used by MGR_BAT to compute true VDDA). Without
+	 * this the read returns 0 → vdda math falls back to assumed VDDA →
+	 * VBAT mV is wrong → bad LB/shutdown decisions.
+	 * On STM32WL55 the CCR register lives in ADC_COMMON, not ADC. */
+	ADC_COMMON->CCR |= ADC_CCR_VREFEN;
 
-	/* Configure channel 7 (PA11) */
+	/* Calibration MUST succeed for accurate readings. Single-ended on STM32WL. */
+	if (HAL_ADCEx_Calibration_Start(&hadc) != HAL_OK) {
+		Error_Handler();
+		return;
+	}
+
+	/* Default channel = SWS (PA11 / IN7). MGR_BAT switches to IN0 / VREFINT
+	 * on demand and restores IN7 in its cleanup path. */
 	sConfig.Channel = ADC_CHANNEL_7;
 	sConfig.Rank = ADC_REGULAR_RANK_1;
 	sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 
 	if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK) {
+		Error_Handler();
 		return;
 	}
 }
 
 void MX_ADC_DeInit(void)
 {
+	/* Disable VREFINT internal path (counterpart to ADC_CCR_VREFEN in init).
+	 * Done BEFORE peripheral DeInit so the bandgap is properly stopped.
+	 * CCR is in ADC_COMMON on STM32WL55, not ADC. */
+	ADC_COMMON->CCR &= ~ADC_CCR_VREFEN;
 	HAL_ADC_DeInit(&hadc);
 }
 

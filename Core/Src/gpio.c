@@ -142,14 +142,13 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIOC pins to analog except :
    * PC0 = PA_PSU_EN (output)
-   * PC1 = PA_PSU_SEL (output) — NOT on STDALONE: PC1 stays analog because
-   *                              it's wired to TPS63901 SEL there.
+   * PC1 = PA_PSU_SEL / VSEL (TPS63901 voltage select): driven HIGH at boot
+   *       on STDALONE to guarantee 3V3 mode for MCU+radio+TCXO operation.
+   *       The external R11 (10M to VBAT) alone is high-impedance and could
+   *       droop under leakage — drive actively. Use MCU_MISC_VSEL_*() to
+   *       switch to 1.8V power-save (only when radio is idle).
    */
-  GPIO_InitStruct.Pin =
-#if defined(SMD_STDALONE)
-                        GPIO_PIN_1 |
-#endif
-                        GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_4 |
+  GPIO_InitStruct.Pin =        GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_4 |
                         GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 |
                         GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12 |
                         GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
@@ -164,15 +163,15 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(PA_PSU_EN_GPIO_Port, &GPIO_InitStruct);
-#if !defined(SMD_STDALONE)
-//  /*Configure GPIO pin : PtPin */
+
+  /* PA_PSU_SEL / VSEL: drive HIGH actively at boot (3V3 mode). */
+  HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
   GPIO_InitStruct.Pin = PA_PSU_SEL_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(PA_PSU_SEL_GPIO_Port, &GPIO_InitStruct);
   HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
-#endif
 
   /*Configure GPIO pin : PH3 */
   GPIO_InitStruct.Pin = GPIO_PIN_3;

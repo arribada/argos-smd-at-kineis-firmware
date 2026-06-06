@@ -62,6 +62,17 @@ static const char* current_test = NULL;
         } \
     } while(0)
 
+#define ASSERT_NE(unexpected, actual) \
+    do { \
+        if ((unexpected) == (actual)) { \
+            char _msg[128]; \
+            snprintf(_msg, sizeof(_msg), "Did not expect %ld", \
+                    (long)(actual)); \
+            TEST_FAIL(_msg); \
+            return; \
+        } \
+    } while(0)
+
 #define ASSERT_EQ_HEX(expected, actual) \
     do { \
         if ((expected) != (actual)) { \

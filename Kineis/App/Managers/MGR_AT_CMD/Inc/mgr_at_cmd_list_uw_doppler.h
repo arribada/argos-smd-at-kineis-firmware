@@ -171,4 +171,14 @@ bool bMGR_AT_CMD_PMLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec
  */
 bool bMGR_AT_CMD_TEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+SHUTDOWN: Force chip into SHUTDOWN mode (HW power off).
+ *
+ * Action only. Same code path as the magnet-6 s gesture: NVM_save +
+ * releasePower + LPM_shutdownNow. Used for HW validation when a magnet
+ * isn't available. Board cuts power; wake via reed switch magnet.
+ *
+ * @warning irreversible from firmware — only reed-switch HW circuit can wake.
+ */
+bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */

@@ -313,10 +313,13 @@ static void LPM_compensateTick(void)
 			elapsed_ms = 0;
 	}
 
-	/* Compensate HAL tick for the time spent in STOP.
-	 * Use direct uwTick addition instead of HAL_IncTick() loop
-	 * to avoid O(N) cost for long STOP durations.
-	 */
+	/* Guard against bogus elapsed values (RTC shadow stale, subsec under-
+	 * flow, etc.) that would corrupt uwTick. A single STOP cycle inside the
+	 * main app loop is at most a few seconds; the worst legitimate case is
+	 * a few hours of inactivity. Anything past 24 h is garbage. */
+	if (elapsed_ms > (24UL * 3600UL * 1000UL))
+		return;
+
 	extern __IO uint32_t uwTick;
 	uwTick += elapsed_ms;
 }
@@ -427,6 +430,14 @@ static void LPM_standby_enter() {
 	MGR_LOG_DEBUG("==== STANDBY enter ==== PB3=%u PWR_SR1=0x%08lX\r\n",
 		(unsigned int)pb3_state, (unsigned long)pwr_sr1);
 
+#if defined(USE_UW_DOPPLER_APP)
+	/* Tear down ADC + clock so the peripheral is in a known state on wake.
+	 * Without this, ADC stays active during STANDBY/reset and the next
+	 * MX_ADC_Init runs on a half-initialized peripheral → calibration
+	 * failure → erratic readings → bad MAC decisions → boot loop. */
+	MX_ADC_DeInit();
+#endif
+
 	GPIO_DisableAllToAnalogInput();
 	HAL_PWREx_EnablePullUpPullDownConfig();
 	/** Force pull down on wakeup pin: PB3, or PC13 or PA0
@@ -435,11 +446,12 @@ static void LPM_standby_enter() {
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);
 
 	// 2) Program the desired pulls for Standby via PWR (per port/bit)
-	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);      // example: PA0 pull-up
-#if !defined(SMD_STDALONE)
-	/* On STDALONE PC1 = TPS63901 SEL: pull is held externally (R11 to VBAT) */
-	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);      // example: PB3 pull-down
-#endif
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);
+	/* PA_PSU_SEL / VSEL must stay HIGH during STANDBY/SHUTDOWN so the
+	 * TPS63901 stays in 3V3 mode for the next wake. On STDALONE the
+	 * external R11 (10M to VBAT) is too weak alone; enable the PWR
+	 * controller pull-up to keep PC1 anchored HIGH while the GPIO is off. */
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
 #if defined(STM32WL55xx)
 	HAL_PWREx_EnableSRAMRetention();
 #else
@@ -469,17 +481,24 @@ static void LPM_standby_enter() {
 static void LPM_shutdown_enter() {
 	MGR_LOG_DEBUG("==== SHUTDOWN enter ====\r\n");
 
+#if defined(USE_UW_DOPPLER_APP)
+	/* Same reason as STANDBY entry: leave ADC peripheral in known state
+	 * so the next boot's MX_ADC_Init starts from a clean slate. */
+	MX_ADC_DeInit();
+#endif
+
 	GPIO_DisableAllToAnalogInput();
 	HAL_PWREx_EnablePullUpPullDownConfig();
 	/** Force pull down on wakeup pin: PB3, or PC13 or PA0 */
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);
 
 	// 2) Program the desired pulls for Standby via PWR (per port/bit)
-	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);      // example: PA0 pull-up
-#if !defined(SMD_STDALONE)
-	/* On STDALONE PC1 = TPS63901 SEL: pull is held externally (R11 to VBAT) */
-	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);      // example: PB3 pull-down
-#endif
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);
+	/* PA_PSU_SEL / VSEL must stay HIGH during STANDBY/SHUTDOWN so the
+	 * TPS63901 stays in 3V3 mode for the next wake. On STDALONE the
+	 * external R11 (10M to VBAT) is too weak alone; enable the PWR
+	 * controller pull-up to keep PC1 anchored HIGH while the GPIO is off. */
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
 
 #if defined(BSP_HAS_PWR_LATCH)
 	/* Pull PWR_LATCH (PB7) LOW to cut power on STDALONE board */
@@ -696,6 +715,62 @@ void LPM_setForcedMode(enum MgrLpm_LPM_t mode)
 enum MgrLpm_LPM_t LPM_getForcedMode(void)
 {
 	return lpm_forced_mode;
+}
+
+void LPM_shutdownNow(void)
+{
+	LPM_shutdownWithAutoWake(0);
+}
+
+void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
+{
+#ifdef LPM_SHUTDOWN_ENABLED
+	/* Run the same teardown that the MGR_LPM aggregator would: ADC deinit,
+	 * GPIO to analog, pull-up/down config, wake-up RTC + pins armed. */
+	LPM_shutdown_enter();
+
+	/* Optional RTC wake-up timer for sealed-deployment auto-recovery.
+	 * Mirrors the pattern in kns_app_doppler.c:enter_shutdown(). */
+	if (wakeup_seconds > 0) {
+		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+
+		/* CK_SPRE is 1 Hz: 16-bit counter covers 1..65 536 s; 17-bit
+		 * adds 65 537..131 072. Clamp at 17-bit max to avoid silent
+		 * truncation in the (counter-1) arithmetic. */
+		if (wakeup_seconds > 0x20000u)
+			wakeup_seconds = 0x20000u;
+
+		uint32_t clk_src = (wakeup_seconds > 0x10000u)
+			? RTC_WAKEUPCLOCK_CK_SPRE_17BITS
+			: RTC_WAKEUPCLOCK_CK_SPRE_16BITS;
+		uint16_t counter = (uint16_t)((wakeup_seconds - 1u) & 0xFFFFu);
+
+		(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0);
+
+		/* Enable the internal wake-up line so RTC wake reaches the PWR
+		 * controller. Without this the timer fires but the chip doesn't
+		 * exit SHUTDOWN. */
+		HAL_PWREx_DisableInternalWakeUpLine();
+		HAL_PWREx_EnableInternalWakeUpLine();
+	}
+
+	/* Mirror what vMGR_LPM_enterShutdown() in mgr_lpm.c does: clear sticky
+	 * wake-up flags so the rising edge on the wake source is detected
+	 * cleanly during the sleep period. */
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+
+	HAL_PWREx_EnterSHUTDOWNMode();
+	/* Never returns — chip cold-boots on next wake. */
+#else
+	/* SHUTDOWN not enabled in this build (LPM_SHUTDOWN_ENABLED off): fall
+	 * back to NVIC reset so the caller doesn't return into undefined
+	 * post-shutdown code paths. */
+	(void)wakeup_seconds;
+	NVIC_SystemReset();
+#endif
+	for (;;) { /* unreachable */ }
 }
 #pragma GCC visibility pop
 

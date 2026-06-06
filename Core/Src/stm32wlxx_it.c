@@ -23,7 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>  /* snprintf in HardFault_Handler */
-#if defined(USE_UW_DOPPLER_APP)
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
 #include "mgr_err.h"
 extern volatile uint32_t g_uw_doppler_state_for_err;
 #endif
@@ -113,109 +113,77 @@ void NMI_Handler(void)
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
-/**
-  * @brief This function handles Hard fault interrupt.
-  */
-void HardFault_Handler(void)
+/* USER CODE BEGIN FaultHandlers */
+/* Forensics-aware fault handlers.
+ *
+ * Each fault has a naked entry point that captures the stacked exception
+ * frame address (SP) and dispatches to a regular C function. The C function
+ * (a) prints UART forensics for live debugging, (b) saves the full crash
+ * context (R0..R3, R12, LR_before, PC_before, xPSR, fault SCB regs) into
+ * MGR_ERR's retention-RAM crash_info struct so the next boot can emit a
+ * post-mortem trace, (c) triggers NVIC_SystemReset.
+ *
+ * The naked wrapper choice between MSP and PSP follows the EXC_RETURN bit
+ * pattern in LR: bit 2 = 1 → PSP was active, 0 → MSP. Bare-metal builds
+ * almost always use MSP, but the runtime check is cheap. */
+
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
+
+static void fault_handler_c(uint32_t *frame, uint8_t fault_type, const char *tag)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-  /* Direct UART output to detect HardFault. The HAL_UART_Transmit calls are
-   * synchronous (blocking with timeout) so the bytes physically reach the
-   * host UART before NVIC_SystemReset() fires — log ring buffer would not. */
   extern UART_HandleTypeDef hlpuart1;
-  static char buf[96];
-  static const char hdr[] = "\r\n!!! HARDFAULT !!!\r\n";
-  HAL_UART_Transmit(&hlpuart1, (uint8_t*)hdr, sizeof(hdr)-1, 100);
-
-  /* Dump Cortex-M4 fault registers to pinpoint the cause:
-   *   HFSR  - hard fault status (FORCED -> escalated from another fault)
-   *   CFSR  - configurable fault status (UFSR<<16 | BFSR<<8 | MMFSR)
-   *   BFAR  - bus-fault address (valid if BFSR.BFARVALID)
-   *   MMFAR - mem-manage address (valid if MMFSR.MMARVALID)
-   * Reference: ARMv7-M Architecture Reference Manual, B3.2.15-B3.2.18. */
-  uint32_t hfsr  = SCB->HFSR;
-  uint32_t cfsr  = SCB->CFSR;
-  uint32_t bfar  = SCB->BFAR;
-  uint32_t mmfar = SCB->MMFAR;
+  static char buf[160];
   int n = snprintf(buf, sizeof(buf),
-    "HFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
-    (unsigned long)hfsr, (unsigned long)cfsr,
-    (unsigned long)bfar, (unsigned long)mmfar);
+    "\r\n!!! %s !!!\r\nHFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n"
+    "PC=%08lx LR=%08lx R0=%08lx R12=%08lx XPSR=%08lx\r\n",
+    tag,
+    (unsigned long)SCB->HFSR, (unsigned long)SCB->CFSR,
+    (unsigned long)SCB->BFAR, (unsigned long)SCB->MMFAR,
+    (unsigned long)(frame ? frame[6] : 0),
+    (unsigned long)(frame ? frame[5] : 0),
+    (unsigned long)(frame ? frame[0] : 0),
+    (unsigned long)(frame ? frame[4] : 0),
+    (unsigned long)(frame ? frame[7] : 0));
   if (n > 0)
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, (uint16_t)n, 100);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)n, 100);
 
-#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
-  MGR_ERR_LOG_FAULT(ERR_HARDFAULT, g_uw_doppler_state_for_err);
-#endif
-  /* Auto-reset after fault so the device can recover.
-   * Without this, a fault during RF TX leaves the SPI completely
-   * unresponsive (while(1) loop) and the host cannot communicate. */
+  MGR_ERR_captureFault(frame, fault_type, (uint8_t)g_uw_doppler_state_for_err);
+  MGR_ERR_LOG_FAULT(fault_type, g_uw_doppler_state_for_err);
   NVIC_SystemReset();
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    Core_Error_Handler();
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+  while (1) { /* unreachable */ }
 }
 
-/**
-  * @brief This function handles Memory management fault.
-  */
-void MemManage_Handler(void)
-{
-  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
-  MGR_ERR_LOG_FAULT(ERR_MEMMANAGE, g_uw_doppler_state_for_err);
-#endif
-  NVIC_SystemReset();
-  /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
-    Core_Error_Handler();
-    /* USER CODE END W1_MemoryManagement_IRQn 0 */
-  }
-}
+void HardFault_C(uint32_t *frame)   { fault_handler_c(frame, ERR_HARDFAULT,  "HARDFAULT");  }
+void MemManage_C(uint32_t *frame)   { fault_handler_c(frame, ERR_MEMMANAGE,  "MEMMANAGE");  }
+void BusFault_C(uint32_t *frame)    { fault_handler_c(frame, ERR_BUSFAULT,   "BUSFAULT");   }
+void UsageFault_C(uint32_t *frame)  { fault_handler_c(frame, ERR_USAGEFAULT, "USAGEFAULT"); }
 
-/**
-  * @brief This function handles Prefetch fault, memory access fault.
-  */
-void BusFault_Handler(void)
-{
-  /* USER CODE BEGIN BusFault_IRQn 0 */
-#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
-  MGR_ERR_LOG_FAULT(ERR_BUSFAULT, g_uw_doppler_state_for_err);
-#endif
-  NVIC_SystemReset();
-  /* USER CODE END BusFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
-    Core_Error_Handler();
-    /* USER CODE END W1_BusFault_IRQn 0 */
+#define NAKED_FAULT_TRAMPOLINE(name, c_fn)                                 \
+  __attribute__((naked, used)) void name(void)                             \
+  {                                                                        \
+    __asm volatile (                                                       \
+      "tst lr, #4 \n"                                                      \
+      "ite eq     \n"                                                      \
+      "mrseq r0, msp \n"                                                   \
+      "mrsne r0, psp \n"                                                   \
+      "b " #c_fn "\n"                                                      \
+    );                                                                     \
   }
-}
 
-/**
-  * @brief This function handles Undefined instruction or illegal state.
-  */
-void UsageFault_Handler(void)
-{
-  /* USER CODE BEGIN UsageFault_IRQn 0 */
-#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
-  MGR_ERR_LOG_FAULT(ERR_USAGEFAULT, g_uw_doppler_state_for_err);
+NAKED_FAULT_TRAMPOLINE(HardFault_Handler,  HardFault_C)
+NAKED_FAULT_TRAMPOLINE(MemManage_Handler,  MemManage_C)
+NAKED_FAULT_TRAMPOLINE(BusFault_Handler,   BusFault_C)
+NAKED_FAULT_TRAMPOLINE(UsageFault_Handler, UsageFault_C)
+
+#else  /* No forensics in GUI/STDLN builds — minimal handlers */
+
+void HardFault_Handler(void)  { NVIC_SystemReset(); while (1) {} }
+void MemManage_Handler(void)  { NVIC_SystemReset(); while (1) {} }
+void BusFault_Handler(void)   { NVIC_SystemReset(); while (1) {} }
+void UsageFault_Handler(void) { NVIC_SystemReset(); while (1) {} }
+
 #endif
-  NVIC_SystemReset();
-  /* USER CODE END UsageFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
-    Core_Error_Handler();
-    /* USER CODE END W1_UsageFault_IRQn 0 */
-  }
-}
+/* USER CODE END FaultHandlers */
 
 /**
   * @brief This function handles System service call via SWI instruction.
@@ -266,7 +234,15 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-
+#if defined(BSP_HAS_LED_RGB)
+  /* Drive the composite-colour PWM (WHITE/VIOLET/CYAN/YELLOW). Cheap:
+   * a single load, switch and one BSRR write per ms when active; no-op
+   * the rest of the time. Required on SMD_STDALONE because the RGB LED
+   * shares a single anode current-limit resistor and cannot light more
+   * than one cathode simultaneously — see MGR_LED_softTick() comment. */
+  extern void MGR_LED_softTick(void);
+  MGR_LED_softTick();
+#endif
   /* USER CODE END SysTick_IRQn 1 */
 }
 

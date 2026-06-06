@@ -76,6 +76,7 @@ enum  atcmd_idx_t {
 	AT_STATUS,       /**< Sprint 2: snapshot of runtime state */
 	AT_DIAG,         /**< Sprint 2: self-test (SWS/LED/REED/BAT) */
 	AT_RESET,        /**< Sprint 2: software reset */
+	AT_SHUTDOWN,     /**< Force HW SHUTDOWN (validation without magnet) */
 	AT_LBCFG,        /**< Sprint 2: low-battery mode config */
 	AT_LB,           /**< Sprint 2: live LB mode state */
 	AT_TXSTATS,      /**< Sprint 4: persistent TX counters */

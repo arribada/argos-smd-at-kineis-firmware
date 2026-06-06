@@ -24,6 +24,7 @@
  * @{
  */
 
+#include <stddef.h>
 #include "mgr_err.h"
 #include "stm32wlxx.h"
 #include "stm32wlxx_hal.h"
@@ -222,6 +223,111 @@ bool MGR_ERR_checkCrashLoop(void)
 	ERR_BKP_CRASH = 0;
 
 	MGR_LOG_DEBUG("[ERR] Woke from safe sleep, retrying\r\n");
+	return true;
+}
+
+/* ---- HardFault forensics ---------------------------------------------- */
+
+/* Crash-info lives in TRUE-retention SRAM2 (NOLOAD section, never wiped by
+ * Sram2_Init). Survives every software-class reset class — IWDG, SFT, OBL,
+ * BOR, PIN — so the next boot can read the forensics regardless of how the
+ * fault path exits. Validated via magic + CRC; cleared after replay. */
+static __attribute__((__section__(".retentionRamNoload")))
+MGR_ERR_CrashInfo_t s_retained_crash;
+
+/* Layout invariant: detect any accidental struct growth that would push
+ * the retention region past the linker reservation. Update both the assert
+ * and the linker if you intentionally grow the struct. */
+_Static_assert(sizeof(MGR_ERR_CrashInfo_t) == 64,
+               "MGR_ERR_CrashInfo_t size changed — verify retention budget");
+_Static_assert(offsetof(MGR_ERR_CrashInfo_t, crc) ==
+               sizeof(MGR_ERR_CrashInfo_t) - sizeof(uint32_t),
+               "crc must be the last field — CRC range depends on it");
+
+static uint32_t crash_crc(const MGR_ERR_CrashInfo_t *c)
+{
+	/* Adler-style sum over everything except the crc field. */
+	const uint32_t *p = (const uint32_t *)c;
+	size_t n = (offsetof(MGR_ERR_CrashInfo_t, crc)) / 4;
+	uint32_t s = 0;
+	for (size_t i = 0; i < n; i++)
+		s = s * 31u + p[i];
+	return s;
+}
+
+void MGR_ERR_captureFault(uint32_t *frame, uint8_t fault_type, uint8_t app_state)
+{
+	/* Build the record on the STACK first, then commit with a single
+	 * struct assignment. A nested fault during capture would only leave
+	 * the OLD (still-valid) record in retention rather than a half-written
+	 * one that could pass a CRC check by accident.
+	 *
+	 * Also invalidate the magic first so a fault DURING the struct copy
+	 * leaves the retention in an "invalid, definitely not a replay" state
+	 * rather than a torn-but-pass-CRC state. */
+	extern volatile uint32_t uwTick;
+	MGR_ERR_CrashInfo_t local;
+
+	s_retained_crash.magic = 0;  /* invalidate while we rebuild */
+	__DMB();
+
+	local.magic      = MGR_ERR_CRASH_MAGIC;
+	local.fault_type = fault_type;
+	local.app_state  = app_state;
+	local._pad       = 0;
+	local.hfsr       = SCB->HFSR;
+	local.cfsr       = SCB->CFSR;
+	local.bfar       = SCB->BFAR;
+	local.mmfar      = SCB->MMFAR;
+
+	if (frame != NULL) {
+		/* Standard ARMv7-M exception frame layout (no FPU context). */
+		local.r0    = frame[0];
+		local.r1    = frame[1];
+		local.r2    = frame[2];
+		local.r3    = frame[3];
+		local.r12   = frame[4];
+		local.lr    = frame[5];
+		local.pc    = frame[6];
+		local.xpsr  = frame[7];
+	} else {
+		local.r0 = local.r1 = 0;
+		local.r2 = local.r3 = 0;
+		local.r12 = local.lr = 0;
+		local.pc = local.xpsr = 0;
+	}
+
+	local.tick = uwTick;
+	local.crc  = crash_crc(&local);
+
+	/* Atomic-ish commit: single struct copy. On Cortex-M4 with -O the
+	 * compiler emits ldm/stm sequences for the copy; not truly atomic but
+	 * far smaller window than field-by-field, and a nested fault during the
+	 * memcpy still leaves magic=valid+crc=valid OR magic=stale+crc=stale —
+	 * never the half-valid combo that would pass replay. */
+	s_retained_crash = local;
+	__DMB();
+}
+
+bool MGR_ERR_hasRetainedCrash(void)
+{
+	return s_retained_crash.magic == MGR_ERR_CRASH_MAGIC &&
+	       s_retained_crash.crc   == crash_crc(&s_retained_crash);
+}
+
+bool MGR_ERR_takeRetainedCrash(MGR_ERR_CrashInfo_t *out)
+{
+	if (!MGR_ERR_hasRetainedCrash())
+		return false;
+	if (out != NULL)
+		*out = s_retained_crash;
+	__DMB();  /* ensure copy completes before clearing the source */
+	/* Clear so we only report once. Invalidate magic FIRST so a fault
+	 * during clear can't leave a partially-valid record (magic ok + crc
+	 * stale would replay false forensics on the next boot). */
+	s_retained_crash.magic = 0;
+	__DMB();
+	s_retained_crash.crc = 0;
 	return true;
 }
 

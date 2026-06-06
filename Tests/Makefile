@@ -29,9 +29,21 @@ TEST_NVM = $(BUILD_DIR)/test_nvm
 TEST_TX_INTERVAL = $(BUILD_DIR)/test_tx_interval
 TEST_MEMORY_SAFETY = $(BUILD_DIR)/test_memory_safety
 
+# Test executables - Phase A-F (reed/power-down/cooldown/self-test)
+TEST_COOLDOWN_MODES   = $(BUILD_DIR)/test_cooldown_modes
+TEST_REED_HOLD        = $(BUILD_DIR)/test_reed_hold_actions
+TEST_BAT_AUTO_SHTDN   = $(BUILD_DIR)/test_bat_auto_shutdown
+TEST_SELFTEST_MASK    = $(BUILD_DIR)/test_selftest_mask
+TEST_COOLDOWN_PERSIST = $(BUILD_DIR)/test_cooldown_persist
+TEST_LED_SWAP         = $(BUILD_DIR)/test_led_swap
+TEST_GESTURE_FSM      = $(BUILD_DIR)/test_gesture_fsm
+
 # All tests
 TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI) \
-        $(TEST_EVTLOG) $(TEST_NVM) $(TEST_TX_INTERVAL) $(TEST_MEMORY_SAFETY)
+        $(TEST_EVTLOG) $(TEST_NVM) $(TEST_TX_INTERVAL) $(TEST_MEMORY_SAFETY) \
+        $(TEST_COOLDOWN_MODES) $(TEST_REED_HOLD) $(TEST_BAT_AUTO_SHTDN) \
+        $(TEST_SELFTEST_MASK) $(TEST_COOLDOWN_PERSIST) $(TEST_LED_SWAP) \
+        $(TEST_GESTURE_FSM)
 
 # Default target
 all: $(BUILD_DIR) $(TESTS)
@@ -71,6 +83,28 @@ $(TEST_TX_INTERVAL): $(UNIT_DIR)/test_tx_interval.c $(UNIT_DIR)/test_framework.h
 $(TEST_MEMORY_SAFETY): $(UNIT_DIR)/test_memory_safety.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
+# Phase A-F build rules
+$(TEST_COOLDOWN_MODES): $(UNIT_DIR)/test_cooldown_modes.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_REED_HOLD): $(UNIT_DIR)/test_reed_hold_actions.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_BAT_AUTO_SHTDN): $(UNIT_DIR)/test_bat_auto_shutdown.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_SELFTEST_MASK): $(UNIT_DIR)/test_selftest_mask.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_COOLDOWN_PERSIST): $(UNIT_DIR)/test_cooldown_persist.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_LED_SWAP): $(UNIT_DIR)/test_led_swap.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_GESTURE_FSM): $(UNIT_DIR)/test_gesture_fsm.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
 # Run all unit tests
 run: all
 	@echo ""
@@ -96,6 +130,14 @@ run: all
 		exit 1; \
 	fi
 
+# Generate an HTML report at report/index.html with per-suite results.
+# Pure-bash generator — no dependencies beyond what already builds the tests.
+report: all
+	@mkdir -p report
+	@echo "Generating HTML test report..."
+	@./scripts/gen_html_report.sh $(TESTS) report/index.html
+	@echo "Report: $$(pwd)/report/index.html"
+
 # Run individual tests
 run-crc32: $(TEST_CRC32)
 	$(RUN_PREFIX)$(TEST_CRC32)
@@ -120,6 +162,21 @@ run-tx-interval: $(TEST_TX_INTERVAL)
 
 run-memory-safety: $(TEST_MEMORY_SAFETY)
 	$(RUN_PREFIX)$(TEST_MEMORY_SAFETY)
+
+run-cooldown-modes: $(TEST_COOLDOWN_MODES)
+	$(RUN_PREFIX)$(TEST_COOLDOWN_MODES)
+
+run-reed-hold: $(TEST_REED_HOLD)
+	$(RUN_PREFIX)$(TEST_REED_HOLD)
+
+run-bat-auto-shutdown: $(TEST_BAT_AUTO_SHTDN)
+	$(RUN_PREFIX)$(TEST_BAT_AUTO_SHTDN)
+
+run-selftest-mask: $(TEST_SELFTEST_MASK)
+	$(RUN_PREFIX)$(TEST_SELFTEST_MASK)
+
+run-cooldown-persist: $(TEST_COOLDOWN_PERSIST)
+	$(RUN_PREFIX)$(TEST_COOLDOWN_PERSIST)
 
 # Clean
 clean:

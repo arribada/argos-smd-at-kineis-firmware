@@ -72,7 +72,9 @@
 #include KINEIS_SW_ASSERT_H
 #include "mgr_log.h"
 #include "mgr_lpm.h"
+#include "lpm.h"
 #include "mcu_misc.h"
+#include "rtc.h"
 #if defined(USE_UART_DRIVER)
 #include "mgr_at_cmd.h"
 #include "usart.h"
@@ -90,6 +92,10 @@
 #include "mgr_rate.h"
 #include "mgr_txstats.h"
 #include "mgr_pmlog.h"
+#if defined(BSP_HAS_REED_SWITCH) && defined(BSP_HAS_LED_RGB)
+#include "mgr_gesture.h"
+#define UW_DOPPLER_HAS_GESTURE 1
+#endif
 
 /* ---- State Machine ---- */
 
@@ -106,12 +112,16 @@ typedef enum {
 
 /* ---- Private variables ---- */
 
-static __attribute__((__section__(".retentionRamData")))
+/* uw_doppler_state — NOLOAD retention, but explicitly overwritten at every
+ * init via `uw_doppler_state = UW_DOPPLER_BOOT;` so the lack of a
+ * self-validation check is safe. */
+static __attribute__((__section__(".retentionRamNoload")))
 UwDopplerState_t uw_doppler_state;
 
-/* SWS baselines retained across warm resets (SRAM2 survives IWDG/SW reset) */
+/* SWS baselines retained across ALL software-class resets (NOLOAD section
+ * in SRAM2 — never wiped by Sram2_Init). Magic-checked at first read. */
 #define SWS_RETAINED_MAGIC 0x53575342UL /* "SWSB" */
-static __attribute__((__section__(".retentionRamData")))
+static __attribute__((__section__(".retentionRamNoload")))
 struct {
 	uint32_t magic;
 	uint16_t air_baseline;
@@ -135,12 +145,16 @@ struct {
 #define BOOT_FAIL_FACTORY_RESET    5
 #define BOOT_FAIL_PERMANENT_OFF    10
 
-static __attribute__((__section__(".retentionRamData")))
+static __attribute__((__section__(".retentionRamNoload")))
 struct {
 	uint32_t magic;
 	uint16_t consecutive_failures;
 	uint8_t  factory_reset_attempted;
 	uint8_t  permanent_off_armed;
+	uint8_t  boot_in_progress;   /**< Set at boot, cleared on MONITORING.
+	                                 If a new boot sees this still set,
+	                                 the previous boot failed. */
+	uint8_t  _pad[3];
 	uint32_t crc32;
 } boot_retained;
 
@@ -152,9 +166,11 @@ static uint32_t boot_retained_crc(void)
 	s = s * 31u + boot_retained.consecutive_failures;
 	s = s * 31u + boot_retained.factory_reset_attempted;
 	s = s * 31u + boot_retained.permanent_off_armed;
+	s = s * 31u + boot_retained.boot_in_progress;
 	return s;
 }
 
+__attribute__((unused))
 static bool boot_retained_valid(void)
 {
 	return boot_retained.magic == BOOT_RETAIN_MAGIC &&
@@ -186,20 +202,81 @@ extern bool MGR_NVM_reset(void);
  *
  * boot_success() resets the counter to 0 when MONITORING is first reached.
  */
+/* Boot loop time-based detector.
+ *
+ * Mechanism: a "boot_in_progress" flag in retention RAM is SET at boot and
+ * CLEARED only when MONITORING is reached (via boot_loop_mark_success()).
+ * A new boot that sees the flag still set knows the previous boot died
+ * before reaching MONITORING — increment the failure counter.
+ *
+ * This replaces the previous count-every-reset scheme, which counted
+ * JLink reflashes (AIRCR.SYSRESETREQ → SFTRSTF) as failures and could
+ * push the chip into permanent SHUTDOWN during normal development.
+ *
+ * Escalations (sealed-deployment safe):
+ *   ≥ BOOT_FAIL_FACTORY_RESET (5):  wipe MGR_NVM, reset. Defaults restored
+ *                                   on next boot; SWS calib preserved via
+ *                                   sws_retained in SRAM2. Done ONCE.
+ *   ≥ BOOT_FAIL_PERMANENT_OFF (10): SHUTDOWN with 24 h RTC auto-wake.
+ *                                   The capsule may have no magnet access,
+ *                                   so we never go off forever — the chip
+ *                                   tries again every 24 h until either
+ *                                   the fault is transient (clears) or the
+ *                                   battery dies.
+ *
+ * On BORRSTF (cold power-on) or PINRSTF (external NRST), the counter is
+ * cleared regardless — those are clearly user-initiated, not a fault.
+ */
+#define BOOT_PERMANENT_OFF_WAKE_S  (24u * 3600u)  /* 24 h */
+
 static void boot_loop_handle(void)
 {
+	extern uint32_t g_boot_rcc_csr_raw;
+
+	/* If the retention struct is corrupted (first power-on or VBAT loss),
+	 * initialize it cleanly and exit — no fault to count. */
 	if (!boot_retained_valid()) {
-		/* First power-on or RAM2 lost: start from zero. */
 		boot_retained.magic = BOOT_RETAIN_MAGIC;
 		boot_retained.consecutive_failures = 0;
 		boot_retained.factory_reset_attempted = 0;
 		boot_retained.permanent_off_armed = 0;
+		boot_retained.boot_in_progress = 1;
 		boot_retained_commit();
 		return;
 	}
 
+	/* Cold/intentional reset — not a fault, clear counter.
+	 *   BORRSTF : brown-out / true cold power-on.
+	 *   PINRSTF : external NRST (debugger or operator pressing the button).
+	 *   OBLRSTF : option-byte launch reset (e.g. MGR_WDG_ensureIwdgStopOptionByte
+	 *             during the very first deployment boot). Without this case the
+	 *             first deployment would burn one false-positive failure count
+	 *             every time we touch option bytes. */
+	if (g_boot_rcc_csr_raw & (RCC_CSR_BORRSTF | RCC_CSR_PINRSTF | RCC_CSR_OBLRSTF)) {
+		boot_retained.consecutive_failures = 0;
+		boot_retained.factory_reset_attempted = 0;
+		boot_retained.permanent_off_armed = 0;
+		boot_retained.boot_in_progress = 1;
+		boot_retained_commit();
+		return;
+	}
+
+	/* Software/IWDG/WWDG reset: only count as a failure if the previous
+	 * boot did NOT reach MONITORING. The boot_in_progress flag is the
+	 * tell-tale: cleared on MONITORING by boot_loop_mark_success(). */
+	if (!boot_retained.boot_in_progress) {
+		/* Previous boot reached MONITORING fine — the current reset
+		 * happened from steady state (e.g. AT+RESET, transient fault
+		 * after long uptime). Don't penalise it. */
+		boot_retained.boot_in_progress = 1;
+		boot_retained_commit();
+		return;
+	}
+
+	/* Previous boot died before MONITORING — count it. */
 	if (boot_retained.consecutive_failures < 0xFFFFu)
 		boot_retained.consecutive_failures++;
+	boot_retained.boot_in_progress = 1;
 	boot_retained_commit();
 
 	MGR_EVTLOG_log(EVT_BOOT_FAIL, boot_retained.consecutive_failures);
@@ -208,21 +285,18 @@ static void boot_loop_handle(void)
 		boot_retained.factory_reset_attempted);
 
 	if (boot_retained.consecutive_failures >= BOOT_FAIL_PERMANENT_OFF) {
-		/* Hard fault we can't recover — power off and wait for reed magnet. */
-		MGR_LOG_DEBUG("[BOOT-LOOP] PERMANENT OFF triggered\r\n");
+		MGR_LOG_DEBUG("[BOOT-LOOP] PERMANENT_OFF: SHUTDOWN with 24h auto-wake\r\n");
 		MGR_EVTLOG_log(EVT_FACTORY_RESET, 0xFFFFu);
 		boot_retained.permanent_off_armed = 1;
 		boot_retained_commit();
 #if defined(BSP_HAS_REED_SWITCH)
 		MGR_REED_releasePower();
-		HAL_PWREx_EnablePullUpPullDownConfig();
-		HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
-		HAL_PWREx_EnterSHUTDOWNMode();
+		/* RTC auto-wake every 24 h — sealed capsule never goes truly off. */
+		LPM_shutdownWithAutoWake(BOOT_PERMANENT_OFF_WAKE_S);
 #else
 		MGR_ERR_logAndReset(ERR_BOOT_LOOP);
 #endif
-		/* Never returns */
-		return;
+		return;  /* never reached */
 	}
 
 	if (boot_retained.consecutive_failures >= BOOT_FAIL_FACTORY_RESET &&
@@ -231,13 +305,12 @@ static void boot_loop_handle(void)
 		MGR_EVTLOG_log(EVT_FACTORY_RESET, boot_retained.consecutive_failures);
 		boot_retained.factory_reset_attempted = 1;
 		boot_retained_commit();
-		/* Wipe app config in flash. SWS calibration is preserved through
-		 * sws_retained (SRAM2). The Kineis stack credentials (Argos ID,
-		 * address, MAC profile, message counter) live in their own flash
-		 * area (FLASH_USER for MSG/WKU pages) and are NOT touched here. */
+		/* Wipe app config in flash. SWS calibration survives via
+		 * sws_retained (SRAM2). Kineis credentials live in FLASH_USER
+		 * (MSG/WKU pages) and are not touched here. */
 		(void)MGR_NVM_reset();
 		MGR_ERR_logAndReset(ERR_BOOT_LOOP);
-		/* Never returns */
+		/* never returns */
 	}
 }
 
@@ -254,8 +327,25 @@ static void boot_loop_mark_success(void)
 	boot_success_logged = true;
 	boot_retained.consecutive_failures = 0;
 	boot_retained.factory_reset_attempted = 0;
+	boot_retained.boot_in_progress = 0;  /* MONITORING reached: this boot is OK */
 	boot_retained_commit();
 	MGR_LOG_DEBUG("[BOOT-LOOP] Boot success latched\r\n");
+
+	/* IWDG DISABLED on this build.
+	 *
+	 * Why: IWDG_STOP option byte is NOT set, so IWDG keeps counting while
+	 * the MCU is in STOP. In MONITORING the LPM client requests STOP and
+	 * the MAC stack may keep the chip asleep > 16s between events → IWDG
+	 * fires → silent reset every ~18s.
+	 *
+	 * Two production-ready fixes (pick one before deployment):
+	 *   1. Set IWDG_STOP option byte (FLASH_OPTR bit 17 = 1) so IWDG
+	 *      freezes during STOP. Safest path, but requires an OPTR write
+	 *      that has historically been risky to script on this board.
+	 *   2. Arm an RTC wake-up at < 16s and refresh IWDG on every wake.
+	 *
+	 * Until either is in place, leave the watchdog OFF. */
+	/* MGR_WDG_init();  -- intentionally disabled, see above */
 }
 
 /* Exported for fault handlers (MGR_ERR_LOG_FAULT macro in stm32wlxx_it.c) */
@@ -395,11 +485,11 @@ static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
 #define UWDPL_TRACE(tag) do {} while (0)
 #endif
 
-/* Reed switch shutdown tracking */
+/* Reed switch shutdown tracking — used by the raw-reed fallback path. */
 #if defined(BSP_HAS_REED_SWITCH)
-#define REED_SHUTDOWN_HOLD_MS  10000  /**< Hold magnet 10s to trigger shutdown */
-static uint32_t magnet_on_tick = 0;        /**< Tick when magnet was detected */
-static bool     shutdown_triggered = false; /**< Shutdown sequence started */
+#define REED_SHUTDOWN_HOLD_MS  10000
+__attribute__((unused)) static uint32_t magnet_on_tick = 0;
+__attribute__((unused)) static bool     shutdown_triggered = false;
 #endif
 
 /* Battery monitoring */
@@ -423,27 +513,112 @@ static uint32_t prng_next(void)
 	return prng_state;
 }
 
-/* LPM client: prevent SHUTDOWN during UW_DOPPLER operation */
+/* Direct-UART trace: prints [ST] state changes and [LPM] entry/exit
+ * boundaries. Bypasses the MGR_LOG ring buffer so the last line on the
+ * wire tells us exactly where the chip died on crash.
+ *
+ * Defaults to ON in DEBUG builds, OFF in production — matches the user's
+ * "OPERATIONAL silent unless DEBUG" sealed-deployment rule. Can be forced
+ * either way via -DUW_DOPPLER_VERBOSE_TRACE=0/1. */
+#ifndef UW_DOPPLER_VERBOSE_TRACE
+#  ifdef DEBUG
+#    define UW_DOPPLER_VERBOSE_TRACE 1
+#  else
+#    define UW_DOPPLER_VERBOSE_TRACE 0
+#  endif
+#endif
+static void uw_trace3(const char *fmt, uint32_t a, uint32_t b, uint32_t c)
+{
+#if defined(USE_UART_DRIVER) && (UW_DOPPLER_VERBOSE_TRACE)
+	if (hlpuart1.gState == HAL_UART_STATE_RESET)
+		return;
+	static char buf[80];
+	int n = snprintf(buf, sizeof(buf), fmt,
+		(unsigned long)a, (unsigned long)b, (unsigned long)c);
+	if (n > 0)
+		HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)n, 50);
+#else
+	(void)fmt; (void)a; (void)b; (void)c;
+#endif
+}
+
+/* LPM client request for the UW_DOPPLER application.
+ *
+ * Cap LPM to NONE while the boot state machine has not reached MONITORING.
+ * Reason: in STOP the SysTick is frozen, so the BOOT / BOOT_DEPLOY_LED /
+ * WAIT_MAC_READY timeouts (HAL_GetTick-based) never elapse — the chip would
+ * stay asleep waiting for an event that never fires until MAC pushes one.
+ *
+ * Once MONITORING is reached the MAC stack manages its own wakeups via RTC
+ * and the chip can drop to STOP safely. Tradeoff: ~5–10 s of busy-loop
+ * during boot at higher current, then back to deep sleep in MONITORING. */
 static enum MgrLpm_LPM_t uw_doppler_lpmReq(void)
 {
-	return LOW_POWER_MODE_STOP;
+	if (uw_doppler_state < UW_DOPPLER_MONITORING)
+		return LOW_POWER_MODE_NONE;
+
+	/* TEMP: MONITORING uses NONE. STOP2 + RTC wake infrastructure is wired
+	 * (see lpmNotifEnter below) but has reliability issues — chip occasionally
+	 * locks into deep STOP from which only NRST recovers, requires HW
+	 * debugger investigation. To re-enable: flip to LOW_POWER_MODE_STOP.
+	 *
+	 * Current consumption tradeoff: ~10 mA (CPU running) vs ~2 µA target. */
+	return LOW_POWER_MODE_NONE;
+	/* return LOW_POWER_MODE_STOP; */
 }
 
 static bool uw_doppler_lpmNotifEnter(__attribute__((unused)) enum MgrLpm_LPM_t lpm)
 {
+	/* When mode is NONE, MGR_LPM_enter() returns immediately without sleeping.
+	 * Skip side-effects (LED off, SWS analog, RTC arm) in that case —
+	 * otherwise the boot-deploy LED would be killed every loop tick and we'd
+	 * thrash the RTC wake-up timer. */
+	if (lpm == LOW_POWER_MODE_NONE)
+		return true;
+
+	uw_trace3("[LPM] enter mode=%lu st=%lu t=%lu\r\n",
+		(uint32_t)lpm, (uint32_t)uw_doppler_state, HAL_GetTick());
+
+	/* Arm a 1 Hz RTC wake-up so the chip exits STOP every ~1 s to poll
+	 * SWS / gesture / MAC. Safe in BASIC profile: the only MAC consumers
+	 * of MCU_TIM_HDLR_TX_PERIOD (kns_mac_prfl_blind.c, aks_l1.c) are not
+	 * linked in this build. WL55 HAL: CK_SPRE 16-bit, counter=0 → 1 s.
+	 *
+	 * Critical: clear PWR_SR1.WUFI (sticky from previous wake). The MGR_LPM
+	 * STOP path doesn't clear it (only STANDBY/SHUTDOWN do — mgr_lpm.c:287-289,
+	 * lpm.c:243). Leaving it set makes WFI return immediately on subsequent
+	 * STOP entries, so only the first wake works. */
+	if (lpm == LOW_POWER_MODE_STOP) {
+		/* Disable + clear stale RTC + WUFI state, re-enable internal
+		 * wake-up line, arm fresh 1 Hz timer. The full sequence is
+		 * needed because the MGR_LPM STOP path doesn't call
+		 * LPM_configWakeUpRtc() (only STANDBY/SHUTDOWN do — lpm.c:459). */
+		HAL_PWREx_DisableInternalWakeUpLine();
+		__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+		HAL_PWREx_EnableInternalWakeUpLine();
+		(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0,
+			RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+	}
+
 #if defined(BSP_HAS_LED_RGB)
-	/* Turn off LEDs before STOP to avoid current draw during sleep */
 	MGR_LED_off();
 #endif
-	/* Reconfigure SWS power pin as analog to eliminate GPIO leakage in STOP */
 	MGR_SWS_enterLowPower();
 	return true;
 }
 
 static bool uw_doppler_lpmNotifExit(__attribute__((unused)) enum MgrLpm_LPM_t lpm)
 {
-	/* Restore SWS power pin as output after STOP wakeup */
+	if (lpm == LOW_POWER_MODE_NONE)
+		return true;
 	MGR_SWS_exitLowPower();
+	/* Disarm our wake-up so MAC can safely reuse the same timer for its own
+	 * scheduling on its next request. Costs one register write per wake. */
+	if (lpm == LOW_POWER_MODE_STOP)
+		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	uw_trace3("[LPM] exit mode=%lu st=%lu t=%lu\r\n",
+		(uint32_t)lpm, (uint32_t)uw_doppler_state, HAL_GetTick());
 	return true;
 }
 
@@ -465,6 +640,8 @@ static struct KNS_MAC_BLIND_usrCfg_t prflBlindUserCfg = {
 
 static void transition_to(UwDopplerState_t new_state)
 {
+	uw_trace3("[ST] %lu->%lu t=%lu\r\n",
+		(uint32_t)uw_doppler_state, (uint32_t)new_state, HAL_GetTick());
 	uw_doppler_state = new_state;
 	state_enter_tick = HAL_GetTick();
 	g_uw_doppler_state_for_err = (uint32_t)new_state;
@@ -499,15 +676,14 @@ static void enter_shutdown(void)
 	MGR_WDG_refresh();  /* Refresh before NVM save (flash write takes time) */
 	MGR_NVM_save();
 
-	/* Release power latch (drive LOW) */
+	/* Release power latch (drive LOW) — board will lose power once the
+	 * shutdown sequence pulls PB7 internal pull-down to maintain it LOW. */
 	MGR_REED_releasePower();
 
-	/* Configure internal pull-down on PWR_LATCH (PB7) to maintain LOW in SHUTDOWN */
-	HAL_PWREx_EnablePullUpPullDownConfig();
-	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
-
-	/* Enter SHUTDOWN - never returns, board loses power */
-	HAL_PWREx_EnterSHUTDOWNMode();
+	/* LPM_shutdownNow() does the full teardown (ADC deinit, GPIO analog,
+	 * pull-down PWR_LATCH PB7, wake-up RTC + pins armed, PWR flag clear),
+	 * then HAL_PWREx_EnterSHUTDOWNMode(). Never returns. */
+	LPM_shutdownNow();
 }
 #endif
 
@@ -929,6 +1105,15 @@ static bool process_mac_events(void)
 
 void KNS_APP_uw_doppler_init(void)
 {
+	/* Force uw_doppler_state to BOOT BEFORE anything reads it.
+	 * The variable lives in .retentionRamData (SRAM2). Sram2_Init only runs
+	 * on default-boot and SHUTDOWN-wake paths in main.c; on STOP/SLEEP/STANDBY
+	 * wake paths the variable keeps its previous value (or stale garbage on
+	 * the very first power-up before retention has been initialised). Setting
+	 * it explicitly here makes the state machine deterministic regardless of
+	 * the wake path. */
+	uw_doppler_state = UW_DOPPLER_BOOT;
+
 	reset_tx_scheduling();
 	mac_init_retries = 0;
 	state_enter_tick = HAL_GetTick();
@@ -950,7 +1135,23 @@ void KNS_APP_uw_doppler_init(void)
 	prng_state = prng_state * 1664525UL + 1013904223UL;
 	(void)prng_next();  /* discard first value */
 
-	/* Start IWDG watchdog early (16s timeout) - before any slow init */
+	/* Ensure IWDG_STOP option byte is set (bit 17 of FLASH_OPTR). If not,
+	 * this triggers a SYSTEM RESET via HAL_FLASH_OB_Launch and does not
+	 * return — the next boot will see the bit set and proceed normally.
+	 * Idempotent on subsequent boots. Must run BEFORE MGR_WDG_init() so we
+	 * don't arm an IWDG that would fire during MAC STOP phases. */
+	(void)MGR_WDG_ensureIwdgStopOptionByte();
+
+	/* IWDG ~16s window. Safe with IWDG_STOP=1: watchdog freezes during
+	 * STOP mode so MAC stack sleeps don't accumulate. Refreshed from the
+	 * main loop and from MGR_WDG_delayWithKick blocking paths.
+	 *
+	 * Boot-budget contract: between MGR_WDG_init() here and the first main
+	 * loop iteration (which refreshes at the top) the init code MUST not
+	 * spend more than ~16 s blocked. Every step that performs blocking
+	 * I/O (flash erase/read, UART transmit) is followed by an explicit
+	 * MGR_WDG_refresh() below so a single slow operation can't bust the
+	 * window. */
 	MGR_WDG_init();
 
 	/* Init event log (SRAM2 retention - survives resets) */
@@ -959,8 +1160,39 @@ void KNS_APP_uw_doppler_init(void)
 
 	/* Boot-loop guard: increments per-boot failure counter, optionally
 	 * triggers factory reset or permanent off. Must run BEFORE MGR_NVM_load()
-	 * so a wiped flash leads to default config on this very boot. */
+	 * so a wiped flash leads to default config on this very boot. May call
+	 * MGR_NVM_reset() which erases 2 flash pages (~100 ms). */
 	boot_loop_handle();
+	MGR_WDG_refresh();
+
+	/* HardFault forensics: if a fault occurred in the previous boot, the
+	 * crash_info struct in retention RAM still has the context. Emit a
+	 * direct-UART trace (visible even with DEBUG=0) + log to EVTLOG, then
+	 * clear so we only report once. */
+	{
+		MGR_ERR_CrashInfo_t crash;
+		if (MGR_ERR_takeRetainedCrash(&crash)) {
+#if defined(USE_UART_DRIVER)
+			extern UART_HandleTypeDef hlpuart1;
+			static char cb[200];
+			int cn = snprintf(cb, sizeof(cb),
+				"\r\n[CRASH-REPLAY] type=%u state=%u tick=%lu\r\n"
+				"  PC=%08lx LR=%08lx XPSR=%08lx\r\n"
+				"  HFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
+				(unsigned)crash.fault_type, (unsigned)crash.app_state,
+				(unsigned long)crash.tick,
+				(unsigned long)crash.pc, (unsigned long)crash.lr,
+				(unsigned long)crash.xpsr,
+				(unsigned long)crash.hfsr, (unsigned long)crash.cfsr,
+				(unsigned long)crash.bfar, (unsigned long)crash.mmfar);
+			if (cn > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
+				HAL_UART_Transmit(&hlpuart1, (uint8_t *)cb,
+					(uint16_t)cn, 200);
+#endif
+			MGR_EVTLOG_log(EVT_ERROR, (uint16_t)crash.fault_type);
+		}
+	}
+	MGR_WDG_refresh();  /* crash replay UART transmit can take up to 200 ms. */
 
 	/* Rate limiter: init retention ring BEFORE NVM_load so apply_config can
 	 * push the persisted config (window_s / max_tx) into it. */
@@ -969,10 +1201,12 @@ void KNS_APP_uw_doppler_init(void)
 	/* Sprint 4: persistent TX stats + post-mortem flash log. Init order
 	 * doesn't matter relative to NVM_load — neither uses NVM config. */
 	MGR_TXSTATS_init();
-	MGR_PMLOG_init();
+	MGR_PMLOG_init();   /* iterates the flash log ring — ~100 ms worst case */
+	MGR_WDG_refresh();
 
 	/* Load saved config from flash (if valid) */
 	MGR_NVM_load();
+	MGR_WDG_refresh();
 
 	MGR_LOG_DEBUG("[UW_DPL] Init: interval=%us growth=%u%% max=%us deploy=%u\r\n",
 		tx_cfg.tx_initial_interval_s, tx_cfg.tx_growth_percent,
@@ -993,9 +1227,14 @@ void KNS_APP_uw_doppler_init(void)
 	last_vbat_mV = MGR_BAT_readVoltage_mV();
 	MGR_LOG_DEBUG("[BAT] Init: %umV\r\n", last_vbat_mV);
 #endif
-
-#if defined(BSP_HAS_LED_RGB)
-	/* Boot sequence: blink 10x */
+#if defined(UW_DOPPLER_HAS_GESTURE)
+	/* Magnet 2-gesture FSM. Restores persisted OPERATIONAL/CONFIG mode and
+	 * plays the 5-blink GREEN wake indicator (slow cadence). The gesture
+	 * init owns the boot LED — no separate BLUE-10x blink (would overwrite
+	 * the WAKE_BLINK pattern). */
+	MGR_GESTURE_init();
+#elif defined(BSP_HAS_LED_RGB)
+	/* Boot sequence (legacy, non-gesture builds): blink 10x */
 	MGR_LED_blink(MGR_LED_BLUE, 10, 200, 200);
 #endif
 	/* Always go through BOOT state for boot window (UART listen period) */
@@ -1037,24 +1276,57 @@ void KNS_APP_uw_doppler_loop(void)
 		/* Never returns */
 	}
 
-#if defined(USE_UART_DRIVER)
+#if defined(USE_UART_DRIVER) && defined(DEBUG)
 	/* Heartbeat: direct synchronous UART, bypasses MGR_LOG ring buffer.
 	 * Survives silent power resets — last "hb" line tells us the exact tick
-	 * at which the device died. ~1s cadence to limit noise.
-	 * Skipped when UART has been de-init'd in deploy mode (huart Instance NULL). */
+	 * at which the device died. 1s cadence to limit noise.
+	 *
+	 * Compiled OUT in production (DEBUG=0): an OPERATIONAL tag must run
+	 * silent unless the build was explicitly debug-instrumented. AT command
+	 * responses and crash-replay still go out regardless of DEBUG.
+	 *
+	 * Hardening:
+	 *  - Gated through APP_UART_isEnabled() (ground-truth HAL state, not the
+	 *    cached flag) so an unexpected gState=RESET doesn't fault HAL_UART_Transmit.
+	 *  - TX timeout 20 ms (115200 baud → ~11 ms for the worst-case 128 B line).
+	 *  - Disabled silently after 3 consecutive TX errors — broken cable
+	 *    shouldn't keep stalling the loop. */
 	{
+		extern volatile uint32_t g_reed_isr_count;
+		extern volatile uint32_t g_reed_isr_last_state;
+		extern volatile uint32_t g_at_isr_bytes;
+		extern volatile uint32_t g_at_parse_calls;
+		extern volatile uint32_t g_at_cb_null;
 		static uint32_t hb_last_tick = 0;
-		uint32_t now = HAL_GetTick();
-		if (now - hb_last_tick >= 1000 && hlpuart1.gState != HAL_UART_STATE_RESET) {
+		static uint8_t  hb_tx_errors = 0;
+		const uint32_t now = HAL_GetTick();
+		if ((now - hb_last_tick) >= 1000u && APP_UART_isEnabled() &&
+		    hb_tx_errors < 3u) {
 			hb_last_tick = now;
-			static char hb_buf[64];
-			int hb_n = snprintf(hb_buf, sizeof(hb_buf),
-				"hb t=%lu s=%lu\r\n",
+			static char hb_buf[160];
+			const uint32_t reed_now = (uint32_t)MGR_REED_isMagnetPresent();
+			const int hb_n = snprintf(hb_buf, sizeof(hb_buf),
+				"hb t=%lu s=%lu reed=%lu reedISR=%lu pin=%lu | atRX=%lu parse=%lu cbN=%lu\r\n",
 				(unsigned long)now,
-				(unsigned long)uw_doppler_state);
-			if (hb_n > 0)
-				HAL_UART_Transmit(&hlpuart1, (uint8_t *)hb_buf,
-					(uint16_t)hb_n, 50);
+				(unsigned long)uw_doppler_state,
+				(unsigned long)reed_now,
+				(unsigned long)g_reed_isr_count,
+				(unsigned long)g_reed_isr_last_state,
+				(unsigned long)g_at_isr_bytes,
+				(unsigned long)g_at_parse_calls,
+				(unsigned long)g_at_cb_null);
+			if (hb_n > 0) {
+				/* At 115200 baud, 120 bytes transmit in ~10 ms.
+				 * 20 ms gives comfortable margin without starving
+				 * the main loop. */
+				HAL_StatusTypeDef tx_st = HAL_UART_Transmit(
+				    &hlpuart1, (uint8_t *)hb_buf,
+				    (uint16_t)hb_n, 20);
+				if (tx_st != HAL_OK)
+					hb_tx_errors++;
+				else
+					hb_tx_errors = 0;
+			}
 		}
 	}
 #endif
@@ -1076,40 +1348,121 @@ void KNS_APP_uw_doppler_loop(void)
 	MGR_LED_task();
 #endif
 
-	/* Reed switch events (EXTI interrupt driven) */
-#if defined(BSP_HAS_REED_SWITCH)
+	/* Magnet 2-gesture FSM. Drives mode transitions
+	 * OPERATIONAL ↔ CONFIG ↔ SHUTDOWN with confirmation window.
+	 *
+	 * UART gating policy:
+	 *   - Boot grace period (5 s after MONITORING) → UART stays ON regardless
+	 *     of persisted mode so the operator can see the boot trace.
+	 *   - After grace: drive UART based on current mode.
+	 *     OPERATIONAL → UART OFF (saves ~1 mA + silences false RX wake).
+	 *     CONFIG      → UART ON  (AT command surface available).
+	 *   - Override: build with -DUW_DOPPLER_KEEP_UART_ALIVE=1 to keep UART
+	 *     on forever (debug builds, factory test). */
+#if defined(UW_DOPPLER_HAS_GESTURE)
+	MGR_GESTURE_task();
+
+	/* Apply UART state from persisted mode after a one-shot grace period. */
+#ifndef UW_DOPPLER_KEEP_UART_ALIVE
+#define UW_DOPPLER_KEEP_UART_ALIVE 1
+#endif
+#if !(UW_DOPPLER_KEEP_UART_ALIVE)
+	{
+		static bool s_uart_init_done = false;
+		static uint32_t s_monitoring_start_tick = 0;
+		if (uw_doppler_state == UW_DOPPLER_MONITORING) {
+			if (s_monitoring_start_tick == 0)
+				s_monitoring_start_tick = HAL_GetTick();
+			uint32_t elapsed = HAL_GetTick() - s_monitoring_start_tick;
+			if (!s_uart_init_done && elapsed >= 5000u) {
+				MGR_GESTURE_Mode_t m = MGR_GESTURE_getMode();
+				APP_UART_setEnabled(m == MGR_GESTURE_MODE_CONFIG);
+				s_uart_init_done = true;
+			}
+		}
+	}
+#endif
+
+	{
+		MGR_GESTURE_Event_t gevt = MGR_GESTURE_getEvent();
+		if (gevt == MGR_GESTURE_EVT_ENTER_CONFIG) {
+			MGR_LOG_DEBUG("[UW_DPL] Magnet → CONFIG mode\r\n");
+			/* Power down the SWS analog rail: in CONFIG we don't
+			 * sample anymore (see main-loop pause above). */
+			MGR_SWS_enterLowPower();
+#if !(UW_DOPPLER_KEEP_UART_ALIVE)
+			APP_UART_setEnabled(true);
+#endif
+		} else if (gevt == MGR_GESTURE_EVT_ENTER_OPERATIONAL) {
+			MGR_LOG_DEBUG("[UW_DPL] Magnet → OPERATIONAL mode\r\n");
+			/* Bring the SWS analog rail back up so MGR_SWS_task()
+			 * sees stable readings on its next sample. */
+			MGR_SWS_exitLowPower();
+#if !(UW_DOPPLER_KEEP_UART_ALIVE)
+			APP_UART_setEnabled(false);
+#endif
+		} else if (gevt == MGR_GESTURE_EVT_REQUEST_SHUTDOWN) {
+			MGR_LOG_DEBUG("[UW_DPL] Magnet → SHUTDOWN request\r\n");
+			transition_to(UW_DOPPLER_SHUTDOWN_BLINK);
+			return;
+		}
+	}
+
+	/* ----- Steady-state LED indicator --------------------------------
+	 * Background colour while gesture FSM is idle in MONITORING. Priority:
+	 *   1. Low-battery   → YELLOW slow blink (250 ms / 1750 ms) urgent
+	 *   2. CONFIG + UART → solid BLUE        ("session live", <5 s RX)
+	 *   3. CONFIG idle   → BLUE slow blink   (500 / 500)
+	 *   4. otherwise     → yield (don't touch the LED)
+	 *
+	 * Yields to: gesture FSM busy, non-MONITORING states, AT+DIAG
+	 * (blocking — main loop doesn't run during HAL_Delay).
+	 *
+	 * Idempotency comes from MGR_LED_blink's own no-restart-if-same-params
+	 * check, so we can call the indicator each iteration. A blink killed
+	 * by an external MGR_LED_set/off (e.g. AT+DIAG end) gets revived on
+	 * the very next iteration since `blinking` is then false. */
+	{
+		const bool eligible =
+		    (uw_doppler_state == UW_DOPPLER_MONITORING) &&
+		    !MGR_GESTURE_isInteracting();
+
+		if (eligible) {
+			if (lb_active) {
+				MGR_LED_blink(MGR_LED_YELLOW, 0u,
+				              250u, 1750u);
+			} else if (MGR_GESTURE_getMode() ==
+			           MGR_GESTURE_MODE_CONFIG) {
+				const uint32_t since_rx_ms =
+				    APP_UART_msSinceRx();
+				if (since_rx_ms < 5000u)
+					MGR_LED_set(MGR_LED_BLUE);
+				else
+					MGR_LED_blink(MGR_LED_BLUE, 0u,
+					              500u, 500u);
+			}
+		}
+	}
+#elif defined(BSP_HAS_REED_SWITCH)
+	/* Fallback raw reed handling for builds without LED RGB (e.g. board
+	 * variants where MGR_GESTURE is not applicable). Only handles the
+	 * long-hold → shutdown path. */
 	{
 		MGR_REED_Event_t evt = MGR_REED_getEvent();
 		if (evt == MGR_REED_EVT_MAGNET_ON) {
-			MGR_LOG_DEBUG("[REED] Magnet DETECTED\r\n");
 			MGR_EVTLOG_log(EVT_REED_ON, 0);
 			magnet_on_tick = HAL_GetTick();
 			shutdown_triggered = false;
-#if defined(BSP_HAS_LED_RGB)
-			MGR_LED_set(MGR_LED_WHITE);
-#endif
 		} else if (evt == MGR_REED_EVT_MAGNET_OFF) {
-			uint32_t hold_ms = MGR_REED_getLastHoldDuration_ms();
-			MGR_LOG_DEBUG("[REED] Magnet REMOVED (hold=%lums)\r\n",
-				(unsigned long)hold_ms);
-			MGR_EVTLOG_log(EVT_REED_OFF, (uint16_t)(hold_ms / 100));
+			MGR_EVTLOG_log(EVT_REED_OFF,
+			    (uint16_t)(MGR_REED_getLastHoldDuration_ms() / 100));
 			magnet_on_tick = 0;
 			shutdown_triggered = false;
-#if defined(BSP_HAS_LED_RGB)
-			MGR_LED_off();
-#endif
 		}
-
-		/* Check for long hold → shutdown */
 		if (MGR_REED_isMagnetPresent() && !shutdown_triggered && magnet_on_tick > 0) {
 			uint32_t hold_ms = HAL_GetTick() - magnet_on_tick;
 			if (hold_ms >= REED_SHUTDOWN_HOLD_MS) {
-				MGR_LOG_DEBUG("[REED] Shutdown hold detected (%lums)\r\n",
-					(unsigned long)hold_ms);
 				shutdown_triggered = true;
-#if defined(BSP_HAS_LED_RGB)
-				MGR_LED_blink(MGR_LED_WHITE, 10, 200, 200);
-#endif
 				transition_to(UW_DOPPLER_SHUTDOWN_BLINK);
 				return;
 			}
@@ -1117,8 +1470,19 @@ void KNS_APP_uw_doppler_loop(void)
 	}
 #endif
 
-	/* Run SWS measurement after boot */
-	if (uw_doppler_state >= UW_DOPPLER_MONITORING) {
+	/* Run SWS measurement after boot.
+	 * Paused in CONFIG mode: the user is doing AT-command work, the tag is
+	 * almost certainly out of the water for inspection, and SWS sampling
+	 * spams the UART (one [SWS] line per second), drains the battery
+	 * uselessly, and keeps the analog rail powered. Resumes automatically
+	 * when the user goes back to OPERATIONAL. */
+#if defined(UW_DOPPLER_HAS_GESTURE)
+	const bool sws_paused_config =
+	    (MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG);
+#else
+	const bool sws_paused_config = false;
+#endif
+	if (uw_doppler_state >= UW_DOPPLER_MONITORING && !sws_paused_config) {
 		MGR_SWS_task();
 		/* Save adapted baselines to retention RAM for warm reset recovery */
 		sws_retained.magic = SWS_RETAINED_MAGIC;
@@ -1167,27 +1531,19 @@ void KNS_APP_uw_doppler_loop(void)
 			MGR_LED_off();
 #endif
 #if defined(USE_UART_DRIVER)
-			/* If deployed and no AT command received during boot window,
-			 * disable UART to save power for multi-year deployment.
+			/* DURING DEV: keep UART alive in deploy_mode unconditionally.
 			 *
-			 * Exception: in DEBUG builds keep UART alive unconditionally so
-			 * the developer can observe state transitions, TX events and any
-			 * post-boot crashes. Production builds (no -DDEBUG) get the
-			 * power-saving deinit. */
-#ifdef DEBUG
-			if (deploy_mode) {
-				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART KEPT (DEBUG build)\r\n");
-			}
-#else
-			if (deploy_mode && !boot_window_at_received) {
-				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART disabled\r\n");
-				HAL_NVIC_DisableIRQ(LPUART1_IRQn);
-				HAL_UART_DeInit(&hlpuart1);
-				HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2 | GPIO_PIN_3);
-			} else if (deploy_mode) {
-				MGR_LOG_DEBUG("[UW_DPL] Deploy mode: UART kept (AT received)\r\n");
-			}
-#endif
+			 * BUG (2026-06-05): production build (DEBUG=0) was hitting the
+			 * #else branch which did HAL_UART_DeInit + HAL_GPIO_DeInit on
+			 * the LPUART pins for "power savings in deployed multi-year tag".
+			 * That killed every subsequent UART log → looked like the chip
+			 * hung at BOOT_DEPLOY_LED → INIT_MAC. State machine was actually
+			 * fine and reached MONITORING (s=4), just silent.
+			 *
+			 * Real fix: gate UART deinit on the magnet 2-gesture "operational"
+			 * vs "config" mode (Phase 4), not on DEBUG flag. For now keep UART
+			 * alive in all cases so dev/test can observe MAC, TX, SWS, REED. */
+			(void)boot_window_at_received;
 #endif
 			transition_to(UW_DOPPLER_INIT_MAC);
 		}
@@ -1306,8 +1662,19 @@ void KNS_APP_uw_doppler_loop(void)
 			return;  /* still waiting on safety floor */
 		}
 
-		/* TX scheduling logic - only TX if deployed. */
-		if (deploy_mode && sws_state == MGR_SWS_STATE_SURFACE) {
+		/* TX scheduling logic - only TX if deployed.
+		 * Gated on CONFIG mode: a tag being configured is on the bench,
+		 * not in the water. Auto TX would burn the daily Argos quota
+		 * for a session that's not generating real positions. AT+TEST
+		 * remains available for radio validation (handled above). */
+#if defined(UW_DOPPLER_HAS_GESTURE)
+		const bool gesture_in_config =
+		    (MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG);
+#else
+		const bool gesture_in_config = false;
+#endif
+		if (deploy_mode && sws_state == MGR_SWS_STATE_SURFACE &&
+		    !gesture_in_config) {
 			bool should_tx = false;
 			uint32_t since_last_tx = HAL_GetTick() - last_tx_tick;
 
@@ -1407,7 +1774,10 @@ void KNS_APP_uw_doppler_loop(void)
 	{
 		UWDPL_TRACE("SURF_TX enter");
 #if defined(BSP_HAS_LED_RGB)
-		MGR_LED_set(MGR_LED_VIOLET);
+		/* BLUE solid for TX-in-flight. Was VIOLET (R+B) but the SMD_STDALONE
+		 * common-anode LED only lights one colour at a time due to a single
+		 * anode current-limit resistor — use single-colour codes only. */
+		MGR_LED_set(MGR_LED_BLUE);
 #endif
 		UWDPL_TRACE("SURF_TX LED set");
 
@@ -1525,7 +1895,9 @@ void KNS_APP_uw_doppler_loop(void)
 #if defined(BSP_HAS_LED_RGB)
 			MGR_LED_off();
 #endif
+#if !defined(UW_DOPPLER_HAS_GESTURE)
 			shutdown_triggered = false;
+#endif
 			transition_to(UW_DOPPLER_MONITORING);
 			return;
 		}
@@ -1595,8 +1967,18 @@ void KNS_APP_uw_doppler_setLbCfg(const KNS_APP_UwDopplerLbCfg_t *cfg)
 {
 	if (!cfg) return;
 	lb_cfg = *cfg;
-	/* Force-reevaluate on next reading rather than keeping stale state. */
+	/* Force-reevaluate against the current battery level NOW so the
+	 * YELLOW LB indicator fires immediately if applicable, not only on
+	 * the next TX cycle. Without this, raising `enter_mV` above current
+	 * battery via AT+LBCFG would leave lb_active=0 until next TX runs
+	 * lb_update — confusing UX during live tuning. */
 	lb_active = false;
+#if defined(BSP_HAS_VBAT_ADC)
+	{
+		const uint16_t bat_mV = MGR_BAT_readVoltage_mV();
+		(void)lb_update(bat_mV);
+	}
+#endif
 	MGR_LOG_DEBUG("[UW_DPL] LB cfg: enter=%umV exit=%umV intvl=%us max=%us cnt=%u\r\n",
 		lb_cfg.lb_enter_mV, lb_cfg.lb_exit_mV,
 		lb_cfg.lb_tx_interval_s, lb_cfg.lb_tx_max_s, lb_cfg.lb_tx_max_count);

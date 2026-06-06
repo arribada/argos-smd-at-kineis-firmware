@@ -121,6 +121,11 @@
 #endif
 #include "lpm.h"
 #include "mgr_log.h"
+#if defined(BSP_HAS_LED_RGB)
+/* MGR_LED API is also used outside the UW_DOPPLER/DOPPLER blocks (e.g. to
+ * keep LED pins in a defined OFF state for GUI/STDLN on STDALONE board). */
+#include "mgr_led.h"
+#endif
 
 /** Assembly function used to initialize SRAM2 .bss and .data sections. It is based on the same
  * model as the Reset_Handler (cf startup_*.s file) regarding the whole RAM memory
@@ -651,6 +656,10 @@ void request_dfu_mode(uint32_t protocol)
   * @brief  The application entry point.
   * @retval int
   */
+/* Raw RCC_CSR captured at the very start of main() so app-level code can
+ * read the true reset cause AFTER __HAL_RCC_CLEAR_RESET_FLAGS() wipes it. */
+uint32_t g_boot_rcc_csr_raw = 0;
+
 int main(void)
 {
   /* USER CODE BEGIN 1 */
@@ -663,6 +672,12 @@ int main(void)
   check_dfu_request();
 
   mspFillup();
+
+  /* Capture the raw RCC_CSR BEFORE the PINRST clear below wipes the flags.
+   * boot_loop_handle() reads this to distinguish a user-triggered clean
+   * reset (BOR / PIN) from a fault-triggered one (IWDG / SW) so that NRST
+   * does not accumulate "failures". */
+  g_boot_rcc_csr_raw = RCC->CSR;
 
   /** Check if reset was triggered by nRST external pin
    *
@@ -792,6 +807,32 @@ int main(void)
   uint32_t boot_pwr_sr1 __attribute__((unused)) = PWR->SR1;
   uint32_t boot_rcc_csr __attribute__((unused)) = RCC->CSR;
 
+#ifdef DEBUG
+  /* BOOT trace: only visible in DEBUG builds. Production OPERATIONAL must
+   * stay silent on every boot. Reset-cause letters:
+   * L=LPWR W=WWDG I=IWDG S=SFT B=BOR P=PIN O=OBL ?=none */
+  {
+    extern UART_HandleTypeDef hlpuart1;
+    static char _bt[80];
+    char fl[16] = {0};
+    int idx = 0;
+    if (g_boot_rcc_csr_raw & RCC_CSR_LPWRRSTF) fl[idx++] = 'L';
+    if (g_boot_rcc_csr_raw & RCC_CSR_WWDGRSTF) fl[idx++] = 'W';
+    if (g_boot_rcc_csr_raw & RCC_CSR_IWDGRSTF) fl[idx++] = 'I';
+    if (g_boot_rcc_csr_raw & RCC_CSR_SFTRSTF)  fl[idx++] = 'S';
+    if (g_boot_rcc_csr_raw & RCC_CSR_BORRSTF)  fl[idx++] = 'B';
+    if (g_boot_rcc_csr_raw & RCC_CSR_PINRSTF)  fl[idx++] = 'P';
+    if (g_boot_rcc_csr_raw & RCC_CSR_OBLRSTF)  fl[idx++] = 'O';
+    if (idx == 0) fl[idx++] = '?';
+    fl[idx] = 0;
+    int n = snprintf(_bt, sizeof(_bt),
+        "\r\n==== BOOT cause=[%s] CSR=0x%08lX SR1=0x%08lX ====\r\n",
+        fl, (unsigned long)g_boot_rcc_csr_raw, (unsigned long)boot_pwr_sr1);
+    if (n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)_bt, (uint16_t)n, 100);
+  }
+#endif
+
   /** Logging purpose only, mention which LPM exited */
   switch (LPM_getMode()) {
   case LOW_POWER_MODE_SHUTDOWN:
@@ -846,9 +887,21 @@ int main(void)
    * @note The Idle task is required to call the low power mode managment only
    * */
 #if defined(USE_STDALONE_APP)
+#if defined(BSP_HAS_LED_RGB)
+  /* Keep LED pins in a defined OFF state on boards that have RGB LED (e.g.
+   * SMD_STDALONE) so they don't glow from GPIO leakage. STDLN doesn't drive
+   * the LED autonomously — this is purely a clean-init for HW. */
+  MGR_LED_init();
+#endif
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_stdln_loop) == KNS_STATUS_OK);
   //assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_stdalone_stressTest) == KNS_STATUS_OK);
 #elif defined (USE_GUI_APP)
+
+#if defined(BSP_HAS_LED_RGB)
+  /* Defined LED OFF state on boards with RGB LED. GUI is AT-command driven
+   * and doesn't drive LED autonomously, but AT+LED can control it. */
+  MGR_LED_init();
+#endif
 
 #if defined(USE_SPI_DRIVER)
   #if defined(DEBUG) && defined(VERBOSE)

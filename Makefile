@@ -10,12 +10,47 @@
 #   2015-07-22 - first version
 # ------------------------------------------------
 
-# Force bash as the shell on Windows (Git Bash). The Makefile uses bash syntax
-# (if !(...), [ -n ... ], command -v, single-quoted sed scripts, mkdir -p),
-# so running under cmd.exe breaks every $(shell ...) and recipe line.
+#######################################
+# Host platform detection + shell setup
+#######################################
+# This Makefile uses bash-only syntax (if !(...), command -v, mkdir -p, cygpath,
+# single-quoted sed). On Linux/macOS the default /bin/sh works fine. On Windows
+# we must point SHELL at a real bash, and the path MUST NOT contain spaces —
+# otherwise make splits on whitespace and fails with
+#   `make: C:/Program: No such file or directory`.
+# We therefore use 8.3 short paths (PROGRA~1 = Program Files,
+# PROGRA~2 = Program Files (x86)) and probe common Git/MSYS2/Cygwin locations.
 ifeq ($(OS),Windows_NT)
-SHELL := C:/Program Files/Git/bin/bash.exe
-.SHELLFLAGS := -c
+    HOST_OS := Windows
+    ifneq ($(wildcard C:/PROGRA~1/Git/usr/bin/bash.exe),)
+        SHELL := C:/PROGRA~1/Git/usr/bin/bash.exe
+    else ifneq ($(wildcard C:/PROGRA~2/Git/usr/bin/bash.exe),)
+        SHELL := C:/PROGRA~2/Git/usr/bin/bash.exe
+    else ifneq ($(wildcard C:/PROGRA~1/Git/bin/bash.exe),)
+        SHELL := C:/PROGRA~1/Git/bin/bash.exe
+    else ifneq ($(wildcard C:/PROGRA~2/Git/bin/bash.exe),)
+        SHELL := C:/PROGRA~2/Git/bin/bash.exe
+    else ifneq ($(wildcard C:/msys64/usr/bin/bash.exe),)
+        SHELL := C:/msys64/usr/bin/bash.exe
+    else ifneq ($(wildcard C:/cygwin64/bin/bash.exe),)
+        SHELL := C:/cygwin64/bin/bash.exe
+    else
+        $(warning No bash.exe found. Install Git for Windows or MSYS2, or run make from Git Bash.)
+    endif
+    .SHELLFLAGS := -c
+    export SHELL
+
+    # $(MAKE) gets auto-resolved to make's own binary path. With MSYS-style
+    # make (Chocolatey/MSYS2 build), that path is `/usr/bin/make` — a POSIX
+    # path interpreted in *make's* mount table, NOT in Git Bash's. So when a
+    # recipe does `$(MAKE) -C subdir`, Git Bash tries to spawn `/usr/bin/make`
+    # and fails with `No such file or directory`. Forcing a bare `make` makes
+    # the shell look it up via PATH (which already finds it, since the user
+    # was able to invoke make in the first place).
+    MAKE := make
+else
+    HOST_OS := $(shell uname -s)
+    # Default /bin/sh is fine on Linux/macOS.
 endif
 
 current_makefile := $(firstword $(MAKEFILE_LIST))
@@ -69,7 +104,7 @@ MAC_PRFL = BASIC
 
 # LPM: deepest low power mode supported can be:
 # NONE, SLEEP, STOP, STANDBY, SHUTDOWN
-LPM = NONE
+LPM = STOP
 
 # * Board type: choose between: SMD_PA, SMD_NOPA, SMD_STDALONE, SMD_OP
 BOARD = SMD_PA
@@ -112,7 +147,7 @@ $(KINEIS_DIR)/Lib/libkineis_info.c \
 $(KINEIS_DIR)/Lib/libknsrf_wl_info.c
 
 #LIB_VERSIONS := $(foreach file, $(LIB_INFO_SOURCES), $(shell   if !(cat $(file) | grep "$(notdir $(file:.c=))\[\]" | sed  's/.*"\(.*\)".*/\1/'); then echo 'serach_$(notdir $(file:.c=))_variable'; fi))
-LIB_VERSIONS := $(foreach file, $(LIB_INFO_SOURCES), $(shell cat $(file) | grep "$(notdir $(file:.c=))\[\]" | sed  's/.*"\(.*\)".*/\1/'))
+LIB_VERSIONS := $(foreach file, $(LIB_INFO_SOURCES), $(shell cat $(file) | grep -F "$(notdir $(file:.c=))[]" | sed  's/.*"\(.*\)".*/\1/'))
 LIB_VERSIONS := $(shell echo $(LIB_VERSIONS)  | sed  's/ /,/g')
 
 #######################################
@@ -297,6 +332,7 @@ ifeq ($(APP),UW_DOPPLER)
 	$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Src/mgr_txstats.c \
 	$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Src/mgr_pmlog.c \
 	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
+	$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Src/mgr_gesture.c \
 	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
 endif
 
@@ -470,6 +506,7 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_RATE/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Inc
 endif
 
 ifeq ($(APP),DOPPLER)
@@ -500,6 +537,10 @@ endif
 ASFLAGS += $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
 
 CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
+
+# EXTRA_CFLAGS passthrough: production builds use this to override defaults
+# (e.g. `make ... EXTRA_CFLAGS="-DUW_DOPPLER_KEEP_UART_ALIVE=0 -DUW_DOPPLER_VERBOSE_TRACE=0"`).
+CFLAGS += $(EXTRA_CFLAGS)
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
@@ -728,23 +769,34 @@ $(BOOTLOADER_BIN): bootloader
 # Flash targets
 #######################################
 # JLink executable - auto-detect:
-#   1. JLinkExe on PATH (Linux/macOS, or Windows if user added it)
-#   2. JLink.exe on PATH (Windows)
-#   3. C:/Program Files/SEGGER/JLink/JLink.exe (stable Windows install path)
-#   4. Newest C:/Program Files/SEGGER/JLink_V*/JLink.exe (versioned fallback)
-# Override by passing JLINK_EXE=... on the make command line.
-ifeq ($(shell command -v JLinkExe 2>/dev/null),)
-ifeq ($(shell command -v JLink.exe 2>/dev/null),)
-JLINK_DEFAULT := C:/Program Files/SEGGER/JLink/JLink.exe
-ifeq ($(wildcard $(JLINK_DEFAULT)),)
-JLINK_DEFAULT := $(lastword $(sort $(wildcard C:/Program\ Files/SEGGER/JLink_V*/JLink.exe)))
-endif
-JLINK_EXE ?= "$(JLINK_DEFAULT)"
+#   Linux/macOS : JLinkExe from PATH
+#   Windows     : JLink.exe — uses 8.3 short paths (PROGRA~1 / PROGRA~2) to
+#                 avoid the "C:/Program Files" space which breaks shell quoting
+#                 under Git Bash / MSYS. Probes stable install dir first, then
+#                 falls back to the newest versioned dir (JLink_V*).
+# Override on cmdline: `make JLINK_EXE=/path/to/JLink.exe ...`
+ifeq ($(HOST_OS),Windows)
+    # Stable install path (preferred — survives JLink updates)
+    ifneq ($(wildcard C:/PROGRA~1/SEGGER/JLink/JLink.exe),)
+        JLINK_EXE ?= C:/PROGRA~1/SEGGER/JLink/JLink.exe
+    else ifneq ($(wildcard C:/PROGRA~2/SEGGER/JLink/JLink.exe),)
+        JLINK_EXE ?= C:/PROGRA~2/SEGGER/JLink/JLink.exe
+    else
+        # Versioned fallback: take the newest JLink_V* directory found
+        JLINK_VERSIONED := $(lastword $(sort \
+            $(wildcard C:/PROGRA~1/SEGGER/JLink_V*/JLink.exe) \
+            $(wildcard C:/PROGRA~2/SEGGER/JLink_V*/JLink.exe)))
+        ifneq ($(JLINK_VERSIONED),)
+            JLINK_EXE ?= $(JLINK_VERSIONED)
+        else
+            # Last resort: assume JLink.exe is on PATH
+            JLINK_EXE ?= JLink.exe
+            $(warning JLink not found under C:/Program Files/SEGGER/ — relying on PATH)
+        endif
+    endif
 else
-JLINK_EXE ?= JLink.exe
-endif
-else
-JLINK_EXE ?= JLinkExe
+    # Linux / macOS — JLinkExe must be installed and on PATH
+    JLINK_EXE ?= JLinkExe
 endif
 JLINK_SERIAL ?=
 JLINK_SPEED ?= 4000

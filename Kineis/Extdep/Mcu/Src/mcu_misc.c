@@ -60,7 +60,9 @@ extern uint32_t SystemCoreClock;
 
 /** @brief Pre-charge delay BEFORE driving PSU_EN HIGH.
  *  Idle time to make sure VSYS is rock-solid and TPS63901 is in steady-state
- *  before the inrush event. Costs ~5 ms per TX. */
+ *  before the inrush event. Tried 50 ms 2026-06-05 to see if the PA-enable
+ *  brownout was a transient rail issue — no improvement, so kept at 5 ms.
+ *  The brownout is HW (PA inrush exceeds what the 22 uF cap can absorb). */
 #define MCU_PA_PRECHARGE_DELAY_MS  5
 
 /** @brief PA-on timestamp for the watchdog.
@@ -74,14 +76,17 @@ void MCU_MISC_turn_on_pa()
 	/** @attention this code may run under ISR, especially during continuous modulated wave */
 #if defined(SMD_PA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
-	/* Direct sync UART trace — runs even under ISR so we know exactly when
-	 * MAC calls into PA and how far we get before any crash. */
+#ifdef DEBUG
+	/* DEV: PA entry trace — gated on DEBUG so an OPERATIONAL tag is silent
+	 * during normal TX. Brownout investigation already concluded
+	 * (memory/pa_brownout.md) — kept for re-debug only. */
 	{
 		static const char _pa_enter[] = "\r\n[PA-TRACE] turn_on_pa ENTER\r\n";
 		if (hlpuart1.gState != HAL_UART_STATE_RESET)
 			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_enter,
 				sizeof(_pa_enter) - 1, 100);
 	}
+#endif
 	MGR_LOG_DEBUG("[PA] turn_on_pa\r\n");
 
 #ifdef USE_SMPS_BYPASS_TX
@@ -132,46 +137,47 @@ void MCU_MISC_turn_on_pa()
 
 	/* Pre-charge wait: give VSYS time to be fully steady before the inrush. */
 	DELAY_MS(MCU_PA_PRECHARGE_DELAY_MS);
+
+#ifdef DEBUG
+	/* DEV: brownout signature markers around the PA inrush. "[<" before,
+	 * "[>" after — if "[<" prints but "[>" never does, chip browned out.
+	 * Resolved by 22µF cap (memory/pa_brownout.md) — kept DEBUG-only. */
 	{
-		/* Single-char trace just before — tiniest UART payload so it physically
-		 * leaves the chip in microseconds, telling us we reached this point. */
 		static const char _pa_pre[] = "[<\r\n";
 		if (hlpuart1.gState != HAL_UART_STATE_RESET)
 			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_pre,
 				sizeof(_pa_pre) - 1, 50);
 	}
+#endif
 
+	/* MCU_PA_GPIO_ENABLE=1 (default) drives the load switch normally.
+	 * Setting =0 at build time (-DMCU_PA_GPIO_ENABLE=0) skips the GPIO
+	 * write so the rest of the TX stack can be validated on boards where
+	 * the PA inrush trips brownout. No RF output in that mode. */
+#ifndef MCU_PA_GPIO_ENABLE
+#define MCU_PA_GPIO_ENABLE 1
+#endif
+#if MCU_PA_GPIO_ENABLE
 	HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_SET);
-	/* Arm PA watchdog: if turn_off_pa() isn't called within the threshold the
-	 * application loop will force the PA off and reset (avoids the 60 mA
-	 * silent drain when the MAC stack hangs mid-TX). HAL_GetTick()==0 is a
-	 * legitimate value at boot, so we bias by 1 to keep 0 as the "off" sentinel. */
+#endif
+
 	{
 		uint32_t t = HAL_GetTick();
 		pa_on_tick = (t == 0) ? 1 : t;
 	}
 
+#ifdef DEBUG
 	{
-		/* Single-char trace right after — if this comes out, the chip survived
-		 * the PA_PSU_EN HIGH transition. If absent → brownout during inrush. */
 		static const char _pa_post[] = "[>\r\n";
 		if (hlpuart1.gState != HAL_UART_STATE_RESET)
 			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_post,
 				sizeof(_pa_post) - 1, 50);
 	}
+#endif
 
-	/* Boot delay: TPS22904 soft-start + PA bias-up + supply recovery */
+	/* TPS22904 soft-start + PA bias-up + TCXO stabilization. */
 	DELAY_MS(MCU_PA_BOOTDELAY_MS);
-
-	/* Additional delay for TCXO stabilization after PA startup.
-	 * Power supply needs to stabilize before RF transmission. */
 	DELAY_MS(MCU_PA_TCXO_STABILIZATION_MS);
-	{
-		static const char _pa_done[] = "[PA-TRACE] turn_on_pa DONE\r\n";
-		if (hlpuart1.gState != HAL_UART_STATE_RESET)
-			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_done,
-				sizeof(_pa_done) - 1, 100);
-	}
 #endif
 }
 
@@ -251,8 +257,21 @@ enum KNS_status_t MCU_MISC_getSettingsHwRf(int8_t rf_level_dBm, void* rfSettings
 	return KNS_STATUS_OK;
 }
 
+/* TCXO_FORCE_STATE_ENABLED = 1 = HEAD/Kineis-shipped behaviour.
+ *
+ * The MCU drives HSE in BYPASS_PWR mode (PB0 HSEBYPPWR) when MAC requests
+ * the radio. On SMD_STDALONE the call typically times out (HAL_OscConfig=3)
+ * because VDDTCXO is gated by the SubGHz radio rather than PB0, but the MAC
+ * stack still proceeds with TX successfully — the timeout is non-fatal.
+ * The user has verified TX works with this setting on the deployed board.
+ *
+ * If set to 0 the call is skipped entirely (no UART warning, but TX path
+ * has been observed to brownout on PA enable in that configuration). */
+#define TCXO_FORCE_STATE_ENABLED 1
+
 void MCU_MISC_TCXO_Force_State(bool enable)
 {
+#if TCXO_FORCE_STATE_ENABLED
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
 
     /* Get the Oscillators configuration according to the internal RCC registers */
@@ -268,11 +287,6 @@ void MCU_MISC_TCXO_Force_State(bool enable)
 
     HAL_StatusTypeDef st = HAL_RCC_OscConfig(&RCC_OscInitStruct);
     if (st != HAL_OK) {
-        /* Direct synchronous UART: bypass MGR_LOG so the diagnostic survives.
-         * Previously: Error_Handler() -> reset. That masked the actual cause
-         * since the reset wiped any context. Logging without reset lets the
-         * MAC stack continue (it has its own TCXO control internally) and
-         * tells us whether this call is the culprit for the silent crashes. */
         extern UART_HandleTypeDef hlpuart1;
         static char tcxo_buf[80];
         int tcxo_n = snprintf(tcxo_buf, sizeof(tcxo_buf),
@@ -284,6 +298,10 @@ void MCU_MISC_TCXO_Force_State(bool enable)
         MGR_LOG_DEBUG("[MCU_MISC] TCXO_Force_State(%d) failed: HAL=%d\r\n",
             (int)enable, (int)st);
     }
+#else
+    /* No-op: see TCXO_FORCE_STATE_ENABLED comment above. */
+    (void)enable;
+#endif
     return;
 }
 void MCU_MISC_TCXO_set_warmup(uint32_t time_ms) {
@@ -309,6 +327,28 @@ bool MCU_MISC_PA_isStuck(uint32_t threshold_ms)
 	if (armed == 0)
 		return false;
 	return (HAL_GetTick() - armed) > threshold_ms;
+}
+
+void MCU_MISC_VSEL_set(bool high)
+{
+#if defined(SMD_STDALONE)
+	/* PC1 is wired to the TPS63901 VSEL pin. Drive HIGH for 3V3 (normal),
+	 * LOW for 1.8V (power save). gpio.c already configured PC1 as output
+	 * push-pull at boot, so a simple WritePin suffices here. */
+	HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin,
+		high ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#else
+	(void)high;  /* VSEL is not used on non-STDALONE boards */
+#endif
+}
+
+bool MCU_MISC_VSEL_isHigh(void)
+{
+#if defined(SMD_STDALONE)
+	return HAL_GPIO_ReadPin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin) == GPIO_PIN_SET;
+#else
+	return true;  /* fixed 3V3 supply assumed on non-STDALONE boards */
+#endif
 }
 
 /**

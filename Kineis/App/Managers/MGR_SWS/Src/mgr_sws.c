@@ -98,8 +98,8 @@
 #define L3_DROP_PERCENT                     4
 #define TREND_MA_SIZE                       3
 
-/* Level 4: Absolute water baseline drop */
-#define L4_DROP_PERCENT                     8
+/* Level 4: Absolute water baseline drop — aligned to linkit-v4 main (was 8). */
+#define L4_DROP_PERCENT                    15
 
 /* Level 5: Dive peak cumulative drop */
 #define L5_DROP_PERCENT                    10
@@ -143,7 +143,7 @@ static MGR_SWS_Config_t sws_config = {
 	.test_interval_underwater_ms  = 500,   /**< Poll every 0.5s underwater (fast surface detection) */
 	.max_dive_time_s              = 7200,
 	.min_surface_time_s           = 10,
-	.sample_delay_min_us          = 200,   /**< RC charge floor */
+	.sample_delay_min_us          = 200,   /**< RC charge floor (pulse-ON before ADC read) */
 	.sample_delay_max_us          = 1000,  /**< RC charge ceiling */
 	.sample_delay_default_us      = 500,   /**< RC charge starting point */
 	.enabled                      = true,

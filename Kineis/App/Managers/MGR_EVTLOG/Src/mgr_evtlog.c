@@ -20,7 +20,9 @@
  */
 
 #include "mgr_evtlog.h"
-#include "mgr_pmlog.h"
+#if defined(USE_UW_DOPPLER_APP)
+#include "mgr_pmlog.h"  /* Post-mortem flash log: UW_DOPPLER-only Sprint 4 feature */
+#endif
 #include "stm32wlxx_hal.h"
 
 /* State exported by kns_app_uw_doppler.c for fault/error context */
@@ -72,8 +74,12 @@ void MGR_EVTLOG_log(MGR_EVTLOG_Type_t type, uint16_t data)
 	 * (full power-off / SHUTDOWN / VBAT loss). Lower severities stay only in
 	 * SRAM2 to avoid burning the page. */
 	MGR_EVTLOG_Severity_t sev = MGR_EVTLOG_getSeverity(type);
+#if defined(USE_UW_DOPPLER_APP)
 	if (sev == EVT_SEV_ERROR)
 		MGR_PMLOG_log(sev, (uint8_t)type, e->state, data);
+#else
+	(void)sev;
+#endif
 }
 
 uint16_t MGR_EVTLOG_count(void)

@@ -13,6 +13,9 @@
 
 /* Includes -------------------------------------------------------------------------------------*/
 #include <string.h>
+#include <stdio.h>
+
+#include "stm32wlxx_hal.h"
 
 #include "kns_types.h"
 #include "mgr_at_cmd.h"
@@ -95,8 +98,31 @@ static bool MGR_AT_CMD_parseStreamCb(uint8_t *pu8_RxBuffer, int16_t *pi16_nbRxVa
 
 	uint8_t u8_lastChar = pu8_RxBuffer[*pi16_nbRxValidChar - 1];
 
-	/* Process buffer only once termination caracter has been found */
-	if (u8_lastChar != (uint8_t)'\r') {
+#ifdef DEBUG
+	/* DEV: when a control char arrives that is NOT one of our accepted
+	 * line endings, emit a direct-UART hex trace of the byte. Helps
+	 * spot terminals that send something exotic. Silent on production. */
+	if (u8_lastChar < 0x20u && u8_lastChar != (uint8_t)'\r' &&
+	    u8_lastChar != (uint8_t)'\n' && u8_lastChar != (uint8_t)'\t') {
+		extern UART_HandleTypeDef hlpuart1;
+		if (hlpuart1.gState != HAL_UART_STATE_RESET) {
+			char hb[24];
+			int n = snprintf(hb, sizeof(hb),
+			                 "[AT] rx ctrl=0x%02X\r\n",
+			                 (unsigned)u8_lastChar);
+			if (n > 0)
+				(void)HAL_UART_Transmit(&hlpuart1,
+				    (uint8_t *)hb, (uint16_t)n, 20);
+		}
+	}
+#endif
+
+	/* Process buffer only once termination caracter has been found.
+	 * Accept BOTH '\r' (Windows / MS-DOS terminals, raw "Enter" on most
+	 * serial monitors) and '\n' (Linux / macOS line ending). Without
+	 * the '\n' branch a user typing on a Linux host sees every AT command
+	 * silently dropped because the buffer never gets parsed. */
+	if (u8_lastChar != (uint8_t)'\r' && u8_lastChar != (uint8_t)'\n') {
 		return false;
 	}
 
@@ -121,11 +147,14 @@ static bool MGR_AT_CMD_parseStreamCb(uint8_t *pu8_RxBuffer, int16_t *pi16_nbRxVa
 		return false;
 	}
 
-	/* Find last characters of the frame : '\r\n' */
+	/* Find last characters of the frame. Accept any of '\r\n', '\r', or
+	 * '\n' (last covers Linux/macOS-only line endings — see comment in
+	 * the entry gate above). */
 	for (idxEnd = idxStart + 2; idxEnd <= *pi16_nbRxValidChar; idxEnd++) {
 		if (((pu8_RxBuffer[idxEnd - 2] == (uint8_t)'\r') &&
 		     (pu8_RxBuffer[idxEnd - 1] == (uint8_t)'\n')) ||
-		    (pu8_RxBuffer[idxEnd - 1] == (uint8_t)'\r')) {
+		    (pu8_RxBuffer[idxEnd - 1] == (uint8_t)'\r') ||
+		    (pu8_RxBuffer[idxEnd - 1] == (uint8_t)'\n')) {
 			isEOLdetected = true;
 			break;
 		}
@@ -199,15 +228,30 @@ static struct atcmd_info_t MGR_AT_CMD_getAtType(const uint8_t *pu8_atcmd)
 
 	atcmd_info.ATcmdIndex = u8foundCmdIndex;
 
-	/* Loop over table and check for match */
+	/* Loop over table and pick the LONGEST prefix match.
+	 *
+	 * The previous "break on first match" had a subtle bug: any short
+	 * command (e.g. "AT+TX", 5 chars) listed before a longer one starting
+	 * with the same prefix (e.g. "AT+TXCFG", "AT+TXSTATS") would shadow the
+	 * longer one. The terminator check below would then reject "C" or "S"
+	 * as not in {'=', '\r', '\n'} and return UNKNOWN_AT_CMD — so AT+TXCFG
+	 * and AT+TXSTATS were completely unreachable in builds with both
+	 * USE_USERDATA_TX (AT+TX) and USE_UW_DOPPLER_APP (AT+TXCFG/STATS).
+	 *
+	 * Longest-match scans the full table and keeps the entry whose name
+	 * length is largest, eliminating the ordering dependency. */
+	uint8_t u8_best_len = 0U;
 	for (u8_k = 0U; u8_k < ATCMD_MAX_COUNT; u8_k++) {
 		u8_offset_search = cas_atcmd_list_array[u8_k].u8_cmdNameLen;
+
+		if (u8_offset_search <= u8_best_len)
+			continue;  /* shorter than current best — can't win */
 
 		if (bUTIL_strcmp((uint8_t *)cas_atcmd_list_array[u8_k].pu8_cmdNameString,
 					pu8_atcmd,
 					u8_offset_search)) {
 			u8foundCmdIndex = (uint8_t)u8_k;
-			break;
+			u8_best_len = u8_offset_search;
 		}
 	}
 
