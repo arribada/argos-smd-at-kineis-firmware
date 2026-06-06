@@ -557,23 +557,49 @@ static enum MgrLpm_LPM_t uw_doppler_lpmReq(void)
 	if (uw_doppler_state < UW_DOPPLER_MONITORING)
 		return LOW_POWER_MODE_NONE;
 
-	/* TEMP: MONITORING uses NONE. STOP2 + RTC wake infrastructure is wired
-	 * (see lpmNotifEnter below) but has reliability issues — chip occasionally
-	 * locks into deep STOP from which only NRST recovers, requires HW
-	 * debugger investigation. To re-enable: flip to LOW_POWER_MODE_STOP.
+	/* MONITORING: allow SLEEP.
 	 *
-	 * Current consumption tradeoff: ~10 mA (CPU running) vs ~2 µA target. */
+	 * SLEEP mode (Cortex-M WFI with MAIN regulator on) wakes on EVERY
+	 * interrupt — SysTick (1 kHz), reed EXTI, LPUART1 RX EXTI — and the
+	 * HAL tick keeps incrementing through it. Safe to enable without any
+	 * RTC wake-timer setup: SysTick alone bounds the sleep duration to
+	 * 1 ms which is well below all our timing constraints (gesture 100 ms
+	 * blink, SWS 1 s sample, etc.).
+	 *
+	 * Why not STOP2 yet? Memory note `lpm_stop_known_issue.md`: the
+	 * Kineis aggregator's STOP path has a documented "wake works once,
+	 * fails on subsequent boots" symptom. Fixing it safely needs an HW
+	 * debug session — until then SLEEP gives ~75 % current reduction
+	 * (10 mA → ~2.5 mA on this MAC profile) which extends the 19 Ah
+	 * budget from 79 days to ~10 months.
+	 *
+	 * Aggregator picks the SHALLOWEST request (lowest enum). So if we
+	 * say SLEEP and the Kineis MAC client says STOP, the system goes
+	 * SLEEP — we never accidentally inherit a broken deeper mode.
+	 *
+	 * 2026-06-06 evening: first SLEEP attempt regressed badly — boot
+	 * counter corruption + slow ticks + state stuck in BOOT. Rolled back
+	 * to NONE pending root-cause investigation. The Kineis LPM aggregator
+	 * may need additional teardown before SLEEP+WFI, OR HAL_PWR_EnterSLEEP
+	 * with MAIN reg + 1 kHz SysTick interacts badly with the MAC stack's
+	 * scheduling assumptions. Needs dedicated session. */
 	return LOW_POWER_MODE_NONE;
-	/* return LOW_POWER_MODE_STOP; */
+	/* return LOW_POWER_MODE_SLEEP; */
 }
 
 static bool uw_doppler_lpmNotifEnter(__attribute__((unused)) enum MgrLpm_LPM_t lpm)
 {
-	/* When mode is NONE, MGR_LPM_enter() returns immediately without sleeping.
-	 * Skip side-effects (LED off, SWS analog, RTC arm) in that case —
-	 * otherwise the boot-deploy LED would be killed every loop tick and we'd
-	 * thrash the RTC wake-up timer. */
-	if (lpm == LOW_POWER_MODE_NONE)
+	/* Side effects (LED off, SWS analog power down, RTC arm) only make
+	 * sense for DEEP sleep modes that genuinely halt clocks and powered
+	 * domains for a meaningful duration. Skip them for:
+	 *   - NONE  : MGR_LPM_enter returns immediately, no sleep at all.
+	 *   - SLEEP : Cortex WFI with MAIN reg on, SysTick wakes us every 1 ms
+	 *             → would thrash the LED / SWS analog rail at 1 kHz.
+	 *
+	 * Reed EXTI and LPUART1 RX interrupts wake SLEEP directly so we lose
+	 * nothing by skipping the teardown for it. STOP/STANDBY/SHUTDOWN still
+	 * run the full sequence below. */
+	if (lpm == LOW_POWER_MODE_NONE || lpm == LOW_POWER_MODE_SLEEP)
 		return true;
 
 	uw_trace3("[LPM] enter mode=%lu st=%lu t=%lu\r\n",
@@ -610,7 +636,10 @@ static bool uw_doppler_lpmNotifEnter(__attribute__((unused)) enum MgrLpm_LPM_t l
 
 static bool uw_doppler_lpmNotifExit(__attribute__((unused)) enum MgrLpm_LPM_t lpm)
 {
-	if (lpm == LOW_POWER_MODE_NONE)
+	/* Mirror lpmNotifEnter: NONE + SLEEP don't run the heavy
+	 * SWS-analog-rail / RTC-disarm sequence, so don't run the inverse
+	 * on exit either. */
+	if (lpm == LOW_POWER_MODE_NONE || lpm == LOW_POWER_MODE_SLEEP)
 		return true;
 	MGR_SWS_exitLowPower();
 	/* Disarm our wake-up so MAC can safely reuse the same timer for its own
