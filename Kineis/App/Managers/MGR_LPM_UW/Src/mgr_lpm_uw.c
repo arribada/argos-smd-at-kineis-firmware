@@ -70,10 +70,20 @@ typedef struct {
 static __attribute__((__section__(".retentionRamNoload")))
 UwLpmDutyCfg_t s_duty;
 
-/* Stabilization window: only the first MONITORING entry of a boot
- * has to wait. Subsequent in-boot re-entries (e.g. after TX done)
- * can drop to STANDBY immediately if the gates allow. */
-#define DUTY_STABILIZE_MS  5000u
+/* Interaction window on true cold-boot.
+ *
+ * PB6 reed is NOT a WL55 WKUP pin (only PA0/PC13/PB3 are) and EXTI is
+ * gated during STANDBY, so a reed magnet event is invisible to the chip
+ * once we are in STANDBY — magnet detection latency in steady state is
+ * up to the current sleep duration (surf_sleep_s / uw_sleep_s).
+ *
+ * The exception is right after a true cold-boot (POR / deploy / recovery):
+ * the operator is typically the one who powered the tag on and may want
+ * to interact with a magnet during the first seconds. Hold the auto-cycle
+ * for 30 s on this very first MONITORING entry so EXTI on PB6 stays armed.
+ * STANDBY re-wakes skip this window (the device is sealed underwater,
+ * nobody is around to apply a magnet). */
+#define DUTY_STABILIZE_MS  30000u
 static uint32_t s_first_monitoring_tick = 0u;
 static bool     s_monitoring_ever_entered = false;
 
