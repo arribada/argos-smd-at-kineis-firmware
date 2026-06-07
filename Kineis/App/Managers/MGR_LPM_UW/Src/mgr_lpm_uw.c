@@ -35,7 +35,11 @@
 
 /* ---- Persisted retention-NOLOAD config block ---- */
 
-#define DUTY_CFG_MAGIC 0x44555459UL  /* "DUTY" */
+/* Magic includes a struct-layout version byte: bump on any field add/move
+ * so old retained state from prior firmware doesn't get reinterpreted as
+ * garbage in newly-added fields (saw this: shutdown_threshold_s read as
+ * 20308 after upgrading from a build without that field). */
+#define DUTY_CFG_MAGIC 0x44555402UL  /* "DUTY" + version 02 */
 
 typedef struct {
 	uint32_t magic;
