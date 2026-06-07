@@ -660,6 +660,13 @@ void request_dfu_mode(uint32_t protocol)
  * read the true reset cause AFTER __HAL_RCC_CLEAR_RESET_FLAGS() wipes it. */
 uint32_t g_boot_rcc_csr_raw = 0;
 
+/* Raw PWR_SR1 + EXTSCR captured at boot so app code can detect a
+ * wake-from-STANDBY (EXTSCR.C1SBF = bit 8) after HAL clears the sticky
+ * flags. Lets MGR_LPM_UW / the app decide whether to skip lazy work
+ * that is only needed on a true cold boot. */
+uint32_t g_boot_pwr_sr1_raw = 0;
+uint32_t g_boot_pwr_extscr_raw = 0;
+
 int main(void)
 {
   /* USER CODE BEGIN 1 */
@@ -678,6 +685,9 @@ int main(void)
    * reset (BOR / PIN) from a fault-triggered one (IWDG / SW) so that NRST
    * does not accumulate "failures". */
   g_boot_rcc_csr_raw = RCC->CSR;
+  /* PWR_EXTSCR captured here too — the SBF flag is cleared by HAL later
+   * in the wake-up switch, so we need it before that. */
+  g_boot_pwr_extscr_raw = PWR->EXTSCR;
 
   /** Check if reset was triggered by nRST external pin
    *
@@ -806,6 +816,9 @@ int main(void)
    * don't trip -Werror=unused-variable. */
   uint32_t boot_pwr_sr1 __attribute__((unused)) = PWR->SR1;
   uint32_t boot_rcc_csr __attribute__((unused)) = RCC->CSR;
+  /* Mirror into the global so MGR_LPM_UW (and any app-level code) can
+   * read it after HAL_PWREx wipes the sticky flags later in init. */
+  g_boot_pwr_sr1_raw = boot_pwr_sr1;
 
 #ifdef DEBUG
   /* BOOT trace: only visible in DEBUG builds. Production OPERATIONAL must

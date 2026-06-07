@@ -144,6 +144,17 @@ bool MGR_LPM_UW_isWakeShouldTx(void);
 /** @brief Acknowledge / clear the wake_should_tx flag after consumption. */
 void MGR_LPM_UW_clearWakeShouldTx(void);
 
+/** @brief True if this boot is a cold-boot from STANDBY (PWR_SR1.SBF was
+ *  set on boot). False on POR / IWDG / SW / PIN / SHUTDOWN-wake.
+ *
+ *  Reads the snapshot captured by main() before HAL clears the flags
+ *  (`g_boot_pwr_sr1_raw`). Stable across the whole boot lifetime.
+ *
+ *  Use case: app can branch on this to skip work that's only meaningful
+ *  on a true cold boot (e.g. some MAC re-init steps, NVM re-load) when
+ *  the previous cycle's SRAM2 is still valid. */
+bool MGR_LPM_UW_isWakeFromStandby(void);
+
 #ifdef __cplusplus
 }
 #endif

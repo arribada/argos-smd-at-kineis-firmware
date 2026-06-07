@@ -155,6 +155,16 @@ void MGR_LPM_UW_clearWakeShouldTx(void)
 	s_duty.wake_should_tx = 0u;
 }
 
+extern uint32_t g_boot_pwr_extscr_raw;
+
+bool MGR_LPM_UW_isWakeFromStandby(void)
+{
+	/* PWR_EXTSCR.C1SBF (bit 8) — STANDBY flag for CPU1 on WL55.
+	 * Sticky across the cold-boot, cleared by HAL in the wake-up switch;
+	 * we snapshot EXTSCR before that happens. */
+	return (g_boot_pwr_extscr_raw & PWR_EXTSCR_C1SBF) != 0u;
+}
+
 /** Threshold below which dropping to STANDBY is not worth it (cold-boot
  *  overhead + NVM save costs more than just staying awake). */
 #define LPM_UW_SHORT_SLEEP_THRESHOLD_S  5u
@@ -167,7 +177,14 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 		return;
 	if (!s_monitoring_ever_entered)
 		return;
-	if ((HAL_GetTick() - s_first_monitoring_tick) < DUTY_STABILIZE_MS)
+	/* Stabilization gate. Full 5s on true cold-boot to give the user a
+	 * UART window for AT commands. On wake-from-STANDBY the previous
+	 * cycle has proven the device is healthy, the box is sealed and no
+	 * operator is interacting — skip the wait and re-enter sleep ASAP. */
+	const uint32_t stabilize_ms = MGR_LPM_UW_isWakeFromStandby()
+	                              ? 0u
+	                              : DUTY_STABILIZE_MS;
+	if ((HAL_GetTick() - s_first_monitoring_tick) < stabilize_ms)
 		return;
 
 	/* Persist the SWS state so the next wake's init can detect
@@ -289,6 +306,7 @@ void MGR_LPM_UW_tryAutoCycle(int s, bool g, bool cm)
 bool MGR_LPM_UW_detectSurfaceWake(int s) { (void)s; return false; }
 bool MGR_LPM_UW_isWakeShouldTx(void) { return false; }
 void MGR_LPM_UW_clearWakeShouldTx(void) {}
+bool MGR_LPM_UW_isWakeFromStandby(void) { return false; }
 
 __attribute__((noreturn))
 void MGR_LPM_UW_enterStandbyTimed(uint32_t s) { (void)s; for (;;) {} }
