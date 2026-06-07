@@ -1,0 +1,241 @@
+/**
+ * @file    mgr_lpm_uw.c
+ * @brief   UW_DOPPLER-dedicated LPM manager — implementation.
+ *
+ * See mgr_lpm_uw.h for the API contract and rationale.
+ *
+ * Power-optimization principles encoded here:
+ *  1. Deep STANDBY between meaningful events. Cold-boot on wake; the
+ *     retention NOLOAD region (boot counter, SWS calib, crash forensics,
+ *     this module's duty_cfg + last_sws_state) survives.
+ *  2. Wake-context detection. On cold-boot, MGR_LPM_UW_init compares the
+ *     last persisted SWS state against the freshly-sampled one. If the
+ *     transition is UW → SURFACE we set `wake_should_tx_now = true` so
+ *     the app fires the first TX on this wake instead of cycling through
+ *     a standard MONITORING window.
+ *  3. Configurable per-state sleep duration. Underwater turtles dive
+ *     for tens of minutes; sleep aggressively (default 30 min) without
+ *     compromising surface-session tracking (default 1 min).
+ *  4. SHUTDOWN_REED for end-of-mission. Board powers off entirely.
+ *     Only the HW reed magnet re-energises the regulator.
+ */
+
+#include "mgr_lpm_uw.h"
+
+#include <stddef.h>
+#include "stm32wlxx_hal.h"
+#include "main.h"          /* PA_PSU_SEL_Pin, BSP defines */
+#include "mgr_log.h"
+#include "mgr_nvm.h"
+#include "lpm.h"           /* LPM_shutdownNow / LPM_shutdownWithAutoWake */
+#include "rtc.h"
+
+#if defined(BSP_HAS_PWR_LATCH)
+
+/* ---- Persisted retention-NOLOAD config block ---- */
+
+#define DUTY_CFG_MAGIC 0x44555459UL  /* "DUTY" */
+
+typedef struct {
+	uint32_t magic;
+	uint16_t uw_sleep_s;
+	uint16_t surf_sleep_s;
+	uint8_t  enabled;
+	uint8_t  last_sws_state;   /**< persisted SWS state across STANDBY */
+	uint8_t  wake_should_tx;   /**< set if cold-boot detected UW→SURF */
+	uint8_t  _pad;
+} UwLpmDutyCfg_t;
+
+/* NOLOAD: Sram2_Init does not touch this section, so it survives every
+ * software-class reset (IWDG / SFT / OBL / BOR / PIN) and the STANDBY
+ * cold-boot used by the auto-cycle. Cleared only by VBAT loss. */
+static __attribute__((__section__(".retentionRamNoload")))
+UwLpmDutyCfg_t s_duty;
+
+/* Stabilization window: only the first MONITORING entry of a boot
+ * has to wait. Subsequent in-boot re-entries (e.g. after TX done)
+ * can drop to STANDBY immediately if the gates allow. */
+#define DUTY_STABILIZE_MS  5000u
+static uint32_t s_first_monitoring_tick = 0u;
+static bool     s_monitoring_ever_entered = false;
+
+static void s_apply_defaults_if_needed(void)
+{
+	if (s_duty.magic != DUTY_CFG_MAGIC) {
+		s_duty.magic           = DUTY_CFG_MAGIC;
+		s_duty.uw_sleep_s      = 1800u;   /* 30 min underwater */
+		s_duty.surf_sleep_s    = 60u;     /* 1  min surface idle */
+		s_duty.enabled         = 0u;      /* opt-in via AT+DUTYCFG */
+		s_duty.last_sws_state  = 0xFFu;   /* "unknown" */
+		s_duty.wake_should_tx  = 0u;
+	}
+}
+
+/* ---- Init ---- */
+
+void MGR_LPM_UW_init(void)
+{
+	s_apply_defaults_if_needed();
+}
+
+/* ---- Auto-cycle policy ---- */
+
+void MGR_LPM_UW_markMonitoringEntered(void)
+{
+	if (!s_monitoring_ever_entered) {
+		s_first_monitoring_tick = HAL_GetTick();
+		s_monitoring_ever_entered = true;
+	}
+}
+
+void MGR_LPM_UW_setDutyCfg(uint16_t uw_s, uint16_t surf_s, uint8_t enabled)
+{
+	if (uw_s < 1u)   uw_s   = 1u;
+	if (surf_s < 1u) surf_s = 1u;
+	s_duty.magic        = DUTY_CFG_MAGIC;
+	s_duty.uw_sleep_s   = uw_s;
+	s_duty.surf_sleep_s = surf_s;
+	s_duty.enabled      = enabled ? 1u : 0u;
+	MGR_LOG_DEBUG("[LPM_UW] DUTYCFG uw=%us surf=%us en=%u\r\n",
+		uw_s, surf_s, s_duty.enabled);
+}
+
+void MGR_LPM_UW_getDutyCfg(uint16_t *uw_s, uint16_t *surf_s, uint8_t *enabled)
+{
+	if (uw_s)    *uw_s    = s_duty.uw_sleep_s;
+	if (surf_s)  *surf_s  = s_duty.surf_sleep_s;
+	if (enabled) *enabled = s_duty.enabled;
+}
+
+/** Threshold below which dropping to STANDBY is not worth it (cold-boot
+ *  overhead + NVM save costs more than just staying awake).
+ *  Above SHUTDOWN_THRESHOLD_S we prefer SHUTDOWN+RTC over STANDBY for
+ *  the deepest possible savings. */
+#define LPM_UW_SHORT_SLEEP_THRESHOLD_S  5u
+#define LPM_UW_SHUTDOWN_THRESHOLD_S     300u  /* 5 min */
+
+void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
+{
+	if (!s_duty.enabled)
+		return;
+	if (gesture_busy || config_mode)
+		return;
+	if (!s_monitoring_ever_entered)
+		return;
+	if ((HAL_GetTick() - s_first_monitoring_tick) < DUTY_STABILIZE_MS)
+		return;
+
+	/* Persist the SWS state so the next wake's init can detect
+	 * a UW→SURFACE transition and fire TX immediately on cold-boot. */
+	s_duty.last_sws_state = (uint8_t)sws_state;
+	s_duty.wake_should_tx = 0u;
+
+	/* sws_state values from MGR_SWS_State_t: UNDERWATER=0, SURFACE=1. */
+	const uint32_t sleep_s = (sws_state == 0)
+	                          ? s_duty.uw_sleep_s
+	                          : s_duty.surf_sleep_s;
+
+	/* Below threshold: cold-boot overhead > sleep saving — skip. */
+	if (sleep_s < LPM_UW_SHORT_SLEEP_THRESHOLD_S)
+		return;
+
+	/* Deep cycle: SHUTDOWN+RTC for the lowest possible draw. RTC wake
+	 * still requires PWR_LATCH to stay HIGH; on SMD_STDALONE this is
+	 * the same anchoring trick used for STANDBY (PWR controller pull-up).
+	 * SRAM2 is lost in SHUTDOWN — only retention NOLOAD + NVM survive,
+	 * which is exactly the contract our wake path relies on. */
+	if (sleep_s >= LPM_UW_SHUTDOWN_THRESHOLD_S) {
+		MGR_LPM_UW_enterShutdownAutoWake(sleep_s);
+	}
+	MGR_LPM_UW_enterStandbyTimed(sleep_s);
+	/* Never returns on either path. */
+}
+
+/* ---- STANDBY timed wake ---- */
+
+void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
+{
+	MGR_LOG_DEBUG("[LPM_UW] STANDBY %lus\r\n", (unsigned long)seconds);
+	MGR_NVM_save();
+
+	if (seconds < 1u)     seconds = 1u;
+	if (seconds > 0xFFFFu) seconds = 0xFFFFu;
+
+	/* Arm RTC alarm. CK_SPRE 16-bit: 1..65 536 s per cycle. */
+	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+	    (uint16_t)(seconds - 1u),
+	    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+
+	/* Anchor PWR_LATCH (PB7) HIGH via PWR controller so the STDALONE
+	 * regulator stays alive through STANDBY. Without this the GPIO
+	 * loses drive on STANDBY entry, the board powers off, and only
+	 * the HW reed circuit can wake. */
+	HAL_PWREx_EnablePullUpPullDownConfig();
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_7);
+	/* Hold VSEL HIGH so TPS63901 stays in 3V3 mode on wake. */
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
+
+	HAL_PWREx_EnableSRAMRetention();
+
+	HAL_PWREx_DisableInternalWakeUpLine();
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+	HAL_PWREx_EnableInternalWakeUpLine();
+
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+
+	__HAL_RCC_CLEAR_RESET_FLAGS();
+
+	HAL_PWR_EnterSTANDBYMode();
+	for (;;) { /* unreachable */ }
+}
+
+/* ---- SHUTDOWN with reed-magnet wake ---- */
+
+void MGR_LPM_UW_enterShutdownReed(void)
+{
+	MGR_LOG_DEBUG("[LPM_UW] SHUTDOWN+reed\r\n");
+	/* Use the existing LPM_shutdownNow path. On SMD_STDALONE it pulls
+	 * PWR_LATCH LOW which lets the regulator collapse — the HW reed
+	 * circuit then re-energises VBUS when the magnet is applied. */
+	LPM_shutdownNow();
+	for (;;) { /* unreachable */ }
+}
+
+void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
+{
+	MGR_LOG_DEBUG("[LPM_UW] SHUTDOWN auto-wake %lus\r\n",
+		(unsigned long)wakeup_seconds);
+	LPM_shutdownWithAutoWake(wakeup_seconds);
+	for (;;) { /* unreachable */ }
+}
+
+#else /* !BSP_HAS_PWR_LATCH */
+
+/* Without PWR_LATCH we can't keep the regulator alive through STANDBY,
+ * so the timed-wake path is unavailable. The SHUTDOWN path still works
+ * but with magnet-only wake. */
+
+void MGR_LPM_UW_init(void) {}
+void MGR_LPM_UW_markMonitoringEntered(void) {}
+void MGR_LPM_UW_setDutyCfg(uint16_t a, uint16_t b, uint8_t c)
+    { (void)a; (void)b; (void)c; }
+void MGR_LPM_UW_getDutyCfg(uint16_t *a, uint16_t *b, uint8_t *c)
+{
+	if (a) *a = 0; if (b) *b = 0; if (c) *c = 0;
+}
+void MGR_LPM_UW_tryAutoCycle(int s, bool g, bool cm)
+    { (void)s; (void)g; (void)cm; }
+
+__attribute__((noreturn))
+void MGR_LPM_UW_enterStandbyTimed(uint32_t s) { (void)s; for (;;) {} }
+
+__attribute__((noreturn))
+void MGR_LPM_UW_enterShutdownReed(void) { LPM_shutdownNow(); for (;;) {} }
+
+__attribute__((noreturn))
+void MGR_LPM_UW_enterShutdownAutoWake(uint32_t s)
+    { LPM_shutdownWithAutoWake(s); for (;;) {} }
+
+#endif /* BSP_HAS_PWR_LATCH */

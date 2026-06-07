@@ -92,6 +92,7 @@
 #include "mgr_rate.h"
 #include "mgr_txstats.h"
 #include "mgr_pmlog.h"
+#include "mgr_lpm_uw.h"
 #if defined(BSP_HAS_REED_SWITCH) && defined(BSP_HAS_LED_RGB)
 #include "mgr_gesture.h"
 #define UW_DOPPLER_HAS_GESTURE 1
@@ -422,41 +423,11 @@ static uint8_t test_tx_remaining = 0;
  * Default: disabled — opt-in via AT+DUTYCFG=<uw_s>,<surf_s>,1. Once
  * validated and persisted in NVM, the sealed-deployment build can
  * ship with it on by default. */
-#define DUTY_CFG_MAGIC 0x44555459UL  /* "DUTY" */
-typedef struct {
-	uint32_t magic;          /**< DUTY_CFG_MAGIC if valid. */
-	uint16_t uw_sleep_s;     /**< STANDBY duration when underwater. */
-	uint16_t surf_sleep_s;   /**< STANDBY duration when surface idle. */
-	uint8_t  enabled;        /**< 0 = off, 1 = auto-cycle in MONITORING. */
-	uint8_t  _pad[3];
-} UwDopplerDutyCfg_t;
+/* duty_cfg, persistence, threshold logic and enter_standby_duty have moved
+ * into the dedicated MGR_LPM_UW module (Kineis/App/Managers/MGR_LPM_UW/).
+ * This file just wires the MONITORING tick into MGR_LPM_UW_tryAutoCycle. */
 
-/* NOLOAD retention so the configuration survives the cold boot from each
- * STANDBY wake cycle (Sram2_Init never touches this section). First-power-
- * on check uses the magic; defaults are applied if invalid. */
-static __attribute__((__section__(".retentionRamNoload")))
-UwDopplerDutyCfg_t duty_cfg;
-
-static void duty_cfg_validate_or_default(void)
-{
-	if (duty_cfg.magic != DUTY_CFG_MAGIC) {
-		duty_cfg.magic        = DUTY_CFG_MAGIC;
-		duty_cfg.uw_sleep_s   = 1800u;  /* 30 min default */
-		duty_cfg.surf_sleep_s = 60u;    /* 1 min default */
-		duty_cfg.enabled      = 0u;     /* opt-in via AT+DUTYCFG */
-	}
-}
-
-/** First-MONITORING stabilization window — only applies to the very
- *  first MONITORING entry of a boot, not subsequent re-entries (e.g.
- *  after TX done). Prevents immediate sleep on cold boot while still
- *  allowing back-to-back STANDBY-cycle work later. */
-#define DUTY_STABILIZE_MS  5000u
-static uint32_t monitoring_first_entered_tick = 0u;
-static bool     monitoring_ever_entered = false;
-
-/** Forward declaration. */
-static void try_enter_standby_duty(void);
+/* Stabilization timer + try_enter_standby_duty are owned by MGR_LPM_UW. */
 
 /* Exponential backoff on consecutive device errors (TX_TIMEOUT / MAC_ERROR).
  * Constants defined here (rather than with the other state-machine timeouts
@@ -730,153 +701,21 @@ static struct MgrLpmClientCb_t uw_doppler_lpm_client = {
 	.fpMGR_LPM_LpmNotifExitCb  = uw_doppler_lpmNotifExit,
 };
 
-#if defined(BSP_HAS_PWR_LATCH)
-/** @brief STANDBY-cycling duty mode — independent UW_DOPPLER LPM path.
- *
- * App-driven, NOT routed through the Kineis LPM aggregator. The MAC
- * stack's lpmReq cycle (STANDBY/SHUTDOWN per resource status) is left
- * untouched; this entry point is invoked explicitly by the app state
- * machine when it decides nothing useful will happen for `wakeup_seconds`.
- *
- * Power profile: ~2 µA during STANDBY + ~5-10 s active per wake for
- * MAC re-init + SWS check + optional TX. Over a 5 min duty cycle:
- * avg ~0.17 mA → 19 Ah / 0.17 mA = 11 600 h = 1.3 years. Comfortably
- * above the 12-month sealed-deployment target.
- *
- * CRITICAL prerequisites enforced inside:
- *  1. NVM committed so config persists across the cold boot.
- *  2. PWR_LATCH (PB7) held HIGH via PWR controller pull-up — without
- *     this the STDALONE regulator would power off in STANDBY and only
- *     a magnet (HW reed circuit) could re-energize the board.
- *  3. SRAM2 retention enabled so .retentionRamNoload (crash info, boot
- *     loop counter, SWS calibration) survives the cold boot.
- *  4. RTC wake routed to the PWR controller via internal wake-up line.
- *
- * RISK: if RTC arming fails silently, chip stays in STANDBY until VBAT
- * is physically disconnected. IWDG is frozen in STANDBY so it cannot
- * help. Validation is done via the AT+STANDBYTEST=<seconds> command
- * before any auto-cycling policy is enabled in the main loop.
- *
- * @param wakeup_seconds  RTC alarm interval (1..65535 s on 16-bit CK_SPRE).
- */
-__attribute__((noreturn))
-static void enter_standby_duty(uint32_t wakeup_seconds)
-{
-	MGR_LOG_DEBUG("[UW_DPL] STANDBY-duty for %lu s\r\n",
-		(unsigned long)wakeup_seconds);
-	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)wakeup_seconds);
-	MGR_NVM_save();
-
-	/* Arm RTC wake. 16-bit CK_SPRE counter covers 1 s..65 536 s. */
-	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-	if (wakeup_seconds > 0xFFFFu)
-		wakeup_seconds = 0xFFFFu;
-	(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
-	    (uint16_t)(wakeup_seconds - 1u),
-	    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
-
-	/* Anchor PWR_LATCH (PB7) HIGH via PWR controller so the STDALONE
-	 * regulator stays alive through STANDBY. Without this the GPIO
-	 * loses drive on STANDBY entry, the board powers off, and only
-	 * the HW reed circuit can wake — defeating the timed-wake design. */
-	HAL_PWREx_EnablePullUpPullDownConfig();
-	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_7);
-	/* Hold VSEL HIGH so TPS63901 stays in 3V3 mode on wake. */
-	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
-
-	/* SRAM2 retention so .retentionRamNoload (crash info, boot loop,
-	 * SWS calibration) survives the cold boot. */
-	HAL_PWREx_EnableSRAMRetention();
-
-	/* Route RTC wake to PWR controller. */
-	HAL_PWREx_DisableInternalWakeUpLine();
-	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
-	HAL_PWREx_EnableInternalWakeUpLine();
-
-	/* Clear sticky flags before entry so the wake edge registers. */
-	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
-	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
-
-	__HAL_RCC_CLEAR_RESET_FLAGS();
-
-	/* Enter STANDBY — does not return. Wake = NVIC reset → main(). */
-	HAL_PWR_EnterSTANDBYMode();
-	for (;;) { /* unreachable */ }
-}
-
-/** @brief Public entry for AT+STANDBYTEST. Wraps the static
- *  enter_standby_duty so the AT handler can invoke it without exposing
- *  internal state. Range-validated in the handler (1..60 s).
- */
+/* Public entry points routed through MGR_LPM_UW for the AT command layer. */
 void KNS_APP_uw_doppler_enterStandbyTest(uint32_t seconds)
 {
-	enter_standby_duty(seconds);
+	MGR_LPM_UW_enterStandbyTimed(seconds);
 }
 
-/** @brief Auto-cycling decision. Called from the MONITORING tick. */
-static void try_enter_standby_duty(void)
-{
-	if (!duty_cfg.enabled)
-		return;
-	if (uw_doppler_state != UW_DOPPLER_MONITORING)
-		return;
-	if (test_tx_remaining > 0u)
-		return;        /* test burst pending */
-	if (surface_tx_pending)
-		return;        /* TX queued */
-
-#if defined(UW_DOPPLER_HAS_GESTURE)
-	if (MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG)
-		return;        /* user is in AT-command session */
-	if (MGR_GESTURE_isInteracting())
-		return;        /* magnet hold in progress */
-#endif
-
-	/* One-shot stabilization window — apply only to the first
-	 * MONITORING entry of a boot, not subsequent re-entries. */
-	const uint32_t now = HAL_GetTick();
-	if (!monitoring_ever_entered)
-		return;
-	if ((now - monitoring_first_entered_tick) < DUTY_STABILIZE_MS)
-		return;
-
-	/* Pick sleep duration from SWS state. */
-	const MGR_SWS_State_t sws_state = MGR_SWS_getState();
-	uint32_t sleep_s = (sws_state == MGR_SWS_STATE_UNDERWATER)
-	                   ? duty_cfg.uw_sleep_s
-	                   : duty_cfg.surf_sleep_s;
-	if (sleep_s < 1u) sleep_s = 1u;
-	if (sleep_s > 0xFFFFu) sleep_s = 0xFFFFu;
-
-	MGR_LOG_DEBUG("[UW_DPL] STANDBY duty %lus sws=%d\r\n",
-		(unsigned long)sleep_s, (int)sws_state);
-	enter_standby_duty(sleep_s);
-	/* Never returns. */
-}
-
-/** @brief Public setter for AT+DUTYCFG. Validates and applies live.
- *  Persisted via the .retentionRamNoload section so it survives
- *  STANDBY cold-boot cycles without an NVM write. */
 void KNS_APP_uw_doppler_setDutyCfg(uint16_t uw_s, uint16_t surf_s, uint8_t enabled)
 {
-	if (uw_s < 1u) uw_s = 1u;
-	if (surf_s < 1u) surf_s = 1u;
-	duty_cfg.magic        = DUTY_CFG_MAGIC;
-	duty_cfg.uw_sleep_s   = uw_s;
-	duty_cfg.surf_sleep_s = surf_s;
-	duty_cfg.enabled      = enabled ? 1u : 0u;
-	MGR_LOG_DEBUG("[UW_DPL] DUTYCFG uw=%us surf=%us en=%u\r\n",
-		uw_s, surf_s, duty_cfg.enabled);
+	MGR_LPM_UW_setDutyCfg(uw_s, surf_s, enabled);
 }
 
-/** @brief Public getter for AT+DUTYCFG=?. */
 void KNS_APP_uw_doppler_getDutyCfg(uint16_t *uw_s, uint16_t *surf_s, uint8_t *enabled)
 {
-	if (uw_s)     *uw_s     = duty_cfg.uw_sleep_s;
-	if (surf_s)   *surf_s   = duty_cfg.surf_sleep_s;
-	if (enabled)  *enabled  = duty_cfg.enabled;
+	MGR_LPM_UW_getDutyCfg(uw_s, surf_s, enabled);
 }
-#endif /* BSP_HAS_PWR_LATCH */
 
 #ifdef USE_MAC_PRFL_BLIND
 static struct KNS_MAC_BLIND_usrCfg_t prflBlindUserCfg = {
@@ -902,12 +741,7 @@ static void transition_to(UwDopplerState_t new_state)
 	 * guarantees one call per real transition, not per loop tick. */
 	if (new_state == UW_DOPPLER_MONITORING) {
 		boot_loop_mark_success();
-#if defined(BSP_HAS_PWR_LATCH)
-		if (!monitoring_ever_entered) {
-			monitoring_first_entered_tick = HAL_GetTick();
-			monitoring_ever_entered = true;
-		}
-#endif
+		MGR_LPM_UW_markMonitoringEntered();
 	}
 }
 
@@ -1465,12 +1299,8 @@ void KNS_APP_uw_doppler_init(void)
 	MGR_NVM_load();
 	MGR_WDG_refresh();
 
-#if defined(BSP_HAS_PWR_LATCH)
-	/* Validate the retention-NOLOAD duty_cfg block: applies defaults
-	 * on first power-on (magic invalid) or keeps the operator-tuned
-	 * values across STANDBY-cycle cold boots. */
-	duty_cfg_validate_or_default();
-#endif
+	/* MGR_LPM_UW owns the retention-NOLOAD duty config + defaults. */
+	MGR_LPM_UW_init();
 
 	MGR_LOG_DEBUG("[UW_DPL] Init: interval=%us growth=%u%% max=%us deploy=%u\r\n",
 		tx_cfg.tx_initial_interval_s, tx_cfg.tx_growth_percent,
@@ -2026,17 +1856,36 @@ void KNS_APP_uw_doppler_loop(void)
 				transition_to(UW_DOPPLER_SURFACE_TX);
 				/* Fall through to SURFACE_TX */
 			} else {
-#if defined(BSP_HAS_PWR_LATCH)
-				try_enter_standby_duty();
+				/* Idle surface or no TX due — let MGR_LPM_UW decide
+				 * whether to drop to STANDBY / SHUTDOWN+RTC. Gates
+				 * (gesture, CONFIG, test burst, surface_tx_pending,
+				 * stabilization window) are all inside the module. */
+				if (test_tx_remaining == 0u && !surface_tx_pending) {
+#if defined(UW_DOPPLER_HAS_GESTURE)
+					const bool g_busy   = MGR_GESTURE_isInteracting();
+					const bool g_config = (MGR_GESTURE_getMode() ==
+					                       MGR_GESTURE_MODE_CONFIG);
+#else
+					const bool g_busy = false, g_config = false;
 #endif
+					MGR_LPM_UW_tryAutoCycle((int)sws_state,
+					                       g_busy, g_config);
+				}
 				return;
 			}
 		} else {
-#if defined(BSP_HAS_PWR_LATCH)
-			/* Underwater or deploy_mode=0 idle path — eligible for the
-			 * deeper STANDBY duty cycle (uw_sleep_s default = 1800 s). */
-			try_enter_standby_duty();
+			/* Underwater or deploy_mode=0 idle — deepest sleep path. */
+			if (test_tx_remaining == 0u && !surface_tx_pending) {
+#if defined(UW_DOPPLER_HAS_GESTURE)
+				const bool g_busy   = MGR_GESTURE_isInteracting();
+				const bool g_config = (MGR_GESTURE_getMode() ==
+				                       MGR_GESTURE_MODE_CONFIG);
+#else
+				const bool g_busy = false, g_config = false;
 #endif
+				MGR_LPM_UW_tryAutoCycle((int)sws_state,
+				                       g_busy, g_config);
+			}
 			return;
 		}
 	}
