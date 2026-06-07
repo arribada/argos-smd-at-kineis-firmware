@@ -550,6 +550,53 @@ void LPM_SystemClockConfig(void)
 	__HAL_RCC_GPIOB_CLK_SLEEP_ENABLE();   /* MISO PB4, MOSI PB5 */
 #endif
 
+#if defined(USE_UW_DOPPLER_APP)
+	/* SLEEP-mode peripheral enables for the Kineis MAC + UW_DOPPLER app.
+	 *
+	 * The aggregator zeroed all APBxSMENR above. Re-enable the bits the
+	 * MAC stack and app need to function in SLEEP so the chip can drop
+	 * to WFI between events without breaking scheduling:
+	 *
+	 *  - TIM16     : MAC TX timeout timer. Per lpm_cli_kstk.c:67 the MAC
+	 *                explicitly returns SLEEP (not STOP) during TX so this
+	 *                timer can fire. Without its sleep clock the timer
+	 *                stops, TX times out, MAC state corrupts → IWDG fires.
+	 *                This is the proximate cause of the 2026-06-06 SLEEP
+	 *                regression (see memory/lpm_sleep_attempt.md).
+	 *  - SUBGHZSPI : radio bus, needed for any RF activity in flight.
+	 *  - GPIOA/B/C : reed EXTI (PB6), LED outputs, reed PWR_LATCH (PB7).
+	 *                Without sleep clock, EXTI edge detection still works
+	 *                but writing GPIO state would fail until exit.
+	 *  - DMA1 / DMAMUX1 : in case the MAC uses DMA for radio transfers.
+	 *  - PWR     : keep PWR controller alive so we can manipulate flags.
+	 *
+	 * Cost: each enabled peripheral keeps its low-power clock running
+	 * (~few hundred nA each). Total budget impact ≪ 100 µA, dwarfed by
+	 * the multi-mA win from putting Cortex into WFI most of the time. */
+	/* CPU-execution prerequisites in SLEEP — without these the ISR
+	 * vector fetch fails on the very first SysTick wake → tick stops
+	 * incrementing → state machine appears frozen + IWDG fires.
+	 * Root-caused 2026-06-07. */
+	__HAL_RCC_FLASH_CLK_SLEEP_ENABLE();   /* instruction fetch */
+	__HAL_RCC_SRAM1_CLK_SLEEP_ENABLE();   /* .data / .bss / stack */
+	__HAL_RCC_SRAM2_CLK_SLEEP_ENABLE();   /* Kineis ctxt + retention */
+
+	/* Peripherals the MAC stack + UW_DOPPLER need awake during SLEEP:
+	 *  - TIM16     : MAC TX timeout timer (lpm_cli_kstk.c:67 — MUST
+	 *                run during SLEEP, MAC explicitly only allows
+	 *                SLEEP not STOP during TX for this reason).
+	 *  - SUBGHZSPI : radio bus.
+	 *  - GPIOA/B/C : LED outputs, reed EXTI, PWR_LATCH.
+	 *  - DMA1 / DMAMUX1 : any radio DMA transfers. */
+	__HAL_RCC_TIM16_CLK_SLEEP_ENABLE();
+	__HAL_RCC_SUBGHZSPI_CLK_SLEEP_ENABLE();
+	__HAL_RCC_GPIOA_CLK_SLEEP_ENABLE();
+	__HAL_RCC_GPIOB_CLK_SLEEP_ENABLE();
+	__HAL_RCC_GPIOC_CLK_SLEEP_ENABLE();
+	__HAL_RCC_DMA1_CLK_SLEEP_ENABLE();
+	__HAL_RCC_DMAMUX1_CLK_SLEEP_ENABLE();
+#endif
+
 
 	/* =================== STOP support ============================= */
 	/* Configure the wake up from stop clock, back to full speed HSI. From System clock MUX,

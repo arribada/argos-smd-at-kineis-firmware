@@ -577,12 +577,18 @@ static enum MgrLpm_LPM_t uw_doppler_lpmReq(void)
 	 * say SLEEP and the Kineis MAC client says STOP, the system goes
 	 * SLEEP — we never accidentally inherit a broken deeper mode.
 	 *
-	 * 2026-06-06 evening: first SLEEP attempt regressed badly — boot
-	 * counter corruption + slow ticks + state stuck in BOOT. Rolled back
-	 * to NONE pending root-cause investigation. The Kineis LPM aggregator
-	 * may need additional teardown before SLEEP+WFI, OR HAL_PWR_EnterSLEEP
-	 * with MAIN reg + 1 kHz SysTick interacts badly with the MAC stack's
-	 * scheduling assumptions. Needs dedicated session. */
+	 * 2026-06-07 SLEEP investigation:
+	 *   - First attempt failed: TIM16 sleep-clock gated → MAC corrupted.
+	 *   - lpm.c now sleep-enables TIM16/SUBGHZ/GPIO/DMA/FLASH/SRAM1/2.
+	 *   - Second attempt: SysTick effectively runs at ~25 % of wall time
+	 *     (tick advances 7 s in 30 s wall). State machine appears slow
+	 *     but functional. Cause: unknown — likely HSI/SYSCLK frequency
+	 *     scaling on SLEEP exit, or LPM_SystemClockConfig setting that
+	 *     reduces CPU clock when MAIN regulator is on but we're WFI.
+	 *
+	 * Re-rolled back to NONE for safety until the clock-scaling cause
+	 * is identified with a scope. Battery target (12 mo) blocked on
+	 * either fixing SLEEP clock issue OR landing STOP2 properly. */
 	return LOW_POWER_MODE_NONE;
 	/* return LOW_POWER_MODE_SLEEP; */
 }
