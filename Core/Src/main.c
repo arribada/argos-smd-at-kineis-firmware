@@ -697,6 +697,20 @@ int main(void)
    * is intentionally NOT cleared — losing it would float PWR_LATCH and
    * power-cycle the board. */
   PWR->PDCRC &= ~(1UL << 1);  /* clear PC1 pull-down */
+
+  /* Robustness for the 1V8 STANDBY path: drive PC1 HIGH bare-metal here,
+   * BEFORE SystemClock_Config configures PLL and BEFORE any peripheral
+   * touches an ADC. That way SystemClock_Config runs at 3V3 instead of
+   * 1V8 (avoids edge-of-spec PLL lock margin), and any later ADC sample
+   * sees the 3V3 reference the SWS / BAT calibrations were tuned for.
+   * MX_GPIO_Init() re-applies the same drive HIGH later — both are
+   * idempotent. The transition VSEL low->high takes a few ms; we let
+   * the ramp continue during SystemClock_Config (HSI16 = 1V8-safe). */
+  RCC->AHB2ENR |= RCC_AHB2ENR_GPIOCEN;
+  (void)RCC->AHB2ENR;  /* dsb-equivalent: ensure clock enable is visible */
+  GPIOC->BSRR = (1UL << 1);                       /* drive PC1 = 1 */
+  GPIOC->MODER = (GPIOC->MODER & ~(3UL << (1 * 2))) | (1UL << (1 * 2)); /* output */
+  GPIOC->OTYPER &= ~(1UL << 1);                   /* push-pull */
 #endif
 
   /** Check if reset was triggered by nRST external pin
