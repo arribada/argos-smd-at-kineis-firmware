@@ -34,6 +34,7 @@
 #include "mgr_nvm.h"
 #include "mgr_evtlog.h"
 #include "lpm.h"
+#include "mgr_lpm_uw.h"
 #if defined(BSP_HAS_REED_SWITCH)
 #include "mgr_reed.h"
 #endif
@@ -585,22 +586,32 @@ bool bMGR_AT_CMD_DUTYCFG_cmd(uint8_t *pu8_cmdParamString,
 		uint16_t uw_s = 0, surf_s = 0;
 		uint8_t en = 0;
 		KNS_APP_uw_doppler_getDutyCfg(&uw_s, &surf_s, &en);
-		MCU_AT_CONSOLE_send("+DUTYCFG=%u,%u,%u\r\n",
-			(unsigned)uw_s, (unsigned)surf_s, (unsigned)en);
+		const uint16_t shutdown_thr = MGR_LPM_UW_getShutdownThreshold();
+		MCU_AT_CONSOLE_send("+DUTYCFG=%u,%u,%u,%u\r\n",
+			(unsigned)uw_s, (unsigned)surf_s, (unsigned)en,
+			(unsigned)shutdown_thr);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
-		unsigned int uw_s = 0, surf_s = 0, en = 0;
-		if (sscanf((const char *)pu8_cmdParamString,
-			"AT+DUTYCFG=%u,%u,%u", &uw_s, &surf_s, &en) != 3)
+		unsigned int uw_s = 0, surf_s = 0, en = 0, shutdown_thr = 0;
+		/* 4-arg form sets duty + shutdown threshold; 3-arg keeps
+		 * the previously-saved threshold untouched. */
+		int parsed = sscanf((const char *)pu8_cmdParamString,
+			"AT+DUTYCFG=%u,%u,%u,%u",
+			&uw_s, &surf_s, &en, &shutdown_thr);
+		if (parsed != 3 && parsed != 4)
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		if (uw_s < 1u || uw_s > 65535u ||
 		    surf_s < 1u || surf_s > 65535u || en > 1u)
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		if (parsed == 4 && shutdown_thr > 65535u)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 
 		KNS_APP_uw_doppler_setDutyCfg((uint16_t)uw_s,
 			(uint16_t)surf_s, (uint8_t)en);
+		if (parsed == 4)
+			MGR_LPM_UW_setShutdownThreshold((uint16_t)shutdown_thr);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);

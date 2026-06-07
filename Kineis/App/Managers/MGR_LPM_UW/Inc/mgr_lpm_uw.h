@@ -123,6 +123,27 @@ void MGR_LPM_UW_setDutyCfg(uint16_t uw_sleep_s, uint16_t surf_sleep_s,
 void MGR_LPM_UW_getDutyCfg(uint16_t *uw_sleep_s, uint16_t *surf_sleep_s,
                           uint8_t *enabled);
 
+/** @brief Sleep duration ≥ this value picks SHUTDOWN+RTC over STANDBY in
+ *  the auto-cycle. Set to 0 to always use STANDBY. Default 300 s. */
+void     MGR_LPM_UW_setShutdownThreshold(uint16_t seconds);
+uint16_t MGR_LPM_UW_getShutdownThreshold(void);
+
+/** @brief Compare current SWS state with the persisted last-state from
+ *  the previous STANDBY entry. Returns true if a UW→SURFACE transition
+ *  is detected (previous was UNDERWATER=0, current is SURFACE=1) — the
+ *  caller should fire an immediate TX on this wake cycle.
+ *
+ *  Also updates the persisted last_sws_state so the next cycle's check
+ *  sees this state as the baseline. */
+bool MGR_LPM_UW_detectSurfaceWake(int current_sws_state);
+
+/** @brief True if the last duty cycle decided we should TX on this wake.
+ *  Set by detectSurfaceWake; consumed by the app's wake-init branch. */
+bool MGR_LPM_UW_isWakeShouldTx(void);
+
+/** @brief Acknowledge / clear the wake_should_tx flag after consumption. */
+void MGR_LPM_UW_clearWakeShouldTx(void);
+
 #ifdef __cplusplus
 }
 #endif

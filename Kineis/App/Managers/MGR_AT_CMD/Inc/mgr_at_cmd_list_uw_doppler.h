@@ -204,14 +204,19 @@ bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t 
 
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
  *
- * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>`
- * Action: `AT+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>`
- *   uw_sleep_s   : STANDBY duration while underwater (1..65535 s).
- *   surf_sleep_s : STANDBY duration while surface idle (1..65535 s).
- *   enabled      : 0 = off (chip stays active), 1 = on (auto-cycle).
+ * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`
+ * Action: `AT+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>[,<shutdown_thr_s>]`
+ *   uw_sleep_s     : STANDBY duration while underwater (1..65535 s).
+ *   surf_sleep_s   : STANDBY duration while surface idle (1..65535 s).
+ *   enabled        : 0 = off (chip stays active), 1 = on (auto-cycle).
+ *   shutdown_thr_s : (optional) sleep_s ≥ this value picks SHUTDOWN+RTC
+ *                    over STANDBY for the lowest possible draw (<1µA vs
+ *                    ~2µA). 0 = always STANDBY. Default 300 s (5 min).
+ *                    Omit to keep the previously-saved value.
  *
- * Defaults: 1800, 60, 0 (off). Enable at runtime once the wake path
- * is validated via AT+STANDBYTEST. Persisted via AT+SAVE.
+ * Defaults: 1800, 60, 0, 300. Enable at runtime once the wake path is
+ * validated via AT+STANDBYTEST. Lives in .retentionRamNoload across
+ * STANDBY cold-boots; commit to flash via AT+SAVE.
  */
 bool bMGR_AT_CMD_DUTYCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 

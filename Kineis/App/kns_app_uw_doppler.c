@@ -1676,6 +1676,23 @@ void KNS_APP_uw_doppler_loop(void)
 
 		MGR_SWS_State_t sws_state = MGR_SWS_getState();
 
+		/* Cold-boot UW→SURFACE detection: compares the freshly-sampled
+		 * SWS state against the one persisted by the previous duty cycle
+		 * (.retentionRamNoload). If the previous cycle saw UNDERWATER and
+		 * we now read SURFACE we force an immediate TX even if the SWS
+		 * task didn't report a transition (it may have stabilized on
+		 * SURFACE before stateChanged() was polled). Per-cycle no-op
+		 * once the persisted state matches the current one. */
+		if (MGR_LPM_UW_detectSurfaceWake((int)sws_state)) {
+			MGR_LOG_DEBUG("[UW_DPL] Cold-boot UW->SURF detected, TX ASAP\r\n");
+			MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
+			reset_tx_scheduling();
+			surface_tx_pending = true;
+			first_tx_random_offset_ms =
+				prng_next() % FIRST_TX_RANDOM_WINDOW_MS;
+			MGR_LPM_UW_clearWakeShouldTx();
+		}
+
 		/* Check for surface detection */
 		if (MGR_SWS_stateChanged()) {
 			if (sws_state == MGR_SWS_STATE_SURFACE) {
@@ -2159,6 +2176,14 @@ void KNS_APP_uw_doppler_restoreSwsBaselines(void)
 			sws_retained.air_baseline, sws_retained.water_baseline,
 			sws_retained.observed_peak_adc);
 	}
+
+	/* Instant first-TX path is enforced by MONITORING's standard
+	 * `MGR_SWS_stateChanged()` hook + the wake_should_tx flag in
+	 * MGR_LPM_UW retention: if the previous duty cycle persisted
+	 * UNDERWATER and the SWS task now reports SURFACE on its first
+	 * sample, the existing surface-detection branch primes
+	 * surface_tx_pending naturally. No extra synchronous sample is
+	 * needed here (would block init + risk an unstable analog read). */
 }
 
 /**

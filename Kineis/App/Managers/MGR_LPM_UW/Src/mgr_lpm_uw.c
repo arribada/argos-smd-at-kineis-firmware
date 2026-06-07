@@ -27,6 +27,7 @@
 #include "main.h"          /* PA_PSU_SEL_Pin, BSP defines */
 #include "mgr_log.h"
 #include "mgr_nvm.h"
+#include "mgr_sws.h"       /* MGR_SWS_STATE_{SURFACE,UNDERWATER,UNKNOWN} */
 #include "lpm.h"           /* LPM_shutdownNow / LPM_shutdownWithAutoWake */
 #include "rtc.h"
 
@@ -44,6 +45,7 @@ typedef struct {
 	uint8_t  last_sws_state;   /**< persisted SWS state across STANDBY */
 	uint8_t  wake_should_tx;   /**< set if cold-boot detected UW→SURF */
 	uint8_t  _pad;
+	uint16_t shutdown_threshold_s;
 } UwLpmDutyCfg_t;
 
 /* NOLOAD: Sram2_Init does not touch this section, so it survives every
@@ -62,12 +64,13 @@ static bool     s_monitoring_ever_entered = false;
 static void s_apply_defaults_if_needed(void)
 {
 	if (s_duty.magic != DUTY_CFG_MAGIC) {
-		s_duty.magic           = DUTY_CFG_MAGIC;
-		s_duty.uw_sleep_s      = 1800u;   /* 30 min underwater */
-		s_duty.surf_sleep_s    = 60u;     /* 1  min surface idle */
-		s_duty.enabled         = 0u;      /* opt-in via AT+DUTYCFG */
-		s_duty.last_sws_state  = 0xFFu;   /* "unknown" */
-		s_duty.wake_should_tx  = 0u;
+		s_duty.magic                = DUTY_CFG_MAGIC;
+		s_duty.uw_sleep_s           = 1800u;   /* 30 min underwater */
+		s_duty.surf_sleep_s         = 60u;     /* 1  min surface idle */
+		s_duty.enabled              = 0u;      /* opt-in via AT+DUTYCFG */
+		s_duty.last_sws_state       = 0xFFu;   /* "unknown" */
+		s_duty.wake_should_tx       = 0u;
+		s_duty.shutdown_threshold_s = 300u;    /* default: ≥5min → SHUTDOWN */
 	}
 }
 
@@ -107,12 +110,54 @@ void MGR_LPM_UW_getDutyCfg(uint16_t *uw_s, uint16_t *surf_s, uint8_t *enabled)
 	if (enabled) *enabled = s_duty.enabled;
 }
 
+void MGR_LPM_UW_setShutdownThreshold(uint16_t seconds)
+{
+	s_duty.magic               = DUTY_CFG_MAGIC;
+	s_duty.shutdown_threshold_s = seconds;
+	MGR_LOG_DEBUG("[LPM_UW] SHUTDOWN threshold=%us\r\n", (unsigned)seconds);
+}
+
+uint16_t MGR_LPM_UW_getShutdownThreshold(void)
+{
+	return s_duty.shutdown_threshold_s;
+}
+
+bool MGR_LPM_UW_detectSurfaceWake(int current_sws_state)
+{
+	const uint8_t prev = s_duty.last_sws_state;
+	const uint8_t curr = (uint8_t)current_sws_state;
+	bool transition_uw_to_surf = false;
+
+	if (prev == (uint8_t)MGR_SWS_STATE_UNDERWATER &&
+	    curr == (uint8_t)MGR_SWS_STATE_SURFACE) {
+		/* Previous cycle persisted UNDERWATER, current sample says
+		 * SURFACE → first surface event since last wake. Fire TX. */
+		transition_uw_to_surf = true;
+		s_duty.wake_should_tx = 1u;
+	}
+	/* Update persisted state only on known transitions, so an UNKNOWN
+	 * sample on cold-boot (SWS task not yet ready) doesn't wipe the
+	 * UW/SURF baseline from the previous cycle. */
+	if (curr == (uint8_t)MGR_SWS_STATE_SURFACE ||
+	    curr == (uint8_t)MGR_SWS_STATE_UNDERWATER) {
+		s_duty.last_sws_state = curr;
+	}
+	return transition_uw_to_surf;
+}
+
+bool MGR_LPM_UW_isWakeShouldTx(void)
+{
+	return s_duty.wake_should_tx != 0u;
+}
+
+void MGR_LPM_UW_clearWakeShouldTx(void)
+{
+	s_duty.wake_should_tx = 0u;
+}
+
 /** Threshold below which dropping to STANDBY is not worth it (cold-boot
- *  overhead + NVM save costs more than just staying awake).
- *  Above SHUTDOWN_THRESHOLD_S we prefer SHUTDOWN+RTC over STANDBY for
- *  the deepest possible savings. */
+ *  overhead + NVM save costs more than just staying awake). */
 #define LPM_UW_SHORT_SLEEP_THRESHOLD_S  5u
-#define LPM_UW_SHUTDOWN_THRESHOLD_S     300u  /* 5 min */
 
 void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 {
@@ -127,11 +172,17 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 
 	/* Persist the SWS state so the next wake's init can detect
 	 * a UW→SURFACE transition and fire TX immediately on cold-boot. */
-	s_duty.last_sws_state = (uint8_t)sws_state;
+	if (sws_state == (int)MGR_SWS_STATE_SURFACE ||
+	    sws_state == (int)MGR_SWS_STATE_UNDERWATER) {
+		s_duty.last_sws_state = (uint8_t)sws_state;
+	}
 	s_duty.wake_should_tx = 0u;
 
-	/* sws_state values from MGR_SWS_State_t: UNDERWATER=0, SURFACE=1. */
-	const uint32_t sleep_s = (sws_state == 0)
+	/* MGR_SWS_State_t: UNKNOWN=0, SURFACE=1, UNDERWATER=2. UNKNOWN
+	 * shouldn't reach this code (the gates above hold us in MONITORING
+	 * until a real sample is available), but if it does we err on the
+	 * safe side and treat it as surface (shorter sleep, faster recovery). */
+	const uint32_t sleep_s = (sws_state == (int)MGR_SWS_STATE_UNDERWATER)
 	                          ? s_duty.uw_sleep_s
 	                          : s_duty.surf_sleep_s;
 
@@ -139,12 +190,12 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 	if (sleep_s < LPM_UW_SHORT_SLEEP_THRESHOLD_S)
 		return;
 
-	/* Deep cycle: SHUTDOWN+RTC for the lowest possible draw. RTC wake
-	 * still requires PWR_LATCH to stay HIGH; on SMD_STDALONE this is
-	 * the same anchoring trick used for STANDBY (PWR controller pull-up).
-	 * SRAM2 is lost in SHUTDOWN — only retention NOLOAD + NVM survive,
-	 * which is exactly the contract our wake path relies on. */
-	if (sleep_s >= LPM_UW_SHUTDOWN_THRESHOLD_S) {
+	/* Deep cycle: SHUTDOWN+RTC for the lowest possible draw when the
+	 * sleep duration justifies losing SRAM2 (we still keep .retentionRamNoload
+	 * via VBAT backup + NVM in flash). 0 disables shutdown selection. */
+	const uint16_t shutdown_thr = s_duty.shutdown_threshold_s;
+	if (shutdown_thr >= LPM_UW_SHORT_SLEEP_THRESHOLD_S &&
+	    sleep_s >= shutdown_thr) {
 		MGR_LPM_UW_enterShutdownAutoWake(sleep_s);
 	}
 	MGR_LPM_UW_enterStandbyTimed(sleep_s);
@@ -156,7 +207,13 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 {
 	MGR_LOG_DEBUG("[LPM_UW] STANDBY %lus\r\n", (unsigned long)seconds);
-	MGR_NVM_save();
+
+	/* NO MGR_NVM_save() here — calling it every cycle would burn the
+	 * flash within weeks at the deployment cadence and the 50 ms write
+	 * stalls the loop on each iteration. duty_cfg + sws calibration +
+	 * boot counter all live in .retentionRamNoload which survives the
+	 * STANDBY cold-boot without any flash interaction. NVM is committed
+	 * on AT+SAVE / boot-loop-factory-reset only. */
 
 	if (seconds < 1u)     seconds = 1u;
 	if (seconds > 0xFFFFu) seconds = 0xFFFFu;
@@ -225,8 +282,13 @@ void MGR_LPM_UW_getDutyCfg(uint16_t *a, uint16_t *b, uint8_t *c)
 {
 	if (a) *a = 0; if (b) *b = 0; if (c) *c = 0;
 }
+void MGR_LPM_UW_setShutdownThreshold(uint16_t s) { (void)s; }
+uint16_t MGR_LPM_UW_getShutdownThreshold(void) { return 0; }
 void MGR_LPM_UW_tryAutoCycle(int s, bool g, bool cm)
     { (void)s; (void)g; (void)cm; }
+bool MGR_LPM_UW_detectSurfaceWake(int s) { (void)s; return false; }
+bool MGR_LPM_UW_isWakeShouldTx(void) { return false; }
+void MGR_LPM_UW_clearWakeShouldTx(void) {}
 
 __attribute__((noreturn))
 void MGR_LPM_UW_enterStandbyTimed(uint32_t s) { (void)s; for (;;) {} }
