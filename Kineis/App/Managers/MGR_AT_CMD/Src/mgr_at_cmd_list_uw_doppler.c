@@ -587,9 +587,11 @@ bool bMGR_AT_CMD_DUTYCFG_cmd(uint8_t *pu8_cmdParamString,
 		uint8_t en = 0;
 		KNS_APP_uw_doppler_getDutyCfg(&uw_s, &surf_s, &en);
 		const uint16_t shutdown_thr = MGR_LPM_UW_getShutdownThreshold();
-		MCU_AT_CONSOLE_send("+DUTYCFG=%u,%u,%u,%u\r\n",
+		const unsigned wake_sb = MGR_LPM_UW_isWakeFromStandby() ? 1u : 0u;
+		const unsigned wake_tx = MGR_LPM_UW_isWakeShouldTx()    ? 1u : 0u;
+		MCU_AT_CONSOLE_send("+DUTYCFG=%u,%u,%u,%u (sb_wake=%u,tx_due=%u)\r\n",
 			(unsigned)uw_s, (unsigned)surf_s, (unsigned)en,
-			(unsigned)shutdown_thr);
+			(unsigned)shutdown_thr, wake_sb, wake_tx);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
