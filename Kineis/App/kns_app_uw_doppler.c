@@ -673,6 +673,90 @@ static struct MgrLpmClientCb_t uw_doppler_lpm_client = {
 	.fpMGR_LPM_LpmNotifExitCb  = uw_doppler_lpmNotifExit,
 };
 
+#if defined(BSP_HAS_PWR_LATCH)
+/** @brief STANDBY-cycling duty mode — independent UW_DOPPLER LPM path.
+ *
+ * App-driven, NOT routed through the Kineis LPM aggregator. The MAC
+ * stack's lpmReq cycle (STANDBY/SHUTDOWN per resource status) is left
+ * untouched; this entry point is invoked explicitly by the app state
+ * machine when it decides nothing useful will happen for `wakeup_seconds`.
+ *
+ * Power profile: ~2 µA during STANDBY + ~5-10 s active per wake for
+ * MAC re-init + SWS check + optional TX. Over a 5 min duty cycle:
+ * avg ~0.17 mA → 19 Ah / 0.17 mA = 11 600 h = 1.3 years. Comfortably
+ * above the 12-month sealed-deployment target.
+ *
+ * CRITICAL prerequisites enforced inside:
+ *  1. NVM committed so config persists across the cold boot.
+ *  2. PWR_LATCH (PB7) held HIGH via PWR controller pull-up — without
+ *     this the STDALONE regulator would power off in STANDBY and only
+ *     a magnet (HW reed circuit) could re-energize the board.
+ *  3. SRAM2 retention enabled so .retentionRamNoload (crash info, boot
+ *     loop counter, SWS calibration) survives the cold boot.
+ *  4. RTC wake routed to the PWR controller via internal wake-up line.
+ *
+ * RISK: if RTC arming fails silently, chip stays in STANDBY until VBAT
+ * is physically disconnected. IWDG is frozen in STANDBY so it cannot
+ * help. Validation is done via the AT+STANDBYTEST=<seconds> command
+ * before any auto-cycling policy is enabled in the main loop.
+ *
+ * @param wakeup_seconds  RTC alarm interval (1..65535 s on 16-bit CK_SPRE).
+ */
+__attribute__((noreturn))
+static void enter_standby_duty(uint32_t wakeup_seconds)
+{
+	MGR_LOG_DEBUG("[UW_DPL] STANDBY-duty for %lu s\r\n",
+		(unsigned long)wakeup_seconds);
+	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)wakeup_seconds);
+	MGR_NVM_save();
+
+	/* Arm RTC wake. 16-bit CK_SPRE counter covers 1 s..65 536 s. */
+	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	if (wakeup_seconds > 0xFFFFu)
+		wakeup_seconds = 0xFFFFu;
+	(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+	    (uint16_t)(wakeup_seconds - 1u),
+	    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+
+	/* Anchor PWR_LATCH (PB7) HIGH via PWR controller so the STDALONE
+	 * regulator stays alive through STANDBY. Without this the GPIO
+	 * loses drive on STANDBY entry, the board powers off, and only
+	 * the HW reed circuit can wake — defeating the timed-wake design. */
+	HAL_PWREx_EnablePullUpPullDownConfig();
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_7);
+	/* Hold VSEL HIGH so TPS63901 stays in 3V3 mode on wake. */
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
+
+	/* SRAM2 retention so .retentionRamNoload (crash info, boot loop,
+	 * SWS calibration) survives the cold boot. */
+	HAL_PWREx_EnableSRAMRetention();
+
+	/* Route RTC wake to PWR controller. */
+	HAL_PWREx_DisableInternalWakeUpLine();
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+	HAL_PWREx_EnableInternalWakeUpLine();
+
+	/* Clear sticky flags before entry so the wake edge registers. */
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+
+	__HAL_RCC_CLEAR_RESET_FLAGS();
+
+	/* Enter STANDBY — does not return. Wake = NVIC reset → main(). */
+	HAL_PWR_EnterSTANDBYMode();
+	for (;;) { /* unreachable */ }
+}
+
+/** @brief Public entry for AT+STANDBYTEST. Wraps the static
+ *  enter_standby_duty so the AT handler can invoke it without exposing
+ *  internal state. Range-validated in the handler (1..60 s).
+ */
+void KNS_APP_uw_doppler_enterStandbyTest(uint32_t seconds)
+{
+	enter_standby_duty(seconds);
+}
+#endif /* BSP_HAS_PWR_LATCH */
+
 #ifdef USE_MAC_PRFL_BLIND
 static struct KNS_MAC_BLIND_usrCfg_t prflBlindUserCfg = {
 	.retx_nb = 0,

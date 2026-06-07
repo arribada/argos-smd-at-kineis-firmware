@@ -181,4 +181,25 @@ bool bMGR_AT_CMD_TEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
  */
 bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+STANDBYTEST=<seconds>: STANDBY-cycling validation (for 12-mo work).
+ *
+ * Enters STM32WL55 STANDBY mode for <seconds>. PWR_LATCH is held HIGH via
+ * the PWR controller pull-up so the STDALONE regulator stays alive; RTC
+ * is armed to fire after <seconds> which wakes the chip into a cold boot.
+ * Range: 1..60 s for safety (longer durations are too risky to test
+ * blindly — if RTC arming silently fails, the chip is brick until VBAT
+ * is physically disconnected).
+ *
+ * On success: device replies `+STANDBYTEST=<seconds>` + `+OK`, then
+ * disappears for <seconds>, then cold-boots (visible in BOOT trace).
+ * On failure: chip stays asleep indefinitely. Recovery: NRST or battery
+ * removal.
+ *
+ * @warning HW validation only — DO NOT use in deployment until the
+ *          wake path is proven on the bench. The 12-month battery target
+ *          relies on a STANDBY-cycling architecture that this command
+ *          exercises in isolation.
+ */
+bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */

@@ -85,6 +85,7 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+DIAG",          7, bMGR_AT_CMD_DIAG_cmd},
 	{ "AT+RESET",         8, bMGR_AT_CMD_RESET_cmd},
 	{ "AT+SHUTDOWN",     11, bMGR_AT_CMD_SHUTDOWN_cmd},
+	{ "AT+STANDBYTEST",  14, bMGR_AT_CMD_STANDBYTEST_cmd},
 	/* LB mode — LBCFG before LB to win prefix match */
 	{ "AT+LBCFG",         8, bMGR_AT_CMD_LBCFG_cmd},
 	{ "AT+LB",            5, bMGR_AT_CMD_LB_cmd},
