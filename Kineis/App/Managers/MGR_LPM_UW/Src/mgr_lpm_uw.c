@@ -28,8 +28,20 @@
 #include "mgr_log.h"
 #include "mgr_nvm.h"
 #include "mgr_sws.h"       /* MGR_SWS_STATE_{SURFACE,UNDERWATER,UNKNOWN} */
+#include "mcu_misc.h"      /* MCU_MISC_VSEL_set */
 #include "lpm.h"           /* LPM_shutdownNow / LPM_shutdownWithAutoWake */
 #include "rtc.h"
+
+/* Drop VSEL to 1.8V right before STANDBY entry on STDALONE. BOR_LEV is
+ * at level 0 (~1.7V) in production option bytes so VDD=1.8V keeps a
+ * ~100 mV brownout margin. The TPS63901 takes a few ms to switch the
+ * output rail; we add a settle delay before arming the WUF. On wake
+ * gpio.c MX_GPIO_Init re-drives PC1 HIGH bringing VDD back to 3V3
+ * before any radio/MAC work. Disabled by default — flip the define
+ * to test the 1.8V STANDBY power gain experimentally. */
+#if defined(SMD_STDALONE)
+#define LPM_UW_STANDBY_LOW_VOLTAGE  1
+#endif
 
 #if defined(BSP_HAS_PWR_LATCH)
 
@@ -251,8 +263,23 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 	 * the HW reed circuit can wake. */
 	HAL_PWREx_EnablePullUpPullDownConfig();
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_7);
+
+#if defined(LPM_UW_STANDBY_LOW_VOLTAGE)
+	/* Drop VSEL LOW so TPS63901 outputs 1.8V during STANDBY (~half the
+	 * leakage of the 3V3 rail). VDD must stay above the ~1.7V BOR
+	 * threshold; with a 1.8V regulator setpoint we have ~100 mV margin.
+	 * Drive the pin LOW first so the rail transitions while the chip is
+	 * still actively powered, then hand off to the PWR controller's
+	 * pull-down to hold it during STANDBY. */
+	MCU_MISC_VSEL_set(false);
+	/* Settle: TPS63901 takes ~1-2 ms to switch its internal feedback
+	 * divider. Add margin so we are firmly at 1.8V before STANDBY. */
+	HAL_Delay(3);
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_SEL_Pin);
+#else
 	/* Hold VSEL HIGH so TPS63901 stays in 3V3 mode on wake. */
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
+#endif
 
 	HAL_PWREx_EnableSRAMRetention();
 

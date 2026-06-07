@@ -689,6 +689,16 @@ int main(void)
    * in the wake-up switch, so we need it before that. */
   g_boot_pwr_extscr_raw = PWR->EXTSCR;
 
+#if defined(SMD_STDALONE)
+  /* If the previous STANDBY entry installed a PWR pull-down on PC1 (VSEL
+   * held LOW = 1V8 regulator mode), clear it now so the GPIO push-pull
+   * output configured by MX_GPIO_Init() drives PC1 HIGH cleanly without
+   * fighting the 50 kΩ PWR pull-down. The PB7 pull-up (PWR_LATCH anchor)
+   * is intentionally NOT cleared — losing it would float PWR_LATCH and
+   * power-cycle the board. */
+  PWR->PDCRC &= ~(1UL << 1);  /* clear PC1 pull-down */
+#endif
+
   /** Check if reset was triggered by nRST external pin
    *
    * @note This pin is also set when POWERing ON on the device or when debugger is plugged in
