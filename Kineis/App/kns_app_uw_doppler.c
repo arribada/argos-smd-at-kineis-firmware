@@ -586,9 +586,19 @@ static enum MgrLpm_LPM_t uw_doppler_lpmReq(void)
 	 *     scaling on SLEEP exit, or LPM_SystemClockConfig setting that
 	 *     reduces CPU clock when MAIN regulator is on but we're WFI.
 	 *
-	 * Re-rolled back to NONE for safety until the clock-scaling cause
-	 * is identified with a scope. Battery target (12 mo) blocked on
-	 * either fixing SLEEP clock issue OR landing STOP2 properly. */
+	 * Long-run test confirmed: SLEEP causes IWDG reset loop on this
+	 * config (state bounces 0↔1, tick periodically resets to ~1273 ms).
+	 * Root cause needs HW scope: either PLL drops in SLEEP and CPU
+	 * never executes main loop fast enough to refresh IWDG, or there's
+	 * a peripheral race we haven't identified.
+	 *
+	 * 12-month battery target REMAINS blocked. Realistic paths forward
+	 * (need HW lab session, not autonomous):
+	 *   1. Scope HSE/PLL during SLEEP transition — identify clock drop.
+	 *   2. Try STOP2 with thorough RTC WUTF clearing + LPTIM1 wake.
+	 *   3. STANDBY-cycling: full power-down between TX cycles, RTC wake
+	 *      to cold boot, re-init MAC each wake. ~2 µA between cycles.
+	 *      Architecture change but proven multi-year on similar tags. */
 	return LOW_POWER_MODE_NONE;
 	/* return LOW_POWER_MODE_SLEEP; */
 }
