@@ -1295,6 +1295,17 @@ void KNS_APP_uw_doppler_init(void)
 	MGR_PMLOG_init();   /* iterates the flash log ring — ~100 ms worst case */
 	MGR_WDG_refresh();
 
+#if defined(BSP_HAS_VBAT_ADC)
+	/* BAT init MUST run BEFORE MGR_NVM_load: the loader applies the LB
+	 * config via KNS_APP_uw_doppler_setLbCfg() which reads VBAT and
+	 * evaluates the hysteresis. Without an initialised BAT manager
+	 * (incl. the warm-up read in MGR_BAT_init that primes the external
+	 * BJT cascade) the first VBAT read returns ~30 mV and the device
+	 * spuriously latches LB mode on a healthy battery — observed every
+	 * cold-boot in the long-run STANDBY test. */
+	MGR_BAT_init();
+#endif
+
 	/* Load saved config from flash (if valid) */
 	MGR_NVM_load();
 	MGR_WDG_refresh();
@@ -1317,7 +1328,9 @@ void KNS_APP_uw_doppler_init(void)
 	MGR_LOG_DEBUG("[REED] Init: magnet=%u\r\n", (unsigned)MGR_REED_isMagnetPresent());
 #endif
 #if defined(BSP_HAS_VBAT_ADC)
-	MGR_BAT_init();
+	/* MGR_BAT_init already ran above (before NVM_load). Just take a
+	 * fresh reading for last_vbat_mV — the BJT cascade is warmed up
+	 * so this read is reliable. */
 	last_vbat_mV = MGR_BAT_readVoltage_mV();
 	MGR_LOG_DEBUG("[BAT] Init: %umV\r\n", last_vbat_mV);
 #endif

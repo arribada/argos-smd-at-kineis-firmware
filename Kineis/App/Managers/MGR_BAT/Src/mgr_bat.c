@@ -70,6 +70,16 @@ void MGR_BAT_init(void)
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(VBAT_EN_GPIO_Port, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
+
+	/* Warm-up read: the very first VBAT measurement after cold-boot
+	 * returns ~30 mV because the Q1/Q2 BJT cascade in the external
+	 * divider hasn't fully turned on within the 2 ms HAL_Delay settle
+	 * window. Without this discard, anyone who reads VBAT before the
+	 * MONITORING TX cycle (e.g. MGR_NVM_load -> setLbCfg path) sees the
+	 * bogus value and engages LB mode on a healthy battery.
+	 * One throwaway read is enough — the second always returns the
+	 * correct voltage. */
+	(void)MGR_BAT_readVoltage_mV();
 }
 
 uint16_t MGR_BAT_readVoltage_mV(void)
