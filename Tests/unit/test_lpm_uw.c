@@ -68,9 +68,12 @@ static int auto_cycle_decision(const cfg_t *c, int sws_state)
 {
 	if (!c->enabled) return 0;
 
-	uint32_t sleep_s = (sws_state == SWS_UNDERWATER)
-	                   ? c->uw_sleep_s
-	                   : c->surf_sleep_s;
+	/* Anything that isn't an active SURFACE sample uses the long UW
+	 * interval — protects against burning battery in short cycles if
+	 * the SWS fails (UNKNOWN). */
+	uint32_t sleep_s = (sws_state == SWS_SURFACE)
+	                   ? c->surf_sleep_s
+	                   : c->uw_sleep_s;
 	if (sleep_s < SHORT_SLEEP_THRESHOLD_S) return 0;
 
 	if (c->shutdown_threshold_s >= SHORT_SLEEP_THRESHOLD_S &&
@@ -194,13 +197,15 @@ void test_cycle_threshold_picks_at_boundary(void)
 	TEST_PASS();
 }
 
-void test_cycle_unknown_sample_treated_as_surface(void)
+void test_cycle_unknown_sample_uses_uw_sleep(void)
 {
-	TEST_START("auto-cycle: UNKNOWN sample uses surf_sleep_s (safe default)");
+	TEST_START("auto-cycle: UNKNOWN (sensor fault) uses uw_sleep_s, NOT surf_sleep_s");
 	cfg_t c = { .enabled = 1, .uw_sleep_s = 1800, .surf_sleep_s = 60,
 	            .shutdown_threshold_s = 300 };
-	/* sleep_s = surf_sleep_s = 60 < 300 -> STANDBY */
-	ASSERT_EQ(1, auto_cycle_decision(&c, SWS_UNKNOWN));
+	/* Sealed-deployment safety: a broken / corroded SWS sensor must
+	 * NOT cause the tag to spin in short surface cycles and burn the
+	 * battery. UNKNOWN falls back to the long underwater interval. */
+	ASSERT_EQ(2, auto_cycle_decision(&c, SWS_UNKNOWN));
 	TEST_PASS();
 }
 
@@ -219,7 +224,7 @@ int main(void)
 	test_cycle_surf_short_picks_standby();
 	test_cycle_threshold_zero_always_standby();
 	test_cycle_threshold_picks_at_boundary();
-	test_cycle_unknown_sample_treated_as_surface();
+	test_cycle_unknown_sample_uses_uw_sleep();
 	TEST_SUITE_END();
 	return tests_failed ? 1 : 0;
 }

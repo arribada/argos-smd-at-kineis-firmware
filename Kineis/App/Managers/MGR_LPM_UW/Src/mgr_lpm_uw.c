@@ -221,13 +221,19 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 	}
 	s_duty.wake_should_tx = 0u;
 
-	/* MGR_SWS_State_t: UNKNOWN=0, SURFACE=1, UNDERWATER=2. UNKNOWN
-	 * shouldn't reach this code (the gates above hold us in MONITORING
-	 * until a real sample is available), but if it does we err on the
-	 * safe side and treat it as surface (shorter sleep, faster recovery). */
-	const uint32_t sleep_s = (sws_state == (int)MGR_SWS_STATE_UNDERWATER)
-	                          ? s_duty.uw_sleep_s
-	                          : s_duty.surf_sleep_s;
+	/* MGR_SWS_State_t: UNKNOWN=0, SURFACE=1, UNDERWATER=2.
+	 *
+	 * Sleep selection for sealed 12-month deployment: any non-SURFACE
+	 * state (UNDERWATER or UNKNOWN/sensor-fault) MUST pick the long
+	 * underwater interval. The previous behaviour treated UNKNOWN as
+	 * SURFACE, which on a corroded / broken sensor would put the tag
+	 * into a permanent short-cycle and exhaust the battery in weeks
+	 * instead of months. We'd rather miss a TX window than burn the
+	 * battery — the device will still wake periodically and re-attempt
+	 * SWS calibration each cycle (EMA recalibration in MGR_SWS). */
+	const uint32_t sleep_s = (sws_state == (int)MGR_SWS_STATE_SURFACE)
+	                          ? s_duty.surf_sleep_s
+	                          : s_duty.uw_sleep_s;
 
 	/* Below threshold: cold-boot overhead > sleep saving — skip. */
 	if (sleep_s < LPM_UW_SHORT_SLEEP_THRESHOLD_S)
