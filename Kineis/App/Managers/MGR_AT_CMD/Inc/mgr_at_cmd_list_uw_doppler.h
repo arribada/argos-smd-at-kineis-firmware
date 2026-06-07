@@ -202,4 +202,17 @@ bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_e
  */
 bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
+ *
+ * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>`
+ * Action: `AT+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>`
+ *   uw_sleep_s   : STANDBY duration while underwater (1..65535 s).
+ *   surf_sleep_s : STANDBY duration while surface idle (1..65535 s).
+ *   enabled      : 0 = off (chip stays active), 1 = on (auto-cycle).
+ *
+ * Defaults: 1800, 60, 0 (off). Enable at runtime once the wake path
+ * is validated via AT+STANDBYTEST. Persisted via AT+SAVE.
+ */
+bool bMGR_AT_CMD_DUTYCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */

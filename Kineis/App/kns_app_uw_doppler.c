@@ -401,6 +401,63 @@ static uint32_t first_tx_random_offset_ms = 0;
 #define TEST_BURST_MAX_COUNT  10u
 static uint8_t test_tx_remaining = 0;
 
+/* ---- Event-driven LPM duty cycle for 12-month deployment ---------
+ *
+ * App-driven STANDBY between idle periods in MONITORING. Decides the
+ * sleep duration based on the SWS state:
+ *  - UNDERWATER : turtle is diving, no point checking often → long sleep.
+ *  - SURFACE    : track surface session quickly → short sleep.
+ *
+ * Each wake = cold boot (~5 s of activity). Average current:
+ *   active 5 s × 10 mA + sleep N × 2 µA ≈ (50 + N×0.002) mAh per cycle
+ *   → for N=300 s (5 min surface), 0.051 mAh/cycle, ~12 cycles/h
+ *      → 0.6 mAh/h × 24 × 365 = 5300 mAh/yr = 28 % of 19 Ah → 3 yr
+ *   → for N=1800 s (30 min underwater), 0.054 mAh/cycle, 2 cycles/h
+ *      → 0.11 mAh/h × 24 × 365 = 950 mAh/yr = 5 % of 19 Ah → 19 yr
+ *
+ * Gating: NEVER sleep while in CONFIG (UART session), while gesture
+ * FSM is active, during MAC TX in flight, during boot stabilization,
+ * or while a test burst is pending.
+ *
+ * Default: disabled — opt-in via AT+DUTYCFG=<uw_s>,<surf_s>,1. Once
+ * validated and persisted in NVM, the sealed-deployment build can
+ * ship with it on by default. */
+#define DUTY_CFG_MAGIC 0x44555459UL  /* "DUTY" */
+typedef struct {
+	uint32_t magic;          /**< DUTY_CFG_MAGIC if valid. */
+	uint16_t uw_sleep_s;     /**< STANDBY duration when underwater. */
+	uint16_t surf_sleep_s;   /**< STANDBY duration when surface idle. */
+	uint8_t  enabled;        /**< 0 = off, 1 = auto-cycle in MONITORING. */
+	uint8_t  _pad[3];
+} UwDopplerDutyCfg_t;
+
+/* NOLOAD retention so the configuration survives the cold boot from each
+ * STANDBY wake cycle (Sram2_Init never touches this section). First-power-
+ * on check uses the magic; defaults are applied if invalid. */
+static __attribute__((__section__(".retentionRamNoload")))
+UwDopplerDutyCfg_t duty_cfg;
+
+static void duty_cfg_validate_or_default(void)
+{
+	if (duty_cfg.magic != DUTY_CFG_MAGIC) {
+		duty_cfg.magic        = DUTY_CFG_MAGIC;
+		duty_cfg.uw_sleep_s   = 1800u;  /* 30 min default */
+		duty_cfg.surf_sleep_s = 60u;    /* 1 min default */
+		duty_cfg.enabled      = 0u;     /* opt-in via AT+DUTYCFG */
+	}
+}
+
+/** First-MONITORING stabilization window — only applies to the very
+ *  first MONITORING entry of a boot, not subsequent re-entries (e.g.
+ *  after TX done). Prevents immediate sleep on cold boot while still
+ *  allowing back-to-back STANDBY-cycle work later. */
+#define DUTY_STABILIZE_MS  5000u
+static uint32_t monitoring_first_entered_tick = 0u;
+static bool     monitoring_ever_entered = false;
+
+/** Forward declaration. */
+static void try_enter_standby_duty(void);
+
 /* Exponential backoff on consecutive device errors (TX_TIMEOUT / MAC_ERROR).
  * Constants defined here (rather than with the other state-machine timeouts
  * below) so the static helpers right after see them. */
@@ -755,6 +812,70 @@ void KNS_APP_uw_doppler_enterStandbyTest(uint32_t seconds)
 {
 	enter_standby_duty(seconds);
 }
+
+/** @brief Auto-cycling decision. Called from the MONITORING tick. */
+static void try_enter_standby_duty(void)
+{
+	if (!duty_cfg.enabled)
+		return;
+	if (uw_doppler_state != UW_DOPPLER_MONITORING)
+		return;
+	if (test_tx_remaining > 0u)
+		return;        /* test burst pending */
+	if (surface_tx_pending)
+		return;        /* TX queued */
+
+#if defined(UW_DOPPLER_HAS_GESTURE)
+	if (MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG)
+		return;        /* user is in AT-command session */
+	if (MGR_GESTURE_isInteracting())
+		return;        /* magnet hold in progress */
+#endif
+
+	/* One-shot stabilization window — apply only to the first
+	 * MONITORING entry of a boot, not subsequent re-entries. */
+	const uint32_t now = HAL_GetTick();
+	if (!monitoring_ever_entered)
+		return;
+	if ((now - monitoring_first_entered_tick) < DUTY_STABILIZE_MS)
+		return;
+
+	/* Pick sleep duration from SWS state. */
+	const MGR_SWS_State_t sws_state = MGR_SWS_getState();
+	uint32_t sleep_s = (sws_state == MGR_SWS_STATE_UNDERWATER)
+	                   ? duty_cfg.uw_sleep_s
+	                   : duty_cfg.surf_sleep_s;
+	if (sleep_s < 1u) sleep_s = 1u;
+	if (sleep_s > 0xFFFFu) sleep_s = 0xFFFFu;
+
+	MGR_LOG_DEBUG("[UW_DPL] STANDBY duty %lus sws=%d\r\n",
+		(unsigned long)sleep_s, (int)sws_state);
+	enter_standby_duty(sleep_s);
+	/* Never returns. */
+}
+
+/** @brief Public setter for AT+DUTYCFG. Validates and applies live.
+ *  Persisted via the .retentionRamNoload section so it survives
+ *  STANDBY cold-boot cycles without an NVM write. */
+void KNS_APP_uw_doppler_setDutyCfg(uint16_t uw_s, uint16_t surf_s, uint8_t enabled)
+{
+	if (uw_s < 1u) uw_s = 1u;
+	if (surf_s < 1u) surf_s = 1u;
+	duty_cfg.magic        = DUTY_CFG_MAGIC;
+	duty_cfg.uw_sleep_s   = uw_s;
+	duty_cfg.surf_sleep_s = surf_s;
+	duty_cfg.enabled      = enabled ? 1u : 0u;
+	MGR_LOG_DEBUG("[UW_DPL] DUTYCFG uw=%us surf=%us en=%u\r\n",
+		uw_s, surf_s, duty_cfg.enabled);
+}
+
+/** @brief Public getter for AT+DUTYCFG=?. */
+void KNS_APP_uw_doppler_getDutyCfg(uint16_t *uw_s, uint16_t *surf_s, uint8_t *enabled)
+{
+	if (uw_s)     *uw_s     = duty_cfg.uw_sleep_s;
+	if (surf_s)   *surf_s   = duty_cfg.surf_sleep_s;
+	if (enabled)  *enabled  = duty_cfg.enabled;
+}
 #endif /* BSP_HAS_PWR_LATCH */
 
 #ifdef USE_MAC_PRFL_BLIND
@@ -779,8 +900,15 @@ static void transition_to(UwDopplerState_t new_state)
 	/* First time we reach steady-state operation — disarm the boot-loop
 	 * guard. Putting the hook in transition_to() (rather than the loop)
 	 * guarantees one call per real transition, not per loop tick. */
-	if (new_state == UW_DOPPLER_MONITORING)
+	if (new_state == UW_DOPPLER_MONITORING) {
 		boot_loop_mark_success();
+#if defined(BSP_HAS_PWR_LATCH)
+		if (!monitoring_ever_entered) {
+			monitoring_first_entered_tick = HAL_GetTick();
+			monitoring_ever_entered = true;
+		}
+#endif
+	}
 }
 
 static uint32_t state_elapsed_ms(void)
@@ -1337,6 +1465,13 @@ void KNS_APP_uw_doppler_init(void)
 	MGR_NVM_load();
 	MGR_WDG_refresh();
 
+#if defined(BSP_HAS_PWR_LATCH)
+	/* Validate the retention-NOLOAD duty_cfg block: applies defaults
+	 * on first power-on (magic invalid) or keeps the operator-tuned
+	 * values across STANDBY-cycle cold boots. */
+	duty_cfg_validate_or_default();
+#endif
+
 	MGR_LOG_DEBUG("[UW_DPL] Init: interval=%us growth=%u%% max=%us deploy=%u\r\n",
 		tx_cfg.tx_initial_interval_s, tx_cfg.tx_growth_percent,
 		tx_cfg.tx_max_interval_s, deploy_mode);
@@ -1891,9 +2026,17 @@ void KNS_APP_uw_doppler_loop(void)
 				transition_to(UW_DOPPLER_SURFACE_TX);
 				/* Fall through to SURFACE_TX */
 			} else {
+#if defined(BSP_HAS_PWR_LATCH)
+				try_enter_standby_duty();
+#endif
 				return;
 			}
 		} else {
+#if defined(BSP_HAS_PWR_LATCH)
+			/* Underwater or deploy_mode=0 idle path — eligible for the
+			 * deeper STANDBY duty cycle (uw_sleep_s default = 1800 s). */
+			try_enter_standby_duty();
+#endif
 			return;
 		}
 	}

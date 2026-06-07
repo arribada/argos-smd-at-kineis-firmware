@@ -575,6 +575,36 @@ bool bMGR_AT_CMD_DIAG_cmd(uint8_t *pu8_cmdParamString,
 }
 
 extern void KNS_APP_uw_doppler_enterStandbyTest(uint32_t seconds);
+extern void KNS_APP_uw_doppler_setDutyCfg(uint16_t uw_s, uint16_t surf_s, uint8_t enabled);
+extern void KNS_APP_uw_doppler_getDutyCfg(uint16_t *uw_s, uint16_t *surf_s, uint8_t *enabled);
+
+bool bMGR_AT_CMD_DUTYCFG_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint16_t uw_s = 0, surf_s = 0;
+		uint8_t en = 0;
+		KNS_APP_uw_doppler_getDutyCfg(&uw_s, &surf_s, &en);
+		MCU_AT_CONSOLE_send("+DUTYCFG=%u,%u,%u\r\n",
+			(unsigned)uw_s, (unsigned)surf_s, (unsigned)en);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int uw_s = 0, surf_s = 0, en = 0;
+		if (sscanf((const char *)pu8_cmdParamString,
+			"AT+DUTYCFG=%u,%u,%u", &uw_s, &surf_s, &en) != 3)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		if (uw_s < 1u || uw_s > 65535u ||
+		    surf_s < 1u || surf_s > 65535u || en > 1u)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+
+		KNS_APP_uw_doppler_setDutyCfg((uint16_t)uw_s,
+			(uint16_t)surf_s, (uint8_t)en);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
 
 bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString,
 	enum atcmd_type_t e_exec_mode)
