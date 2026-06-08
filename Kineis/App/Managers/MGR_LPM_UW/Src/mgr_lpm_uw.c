@@ -390,11 +390,6 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 	HAL_PWREx_EnableInternalWakeUpLine();
 
-	/* De-init ADC: peripheral keeps its analog rails on through STOP2 if
-	 * left running and draws ~µA of static current. The next wake re-inits
-	 * it with a known-good calibration. */
-	MX_ADC_DeInit();
-
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
 	HAL_SuspendTick();
