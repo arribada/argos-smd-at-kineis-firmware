@@ -37,11 +37,10 @@
  * ~100 mV brownout margin. The TPS63901 takes a few ms to switch the
  * output rail; we add a settle delay before arming the WUF. On wake
  * gpio.c MX_GPIO_Init re-drives PC1 HIGH bringing VDD back to 3V3
- * before any radio/MAC work. Disabled by default — flip the define
- * to test the 1.8V STANDBY power gain experimentally. */
-#if defined(SMD_STDALONE)
-#define LPM_UW_STANDBY_LOW_VOLTAGE  1
-#endif
+ * before any radio/MAC work. Currently DISABLED while we diagnose
+ * the immediate-wake bug from STANDBY (cycle observed ~22 ms regardless
+ * of configured sleep_s — needs root cause before re-enabling). */
+/* #define LPM_UW_STANDBY_LOW_VOLTAGE 1 */
 
 #if defined(BSP_HAS_PWR_LATCH)
 
@@ -269,6 +268,7 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 
 	/* Arm RTC alarm. CK_SPRE 16-bit: 1..65 536 s per cycle. */
 	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
 	(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
 	    (uint16_t)(seconds - 1u),
 	    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
