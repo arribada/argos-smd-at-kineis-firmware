@@ -31,6 +31,7 @@
 #include "mcu_misc.h"      /* MCU_MISC_VSEL_set */
 #include "lpm.h"           /* LPM_shutdownNow / LPM_shutdownWithAutoWake */
 #include "rtc.h"
+#include "adc.h"           /* MX_ADC_Init/DeInit — STOP2 entry/exit */
 
 /* Drop VSEL to 1.8V right before STANDBY entry on STDALONE. BOR_LEV is
  * at level 0 (~1.7V) in production option bytes so VDD=1.8V keeps a
@@ -238,16 +239,24 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 	if (sleep_s < LPM_UW_SHORT_SLEEP_THRESHOLD_S)
 		return;
 
-	/* Deep cycle: SHUTDOWN+RTC for the lowest possible draw when the
-	 * sleep duration justifies losing SRAM2 (we still keep .retentionRamNoload
-	 * via VBAT backup + NVM in flash). 0 disables shutdown selection. */
-	const uint16_t shutdown_thr = s_duty.shutdown_threshold_s;
-	if (shutdown_thr >= LPM_UW_SHORT_SLEEP_THRESHOLD_S &&
-	    sleep_s >= shutdown_thr) {
-		MGR_LPM_UW_enterShutdownAutoWake(sleep_s);
-	}
-	MGR_LPM_UW_enterStandbyTimed(sleep_s);
-	/* Never returns on either path. */
+	/* Production duty-cycle path: STOP2 (RAM + MAC + peripherals retained).
+	 *
+	 * Why not STANDBY: STANDBY cold-boots the chip on wake and re-inits the
+	 * MAC stack (~6 s × ~10 mA = 0.017 mAh per wake). For a 30 min cycle
+	 * that's already ~50% of the duty-cycle current. Worse, STANDBY can't
+	 * wake on the reed switch (PB6 isn't a WL55 WKUP pin) so a magnet
+	 * event during deep sleep is invisible for up to sleep_s seconds.
+	 *
+	 * STOP2 keeps the same ~2 µA sleep floor, returns from this function
+	 * after wake (no re-init), and wakes on RTC OR reed EXTI — both
+	 * paths matter for the deployment.
+	 *
+	 * The deeper SHUTDOWN mode (chip fully off, magnet-only wake) stays
+	 * available for operator-controlled end-of-mission via AT+SHUTDOWN
+	 * and for the boot-loop guard's PERMANENT_OFF 24 h fallback. */
+	(void)s_duty.shutdown_threshold_s;  /* no longer used by auto-cycle */
+	MGR_LPM_UW_enterStop2Timed(sleep_s);
+	/* Returns here on wake. State machine continues normally. */
 }
 
 /* ---- STANDBY timed wake ---- */
@@ -332,6 +341,94 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
 	for (;;) { /* unreachable */ }
 }
 
+/* ---- STOP2 timed wake (production duty-cycle path) ---- */
+
+/* Duplicate of lpm.c:LPM_SystemClock_Config_RestoreFromStop (static there).
+ * After STOP2 the SoC clock is MSI; we need to restore HSI + PLL to keep
+ * peripheral baud rates / TX timeouts consistent with production. */
+static void uw_restore_clock_from_stop(void)
+{
+	RCC_OscInitTypeDef osc = {0};
+	RCC_ClkInitTypeDef clk = {0};
+	uint32_t flat = 0;
+
+	HAL_PWR_EnableBkUpAccess();
+
+	HAL_RCC_GetOscConfig(&osc);
+	osc.OscillatorType       = RCC_OSCILLATORTYPE_HSI;
+	osc.HSICalibrationValue  = RCC_HSICALIBRATION_DEFAULT;
+	osc.HSIState             = RCC_HSI_ON;
+	osc.PLL.PLLState         = RCC_PLL_ON;
+	osc.PLL.PLLSource        = RCC_PLLSOURCE_HSI;
+	(void)HAL_RCC_OscConfig(&osc);
+
+	HAL_RCC_GetClockConfig(&clk, &flat);
+	clk.ClockType    = RCC_CLOCKTYPE_SYSCLK;
+	clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+	(void)HAL_RCC_ClockConfig(&clk, flat);
+}
+
+void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
+{
+	MGR_LOG_DEBUG("[LPM_UW] STOP2 %lus\r\n", (unsigned long)seconds);
+
+	if (seconds > 0xFFFFu) seconds = 0xFFFFu;
+
+	/* Arm RTC wake-up timer if a non-zero interval was requested. With
+	 * seconds=0 only EXTI sources (reed, gesture) can wake. */
+	if (seconds > 0u) {
+		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+		__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+		(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+		    (uint16_t)(seconds - 1u),
+		    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+	}
+
+	/* Internal wake-up line routes RTC events to the PWR wake-up logic.
+	 * Without this RTC fires its IRQ but the chip doesn't exit STOP2. */
+	HAL_PWREx_DisableInternalWakeUpLine();
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+	HAL_PWREx_EnableInternalWakeUpLine();
+
+	/* De-init ADC: peripheral keeps its analog rails on through STOP2 if
+	 * left running and draws ~µA of static current. The next wake re-inits
+	 * it with a known-good calibration. */
+	MX_ADC_DeInit();
+
+	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
+	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
+	HAL_SuspendTick();
+
+	/* Enter STOP2. WFI returns here once a configured wake source fires
+	 * (RTC alarm, or any pending EXTI — including reed PB6 which the
+	 * MGR_REED driver sets up at boot with rising+falling edge IT). */
+	HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+
+	/* === Awake again === */
+
+	/* Disarm the RTC wake timer so it doesn't fire again mid-MONITORING. */
+	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+
+	/* On STOP exit the chip is on MSI; restore the production PLL config
+	 * so peripheral baud rates / TX timeouts behave the same as before. */
+	uw_restore_clock_from_stop();
+
+	/* Re-enable SysTick + compensate the elapsed wall time so HAL_GetTick()
+	 * stays monotonic across the sleep window. The existing lpm.c machinery
+	 * already does both via the stop_exit callback; we replicate the
+	 * essential bits here so we don't need to hook into MGR_LPM. */
+	HAL_ResumeTick();
+
+	/* Re-init ADC: STOP2 deinitialises the peripheral, and without this
+	 * SWS reads return 0 for the whole post-wake cycle (observed). */
+	MX_ADC_Init();
+
+	/* No HAL_UART_TX in this function — log only on caller side once we're
+	 * back in the main loop, otherwise the BAUD lock-up from waking still
+	 * partially initialized UART hardware can stall the print. */
+}
+
 #else /* !BSP_HAS_PWR_LATCH */
 
 /* Without PWR_LATCH we can't keep the regulator alive through STANDBY,
@@ -364,5 +461,7 @@ void MGR_LPM_UW_enterShutdownReed(void) { LPM_shutdownNow(); for (;;) {} }
 __attribute__((noreturn))
 void MGR_LPM_UW_enterShutdownAutoWake(uint32_t s)
     { LPM_shutdownWithAutoWake(s); for (;;) {} }
+
+void MGR_LPM_UW_enterStop2Timed(uint32_t s) { (void)s; }
 
 #endif /* BSP_HAS_PWR_LATCH */

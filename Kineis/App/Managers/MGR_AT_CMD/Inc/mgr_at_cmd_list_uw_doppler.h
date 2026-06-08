@@ -202,6 +202,16 @@ bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_e
  */
 bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+STOPTEST=<seconds>: direct STOP2 entry for N seconds (1..65535).
+ *
+ * Bypasses the auto-cycle gates so the path can be exercised even when the
+ * state machine has flags (surface_tx_pending, etc.) that would normally
+ * prevent it. Returns from STOP2 after the RTC fires (or earlier on EXTI,
+ * e.g. reed-magnet event) and the chip stays in MONITORING — no cold-boot,
+ * no MAC re-init.
+ */
+bool bMGR_AT_CMD_STOPTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
  *
  * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`

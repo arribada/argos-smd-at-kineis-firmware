@@ -59,11 +59,39 @@ void MGR_LPM_UW_init(void);
  * timer fires. The retention NOLOAD region preserves boot counter,
  * SWS calibration, crash forensics, and this module's `duty_cfg`.
  *
+ * KEPT FOR REFERENCE / AT+STANDBYTEST ONLY. The auto-cycle path uses
+ * MGR_LPM_UW_enterStop2Timed instead — STOP2 gives the same ~2 µA
+ * floor without the 6 s MAC re-init penalty on every wake, AND
+ * supports EXTI wake on the reed switch (PB6) which is not a WKUP
+ * pin and therefore cannot wake STANDBY on this PCB.
+ *
  * @param seconds  Wake interval (1..65535 s on the 16-bit CK_SPRE
  *                 prescaler — covers up to 18.2 hours per cycle).
  */
 __attribute__((noreturn))
 void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds);
+
+/** @brief Enter STOP2 mode for up to `seconds` seconds, then RETURN.
+ *
+ * Unlike STANDBY this does NOT cold-boot the chip on wake. Execution
+ * resumes from inside this function after the wake event, with all
+ * RAM (including the MAC stack in .knsCtxtData), peripheral state and
+ * the state machine intact. This is the production duty-cycle path
+ * on SMD_STDALONE.
+ *
+ * Wake sources, in priority order:
+ *   - RTC wake-up timer at the configured `seconds`
+ *   - EXTI on the reed switch (PB6) — magnet detection
+ *   - Any other EXTI line left armed (LPUART RX, gesture FSM, etc.)
+ *
+ * ~2 µA in STOP2 + a few µs of awake overhead per wake. Compared to
+ * STANDBY this saves the ~6 s of cold-boot + MAC re-init energy per
+ * cycle, which dominates the deployment-year budget.
+ *
+ * @param seconds  Maximum wake interval (1..65535 s). Pass 0 to enter
+ *                 STOP2 with no RTC alarm (only EXTI wakes).
+ */
+void MGR_LPM_UW_enterStop2Timed(uint32_t seconds);
 
 /** @brief Enter SHUTDOWN mode. Board powers off via PWR_LATCH LOW.
  *

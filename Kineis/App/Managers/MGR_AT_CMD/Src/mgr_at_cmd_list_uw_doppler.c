@@ -643,6 +643,29 @@ bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString,
 	return true;
 }
 
+bool bMGR_AT_CMD_STOPTEST_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode != ATCMD_ACTION_MODE)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+
+	unsigned long seconds = 0u;
+	if (sscanf((const char *)pu8_cmdParamString,
+	           "AT+STOPTEST=%lu", &seconds) != 1)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+	if (seconds < 1u || seconds > 60u)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+
+	MCU_AT_CONSOLE_send("+STOPTEST=%lu\r\n", seconds);
+	(void)bMGR_AT_CMD_logSucceedMsg();
+	HAL_Delay(100);
+
+	/* Direct STOP2 entry — function RETURNS on wake (no cold-boot). */
+	MGR_LPM_UW_enterStop2Timed((uint32_t)seconds);
+	MCU_AT_CONSOLE_send("+STOPTEST=woke\r\n");
+	return true;
+}
+
 bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString,
 	enum atcmd_type_t e_exec_mode)
 {
