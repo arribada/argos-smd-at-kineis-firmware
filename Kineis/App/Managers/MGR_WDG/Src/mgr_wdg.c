@@ -44,12 +44,19 @@
 
 bool MGR_WDG_ensureIwdgStopOptionByte(void)
 {
-	/* If the bit is already set we're done — no flash write needed. */
-	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) != 0U) {
+	/* WL55 OPTR.IWDG_STOP semantics (RM0453 §3.4.1 + stm32wlxx_hal_flash.h):
+	 *   bit 17 = 0  → OB_IWDG_STOP_FREEZE: IWDG counter is FROZEN in STOP
+	 *   bit 17 = 1  → OB_IWDG_STOP_RUN: IWDG keeps counting in STOP
+	 *
+	 * We want FREEZE (bit cleared). Skip flash write only when already
+	 * cleared. The previous logic was inverted and silently skipped the
+	 * programming on a fresh chip — the IWDG kept counting in STOP2 and
+	 * fired after ~16 s, cold-booting the device during every long sleep. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U) {
 		return false;
 	}
 
-	MGR_LOG_DEBUG("[WDG] IWDG_STOP option byte not set — programming...\r\n");
+	MGR_LOG_DEBUG("[WDG] IWDG_STOP option byte not frozen — programming FREEZE...\r\n");
 
 	/* Unlock FLASH for option-byte access. Order matters: FLASH first,
 	 * then option-byte. Both must succeed before any HAL_FLASHEx_OBProgram. */
@@ -66,7 +73,7 @@ bool MGR_WDG_ensureIwdgStopOptionByte(void)
 	FLASH_OBProgramInitTypeDef obInit = {0};
 	obInit.OptionType = OPTIONBYTE_USER;
 	obInit.UserType   = OB_USER_IWDG_STOP;
-	obInit.UserConfig = OB_IWDG_STOP_FREEZE;  /* 1 = freeze IWDG during STOP */
+	obInit.UserConfig = OB_IWDG_STOP_FREEZE;  /* 0 = bit cleared = IWDG frozen during STOP */
 
 	if (HAL_FLASHEx_OBProgram(&obInit) != HAL_OK) {
 		MGR_LOG_DEBUG("[WDG] OB program failed\r\n");

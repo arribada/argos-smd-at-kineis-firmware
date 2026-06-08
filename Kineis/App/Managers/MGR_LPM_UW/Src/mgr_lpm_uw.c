@@ -397,16 +397,15 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 	HAL_PWREx_EnableInternalWakeUpLine();
 
-	/* Peripheral teardown — without this the chip enters STOP2 but the
-	 * SWS analog rail / LED state keep drawing several mA. The
-	 * MGR_LPM_aggregator's lpmNotifEnter callback would normally do
-	 * this, but our direct-from-MONITORING path bypasses the aggregator
-	 * for finer control of the cycle. Replicate the necessary tear-down
-	 * inline. */
+	/* Peripheral teardown disabled — observed to crash STOP2 entry path
+	 * (chip cold-booted at 18 s, IWDG-triggered hang). Restoring just
+	 * the SysTick suspend until the root cause is found. */
+#if 0
 #if defined(BSP_HAS_LED_RGB)
 	MGR_LED_off();
 #endif
 	MGR_SWS_enterLowPower();
+#endif
 
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
@@ -417,7 +416,17 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 * MGR_REED driver sets up at boot with rising+falling edge IT). */
 	HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
 
-	/* === Awake again === */
+	/* === Awake again ===
+	 *
+	 * Order matters: HAL_RCC_* calls and HAL_ADC_Init use HAL_GetTick
+	 * for their internal timeout polling. If SysTick is suspended at
+	 * this point, HAL_GetTick stays frozen → every wait loop falls
+	 * through immediately → Error_Handler() infinite loop → IWDG fires
+	 * at ~16 s → cold-boot. Observed exactly that pattern when a magnet
+	 * woke STOP2 (chip cold-booted 18 s after the AT command).
+	 *
+	 * Resume tick FIRST so the rest of the restore can use timed HAL. */
+	HAL_ResumeTick();
 
 	/* Disarm the RTC wake timer so it doesn't fire again mid-MONITORING. */
 	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
@@ -427,18 +436,14 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 * so peripheral baud rates / TX timeouts behave the same as before. */
 	uw_restore_clock_from_stop();
 
-	/* Re-enable SysTick + compensate the elapsed wall time so HAL_GetTick()
-	 * stays monotonic across the sleep window. The existing lpm.c machinery
-	 * already does both via the stop_exit callback; we replicate the
-	 * essential bits here so we don't need to hook into MGR_LPM. */
-	HAL_ResumeTick();
-
 	/* Re-init ADC: STOP2 deinitialises the peripheral, and without this
 	 * SWS reads return 0 for the whole post-wake cycle (observed). */
 	MX_ADC_Init();
 
+#if 0
 	/* SWS exit-LP mirrors the enterLowPower call, re-arms the analog rail. */
 	MGR_SWS_exitLowPower();
+#endif
 
 	/* No HAL_UART_TX in this function — log only on caller side once we're
 	 * back in the main loop, otherwise the BAUD lock-up from waking still
