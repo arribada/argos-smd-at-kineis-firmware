@@ -32,6 +32,13 @@
 #include "lpm.h"           /* LPM_shutdownNow / LPM_shutdownWithAutoWake */
 #include "rtc.h"
 #include "adc.h"           /* MX_ADC_Init/DeInit — STOP2 entry/exit */
+#if defined(BSP_HAS_LED_RGB)
+#include "mgr_led.h"       /* MGR_LED_off before STOP2 */
+#endif
+/* MGR_SWS enter/exitLowPower drop the SWS analog rail so it doesn't
+ * burn current during STOP2. */
+extern void MGR_SWS_enterLowPower(void);
+extern void MGR_SWS_exitLowPower(void);
 
 /* Drop VSEL to 1.8V right before STANDBY entry on STDALONE. BOR_LEV is
  * at level 0 (~1.7V) in production option bytes so VDD=1.8V keeps a
@@ -390,6 +397,17 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 	HAL_PWREx_EnableInternalWakeUpLine();
 
+	/* Peripheral teardown — without this the chip enters STOP2 but the
+	 * SWS analog rail / LED state keep drawing several mA. The
+	 * MGR_LPM_aggregator's lpmNotifEnter callback would normally do
+	 * this, but our direct-from-MONITORING path bypasses the aggregator
+	 * for finer control of the cycle. Replicate the necessary tear-down
+	 * inline. */
+#if defined(BSP_HAS_LED_RGB)
+	MGR_LED_off();
+#endif
+	MGR_SWS_enterLowPower();
+
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
 	HAL_SuspendTick();
@@ -418,6 +436,9 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	/* Re-init ADC: STOP2 deinitialises the peripheral, and without this
 	 * SWS reads return 0 for the whole post-wake cycle (observed). */
 	MX_ADC_Init();
+
+	/* SWS exit-LP mirrors the enterLowPower call, re-arms the analog rail. */
+	MGR_SWS_exitLowPower();
 
 	/* No HAL_UART_TX in this function — log only on caller side once we're
 	 * back in the main loop, otherwise the BAUD lock-up from waking still

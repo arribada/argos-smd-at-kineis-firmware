@@ -295,12 +295,37 @@ MGR_GESTURE_Event_t MGR_GESTURE_getEvent(void)
 	return e;
 }
 
+/* Watchdog for FSM wedged in non-IDLE. Bounds the "stuck FSM blocks
+ * STOP2 forever" scenario flagged in the gesture audit (RISK A): if
+ * isInteracting() returned true permanently (SEU on s_fsm, glued
+ * reed, task() never re-entered) the LPM client would skip STOP2 on
+ * every tick and burn the 19 Ah battery in ~4 days. Any non-IDLE
+ * window longer than this returns false so STOP2 can run; the FSM
+ * stays where it is until the next reed event re-arms it. */
+#define GESTURE_NONIDLE_MAX_MS  60000u  /* 60 s — longest legit gesture
+                                         * is 6 s hold + 2 s confirm + LED
+                                         * confirm 1.5 s ≈ 10 s, so 60 s
+                                         * leaves a 6× safety margin. */
+static uint32_t s_nonidle_first_tick = 0u;
+
 bool MGR_GESTURE_isInteracting(void)
 {
 	/* IDLE means: no magnet activity in flight. Anything else means the FSM
 	 * has the LED busy (hold feedback, wait-for-confirm urgent blink,
 	 * confirmed solid pulse, or wake-blink boot sequence). */
-	return s_fsm != GFSM_IDLE;
+	if (s_fsm == GFSM_IDLE) {
+		s_nonidle_first_tick = 0u;
+		return false;
+	}
+	const uint32_t now = HAL_GetTick();
+	if (s_nonidle_first_tick == 0u)
+		s_nonidle_first_tick = (now == 0u) ? 1u : now;
+	/* Released if stuck > 60 s. The FSM enum value stays where it is;
+	 * the next genuine reed event re-enters HOLDING normally because
+	 * MGR_GESTURE_task always reads the reed queue regardless of state. */
+	if ((now - s_nonidle_first_tick) > GESTURE_NONIDLE_MAX_MS)
+		return false;
+	return true;
 }
 
 void MGR_GESTURE_task(void)
