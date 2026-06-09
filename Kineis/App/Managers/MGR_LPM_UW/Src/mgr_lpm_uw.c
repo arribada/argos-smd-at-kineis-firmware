@@ -35,6 +35,14 @@
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"       /* MGR_LED_off before STOP2 */
 #endif
+/* GPIO disable to analog for minimum STOP2 leakage. */
+extern void GPIO_DisableAllToAnalogInput(void);
+extern void MX_GPIO_Init(void);
+
+/* SubGHz radio teardown for minimum STOP2 leakage — the peripheral
+ * itself draws several hundred µA when left armed. */
+#include "subghz.h"
+extern void MX_SUBGHZ_Init(void);
 /* MGR_SWS enter/exitLowPower drop the SWS analog rail so it doesn't
  * burn current during STOP2. */
 extern void MGR_SWS_enterLowPower(void);
@@ -397,15 +405,38 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 	HAL_PWREx_EnableInternalWakeUpLine();
 
-	/* Peripheral teardown disabled — observed to crash STOP2 entry path
-	 * (chip cold-booted at 18 s, IWDG-triggered hang). Restoring just
-	 * the SysTick suspend until the root cause is found. */
-#if 0
+	/* Peripheral teardown — drops the SWS analog rail + LED + ADC before
+	 * STOP2. Without these the chip stays at several mA from always-on
+	 * peripheral biases. Originally suspected of crashing the STOP2
+	 * path but the real cause was IWDG running in STOP (now fixed via
+	 * OPTR.IWDG_STOP = 0 = FREEZE). */
 #if defined(BSP_HAS_LED_RGB)
 	MGR_LED_off();
 #endif
 	MGR_SWS_enterLowPower();
+	/* De-init ADC peripheral — leaving it armed costs ~µA. Re-init on
+	 * wake restores it cleanly. */
+	MX_ADC_DeInit();
+	/* Force VBAT measurement enable LOW — when HIGH the external divider
+	 * pulls ~30 µA continuously through the 120k+300k resistor chain. */
+#if defined(BSP_HAS_VBAT_ADC)
+	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
 #endif
+	/* Set all unused GPIOs to analog (no pull) to kill the long-tail
+	 * leakage that kept STOP2 at ~630 µA on SMD_STDALONE. The Kineis
+	 * helper carefully preserves UART (PA2/3), SWD (PA13/14), SWS
+	 * (PA11/12), reed (PB6), PWR_LATCH (PB7), VBAT_EN (PB9), LEDs
+	 * (PB4/5/PA1), and PA control (PC0/1). After wake we re-run
+	 * MX_GPIO_Init to put everything back into its production state. */
+	GPIO_DisableAllToAnalogInput();
+
+	/* De-init SubGHz radio peripheral. The radio's internal circuitry
+	 * keeps ~500 µA flowing even when idle if the peripheral is left
+	 * armed. HAL_SUBGHZ_DeInit gates the peripheral clock and puts the
+	 * radio in its reset state. The MAC stack picks up the radio on
+	 * its next TX request, which won't happen until the chip is back
+	 * in MONITORING and our wake path has re-run MX_SUBGHZ_Init. */
+	(void)HAL_SUBGHZ_DeInit(&hsubghz);
 
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
@@ -436,14 +467,18 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 * so peripheral baud rates / TX timeouts behave the same as before. */
 	uw_restore_clock_from_stop();
 
+	/* Re-init GPIOs (we set most to analog before STOP2 entry). */
+	MX_GPIO_Init();
+
+	/* Re-init SubGHz radio so the MAC can use it again. */
+	MX_SUBGHZ_Init();
+
 	/* Re-init ADC: STOP2 deinitialises the peripheral, and without this
 	 * SWS reads return 0 for the whole post-wake cycle (observed). */
 	MX_ADC_Init();
 
-#if 0
 	/* SWS exit-LP mirrors the enterLowPower call, re-arms the analog rail. */
 	MGR_SWS_exitLowPower();
-#endif
 
 	/* No HAL_UART_TX in this function — log only on caller side once we're
 	 * back in the main loop, otherwise the BAUD lock-up from waking still
