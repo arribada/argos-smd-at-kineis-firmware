@@ -666,6 +666,27 @@ bool bMGR_AT_CMD_STOPTEST_cmd(uint8_t *pu8_cmdParamString,
 	return true;
 }
 
+bool bMGR_AT_CMD_UARTLOG_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		MCU_AT_CONSOLE_send("+UARTLOG=%u\r\n",
+			(unsigned)(vMGR_LOG_isEnabled() ? 1u : 0u));
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int en = 0u;
+		if (sscanf((const char *)pu8_cmdParamString,
+		           "AT+UARTLOG=%u", &en) != 1)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		if (en > 1u)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		vMGR_LOG_setEnabled(en != 0u);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
 bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString,
 	enum atcmd_type_t e_exec_mode)
 {

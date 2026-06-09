@@ -164,8 +164,37 @@ extern RTC_HandleTypeDef hrtc;
  * it atomically to the ring buffer. This prevents log interleaving issues
  * that occur when timestamp and message are added separately.
  */
+/* Runtime AT-controllable verbosity flag. Lives in .retentionRamNoload
+ * so it survives every software reset (STOP2 cycles, IWDG/SFT, etc.)
+ * but resets to "enabled" on true VBAT loss. Default is verbose so a
+ * tester can see what's happening; AT+UARTLOG=0 silences the spontaneous
+ * log stream while keeping AT responses intact (those use
+ * MCU_AT_CONSOLE_send / HAL_UART_Transmit directly and bypass this
+ * gate). */
+/* Two-word retention block: magic for validity, flag for state. */
+static __attribute__((section(".retentionRamNoload"))) uint32_t s_uart_log_magic;
+static __attribute__((section(".retentionRamNoload"))) uint32_t s_uart_log_enabled_word;
+#define LOG_STATE_MAGIC   0x4C4F4731u   /* "LOG1" — bump on layout change */
+
+void vMGR_LOG_setEnabled(bool en)
+{
+	s_uart_log_magic = LOG_STATE_MAGIC;
+	s_uart_log_enabled_word = en ? 1u : 0u;
+}
+
+bool vMGR_LOG_isEnabled(void)
+{
+	/* Default verbose if retention is uninitialised (true cold boot). */
+	if (s_uart_log_magic != LOG_STATE_MAGIC)
+		return true;
+	return s_uart_log_enabled_word != 0u;
+}
+
 void vMGR_LOG_printf_ts(const char *format, ...)
 {
+	if (!vMGR_LOG_isEnabled())
+		return;
+
 	char local_buf[LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN];
 	RTC_DateTypeDef sdate;
 	RTC_TimeTypeDef stime;
@@ -216,6 +245,9 @@ void vMGR_LOG_printf_ts(const char *format, ...)
  */
 void vMGR_LOG_printf(const char *format, ...)
 {
+	if (!vMGR_LOG_isEnabled())
+		return;
+
 	/* Use local buffer on stack to avoid conflicts between concurrent calls */
 	char local_buf[LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN];
 	va_list args;

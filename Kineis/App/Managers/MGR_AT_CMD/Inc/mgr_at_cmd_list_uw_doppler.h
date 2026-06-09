@@ -212,6 +212,21 @@ bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t 
  */
 bool bMGR_AT_CMD_STOPTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+UARTLOG: toggle the spontaneous UART log stream.
+ *
+ * Status: `+UARTLOG=<0|1>` — 0 means quiet (no [SWS] / [MODE] / [LED] /
+ *         [KNS_Q] etc. spontaneous lines), 1 means verbose.
+ * Action: `AT+UARTLOG=<0|1>`
+ *
+ * AT command responses (+OK, +ERROR, +CMD=...) always emit regardless of
+ * this flag — they go through MCU_AT_CONSOLE_send / direct HAL_UART
+ * transmits that bypass the gated MGR_LOG ring.
+ *
+ * Persisted in retention NOLOAD so it survives STOP2/STANDBY cycles and
+ * IWDG/software resets, but defaults back to "enabled" on VBAT loss.
+ */
+bool bMGR_AT_CMD_UARTLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
  *
  * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`

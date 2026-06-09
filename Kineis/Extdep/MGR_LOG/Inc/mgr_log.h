@@ -104,6 +104,12 @@
 void vMGR_LOG_printf(const char *format, ...);
 void vMGR_LOG_printf_ts(const char *format, ...);
 
+/** @brief Runtime gate on spontaneous logs. AT+UARTLOG=0 silences the
+ *  whole log ring (saves UART current + host parser noise) while keeping
+ *  AT responses intact. Default is enabled. Persisted in retention NOLOAD. */
+void vMGR_LOG_setEnabled(bool enabled);
+bool vMGR_LOG_isEnabled(void);
+
 
 /**
  * @brief Flush log ring buffer to UART (call from main loop)
