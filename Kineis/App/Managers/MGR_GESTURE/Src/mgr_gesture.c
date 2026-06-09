@@ -61,21 +61,20 @@ extern uint32_t g_boot_rcc_csr_raw;
  * events without enabling the verbose MGR_LOG ring. Gated on hlpuart1.gState
  * (no-op when UART has been de-init'd). Stack buffer (not static) so the
  * function is reentrant. TX timeout 20 ms (cap at 115200 baud). */
-#ifdef DEBUG
+/* gst_trace is ALWAYS on (production + debug) so mode transitions are
+ * visible in the field for validation. Stack buffer (not static) so
+ * the function is reentrant. TX timeout 20 ms (cap at 115200 baud). */
 static void gst_trace(const char *fmt, uint32_t a)
 {
 	extern UART_HandleTypeDef hlpuart1;
 	if (hlpuart1.gState == HAL_UART_STATE_RESET)
 		return;
-	char buf[64];
+	char buf[80];
 	int n = snprintf(buf, sizeof(buf), fmt, (unsigned long)a);
 	if (n > 0 && n < (int)sizeof(buf))
 		(void)HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf,
 		                        (uint16_t)n, 20);
 }
-#else
-#define gst_trace(fmt, a)  do { (void)(fmt); (void)(a); } while (0)
-#endif
 
 /* ---- Mode persistence (TAMP BKP10R) --------------------------------------- */
 #define GESTURE_BKP_REG          (TAMP->BKP10R)
@@ -246,6 +245,7 @@ void MGR_GESTURE_init(void)
 	(void)load_mode_default_operational();  /* legacy: keep symbol live */
 	s_mode = MGR_GESTURE_MODE_OPERATIONAL;
 	persist_mode(s_mode);
+	gst_trace("[MODE] boot in OPERATIONAL t=%lu ms\r\n", HAL_GetTick());
 
 	s_fsm = GFSM_IDLE;
 	s_pending_event = MGR_GESTURE_EVT_NONE;
@@ -302,10 +302,13 @@ MGR_GESTURE_Event_t MGR_GESTURE_getEvent(void)
  * every tick and burn the 19 Ah battery in ~4 days. Any non-IDLE
  * window longer than this returns false so STOP2 can run; the FSM
  * stays where it is until the next reed event re-arms it. */
-#define GESTURE_NONIDLE_MAX_MS  60000u  /* 60 s — longest legit gesture
-                                         * is 6 s hold + 2 s confirm + LED
-                                         * confirm 1.5 s ≈ 10 s, so 60 s
-                                         * leaves a 6× safety margin. */
+#define GESTURE_NONIDLE_MAX_MS  15000u  /* 15 s. Longest legit gesture is
+                                         * 6 s hold + 2 s confirm + 1.5 s
+                                         * confirm blink ≈ 10 s, so 15 s
+                                         * leaves a 50 % margin while
+                                         * still recovering quickly enough
+                                         * that the operator notices the
+                                         * gesture failed. */
 static uint32_t s_nonidle_first_tick = 0u;
 
 bool MGR_GESTURE_isInteracting(void)
@@ -320,11 +323,25 @@ bool MGR_GESTURE_isInteracting(void)
 	const uint32_t now = HAL_GetTick();
 	if (s_nonidle_first_tick == 0u)
 		s_nonidle_first_tick = (now == 0u) ? 1u : now;
-	/* Released if stuck > 60 s. The FSM enum value stays where it is;
-	 * the next genuine reed event re-enters HOLDING normally because
-	 * MGR_GESTURE_task always reads the reed queue regardless of state. */
-	if ((now - s_nonidle_first_tick) > GESTURE_NONIDLE_MAX_MS)
+	/* Hard reset after 60 s stuck in non-IDLE. Originally we just told
+	 * the LPM client "not interacting" so STOP2 could resume; the FSM
+	 * itself stayed in its wedged state and the LED kept blinking
+	 * forever (observed on the bench: Hall sensor hysteresis holds the
+	 * reed-input HIGH after the operator believes they released, so
+	 * HOLDING never transitions to WAIT_CONFIRM, and the RED blink
+	 * looks indistinguishable from a stuck WAIT_CONFIRM). Force the
+	 * FSM to IDLE and turn the LED off so the operator gets a clear
+	 * "abandoned" signal. */
+	if ((now - s_nonidle_first_tick) > GESTURE_NONIDLE_MAX_MS) {
+		gst_trace("[MODE] gesture watchdog kicked, forcing IDLE t=%lu\r\n",
+		          now);
+		MGR_LED_off();
+		s_fsm = GFSM_IDLE;
+		s_pending_action = PENDING_NONE;
+		s_max_phase = HOLD_PHASE_NONE;
+		s_nonidle_first_tick = 0u;
 		return false;
+	}
 	return true;
 }
 
@@ -447,15 +464,21 @@ void MGR_GESTURE_task(void)
 			bool is_shutdown = (s_pending_action == PENDING_SHUTDOWN);
 			if (is_shutdown) {
 				s_pending_event = MGR_GESTURE_EVT_REQUEST_SHUTDOWN;
-				gst_trace("[GST] CONFIRMED shutdown t=%lu\r\n", now);
+				gst_trace("[MODE] SHUTDOWN requested by gesture t=%lu ms\r\n",
+				          now);
 			} else {
 				MGR_GESTURE_setMode(s_pending_mode);
 				s_pending_event =
 				    (s_pending_mode == MGR_GESTURE_MODE_CONFIG)
 				    ? MGR_GESTURE_EVT_ENTER_CONFIG
 				    : MGR_GESTURE_EVT_ENTER_OPERATIONAL;
-				gst_trace("[GST] CONFIRMED switch->%lu\r\n",
-				          (uint32_t)s_pending_mode);
+				if (s_pending_mode == MGR_GESTURE_MODE_CONFIG) {
+					gst_trace("[MODE] CONFIG entered (TX disabled) t=%lu\r\n",
+					          now);
+				} else {
+					gst_trace("[MODE] OPERATIONAL entered (TX enabled) t=%lu\r\n",
+					          now);
+				}
 			}
 			led_show_confirm(s_pending_mode, is_shutdown);
 			s_fsm = GFSM_CONFIRMED;
