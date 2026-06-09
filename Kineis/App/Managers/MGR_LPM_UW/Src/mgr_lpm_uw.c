@@ -480,6 +480,14 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	/* SWS exit-LP mirrors the enterLowPower call, re-arms the analog rail. */
 	MGR_SWS_exitLowPower();
 
+	/* Force a fresh SWS sample. STOP2 is so short that the periodic
+	 * MGR_SWS_task interval (1 Hz at surface, 2 Hz UW) never fires
+	 * between successive wakes — the cached state would stay stale
+	 * for the whole deployment. Force one sample per wake so the
+	 * auto-cycle decision uses fresh data and surface transitions
+	 * are caught at the next wake instead of after a full sleep_s. */
+	MGR_SWS_forceMeasurement();
+
 	/* No HAL_UART_TX in this function — log only on caller side once we're
 	 * back in the main loop, otherwise the BAUD lock-up from waking still
 	 * partially initialized UART hardware can stall the print. */
