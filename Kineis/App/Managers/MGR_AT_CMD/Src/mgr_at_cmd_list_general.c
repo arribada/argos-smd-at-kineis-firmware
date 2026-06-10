@@ -131,7 +131,7 @@ bool bMGR_AT_CMD_ADDR_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getAddr(dev_addr);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		MCU_AT_CONSOLE_send("+ADDR=%02x%02x%02x%02x\r\n", dev_addr[0], dev_addr[1],
 								  dev_addr[2], dev_addr[3]);
 
@@ -174,7 +174,7 @@ bool bMGR_AT_CMD_ID_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getId(&dev_id);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		/* ID is printed as a number, with decimal representation.
 		 * ID is stored in memory in little endian format.
 		 */
@@ -227,7 +227,7 @@ bool bMGR_AT_CMD_SN_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getSN(dev_sn);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		dev_sn[DEVICE_SN_LENGTH] = '\0';
 		MCU_AT_CONSOLE_send("+SN=%s\r\n", dev_sn);
 
@@ -251,7 +251,7 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getRadioInfo(&radio_cfg);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		if (radio_cfg.modulation == KNS_TX_MOD_LDA2)
 			strcpy((char*)modulation, "LDA2");
 		else if (radio_cfg.modulation == KNS_TX_MOD_LDA2L)
@@ -294,7 +294,7 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 
 		status = KNS_CFG_setRadioInfo(pu8_cmdParamString + 9);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
@@ -307,7 +307,7 @@ bool bMGR_AT_CMD_SAVE_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unuse
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		status = KNS_CFG_saveRadioInfo();
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
@@ -372,7 +372,7 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getMC(&mc);
 		if (status != KNS_STATUS_OK) {
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		}
 		
 		MCU_AT_CONSOLE_send("+MC=%d\r\n", mc);

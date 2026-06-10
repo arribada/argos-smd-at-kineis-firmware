@@ -92,8 +92,16 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 		KNS_MAC_getPrflInfo(&prfl_info);
 		prflCfgPtr = &prfl_info.prflCfgPtr;
 		MCU_AT_CONSOLE_send("+KMAC=%d,",prfl_info.id);
-		// log profile context, reduce size by 1 due to `id` field of KNS_MAC_prflInfo_t
-		for (idx = 0; idx < (sizeof(prfl_info) - 1); idx++)
+		/* Output the union member contents. v11.1.0 widened the union to fit
+		 * SATDET (11 bytes) — the legacy `sizeof(prfl_info)-1` would read
+		 * past the end on platforms where `sizeof(enum)` differs from 1, so
+		 * iterate over the actual largest member instead. We cap at the
+		 * BLIND size (7 bytes = 14 hex chars) because that's the maximum
+		 * profile config our AT path accepts on set — emitting more would
+		 * desync the GUI parser without conveying useful data (UW_DOPPLER
+		 * is BASIC-only and other apps don't init SATDET/BLIND_POS). */
+		const size_t cfg_bytes = sizeof(struct KNS_MAC_BLIND_usrCfg_t);
+		for (idx = 0; idx < cfg_bytes; idx++)
 			MCU_AT_CONSOLE_send("%02X", prflCfgPtr[idx]);
 		MCU_AT_CONSOLE_send("\r\n");
 
@@ -134,7 +142,7 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 
 	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 	if (status != KNS_STATUS_OK)
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 	return true;
 #endif
 }
@@ -144,22 +152,32 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 bool bMGR_AT_CMD_KCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
 {
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		/* Read-only query — safe in all configurations. The GUI uses this
+		 * to probe whether the L1 timer is currently suspended/resumed. */
 		union KNS_CFG_bitmap_t cfg = KNS_CFG_getCfg();
 		MCU_AT_CONSOLE_send("+KCFG=%lu\r\n", (unsigned long)cfg.raw);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
-	uint32_t raw = 0;
-	if (pu8_cmdParamString == NULL ||
-	    sscanf((const char *)pu8_cmdParamString, "AT+KCFG=%lu",
-	           (unsigned long *)&raw) != 1)
-		return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
-
-	union KNS_CFG_bitmap_t cfg = { .raw = raw };
-	enum KNS_status_t st = KNS_CFG_setCfg(cfg);
-	if (st != KNS_STATUS_OK)
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)st);
-	return bMGR_AT_CMD_logSucceedMsg();
+	/* Set form refused on this firmware.
+	 *
+	 * Why: KNS_CFG_setCfg() ultimately calls MCU_TIM_suspend / MCU_TIM_resume
+	 * on MCU_TIM_HDLR_TX_PERIOD, which is implemented via
+	 * HAL_RTCEx_DeactivateWakeUpTimer / HAL_RTCEx_SetWakeUpTimer_IT on the
+	 * single RTC wake-up timer the chip exposes. Our application already
+	 * owns that resource for the LPM scheduler:
+	 *  - UW_DOPPLER : MGR_LPM_UW_enterStop2Timed arms the RTC WUT to wake
+	 *    the chip out of STOP2 every sleep_s seconds (see mgr_lpm_uw.c)
+	 *  - other apps : LPM_shutdownWithAutoWake uses the same RTC WUT for
+	 *    SHUTDOWN auto-wake (see lpm.c)
+	 *
+	 * Letting the GUI write KCFG would silently disarm the LPM wake (the
+	 * exact symptom an operator already reported: "auto sleep timer
+	 * cassé"). Until a coordinated owner abstraction is built, refuse the
+	 * write loudly so the GUI can decide whether to grey out the control.
+	 */
+	(void)pu8_cmdParamString;
+	return bMGR_AT_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE);
 }
 
 bool bMGR_AT_CMD_KEVT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)

@@ -205,7 +205,7 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 				appEvt.id = KNS_MAC_SEND_DATA;
 				status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 				if (status != KNS_STATUS_OK)
-					return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+					return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 				return true;
 			}
 			MGR_LOG_VERBOSE("[ERROR] User data is badly formatted (check length)\r\n");
@@ -338,7 +338,7 @@ bool bMGR_AT_CMD_RX_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
 			appEvt.id = KNS_MAC_RX_STOP;
 			status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 			if (status != KNS_STATUS_OK)
-				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+				return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 			return true;
 		break;
 		case 1:
@@ -347,7 +347,7 @@ bool bMGR_AT_CMD_RX_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
 			appEvt.id = KNS_MAC_RX_START;
 			status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 			if (status != KNS_STATUS_OK)
-				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+				return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 			return true;
 		}
 		break;
@@ -378,6 +378,10 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	case (KNS_MAC_TXACK_DONE):
 	case (KNS_MAC_TX_TIMEOUT):
 	case (KNS_MAC_TXACK_TIMEOUT):
+	/* v11.1.0 introduces KNS_MAC_TX_ABORT — emitted on FIFO flush, MAC
+	 * stop, or RF abort sequences. Treat as a terminal TX completion so
+	 * the FIFO element is released and the host gets a clean response. */
+	case (KNS_MAC_TX_ABORT):
 	case (KNS_MAC_RX_ERROR):
 	case (KNS_MAC_RX_TIMEOUT):
 		/* v11.1.0 dropped tx_ctxt.data/.data_bitlen — the only field left is
@@ -386,7 +390,18 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		 * expose such a lookup, so we use the head of the FIFO instead:
 		 * with AT-driven TX the queue depth is 1 (we wait for completion
 		 * before pushing another) so head == element-being-completed.
-		 */
+		 *
+		 * Defensive WARN: if multiple TX are in flight (operator spammed
+		 * AT+TX without waiting for +TX= replies), the head may not
+		 * correspond to the event we just popped. Log without refusing —
+		 * zero behavioural change vs. tag v3.0. Mirror of the comment in
+		 * mgr_spi_cmd.c; if SPI ever switches to hdlr-based matching,
+		 * apply the same here for consistency. */
+		if (USERDATA_txFifoGetCount() > 1u) {
+			MGR_LOG_DEBUG("[AT] multi-TX in FIFO (%u) — head match may "
+			              "misalign on v11 frm_hdlr-less lookup\r\n",
+			              (unsigned)USERDATA_txFifoGetCount());
+		}
 		spUserDataMsg = USERDATA_txFifoGetFirst();
 		kns_assert(spUserDataMsg != NULL);
 	break;
@@ -473,6 +488,16 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
 		Set_TX_LED(0);
 		cbStatus = KNS_STATUS_TIMEOUT;
+	break;
+	case (KNS_MAC_TX_ABORT):  /* v11.1.0 — TX aborted (stop_send_data / FIFO flush) */
+		MCU_MISC_TCXO_Force_State(false);
+		MCU_MISC_turn_off_pa();
+		if (spUserDataMsg != NULL) {
+			bMGR_AT_CMD_sendResponse(ATCMD_RSP_RFABORTED, (void *)spUserDataMsg);
+			USERDATA_txFifoRemoveElt(spUserDataMsg);
+		}
+		Set_TX_LED(0);
+		cbStatus = KNS_STATUS_OK;
 	break;
 	case (KNS_MAC_RX_ERROR):  /**< RX error during TRX frame, report TX failure then */
 		MCU_MISC_TCXO_Force_State(false);
@@ -591,7 +616,7 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	break;
 	case (KNS_MAC_ERROR):
 //		MGR_LOG_DEBUG("MGR_AT_CMD MAC reported ERROR to previous command.\r\n");
-		bMGR_AT_CMD_logFailedMsg((enum KNS_status_t)srvcEvt.status);
+		bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(srvcEvt.status));
 		if (srvcEvt.app_evt == KNS_MAC_SEND_DATA)
 			USERDATA_txFifoRemoveElt(spUserDataMsg);/* Free as host notified */
 		cbStatus = KNS_STATUS_ERROR;
@@ -607,7 +632,10 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		cbStatus = KNS_STATUS_OK;
 	break;
 	default:
-		kns_assert(0);
+		/* Unknown event. v11.1.0 added KNS_MAC_RX_MODE_TEST / RX_MODE_RUNTIME
+		 * which we don't use — fall through without asserting so the lib
+		 * can evolve without bricking the firmware. Log for visibility. */
+		MGR_LOG_DEBUG("[AT] Unhandled MAC event %u\r\n", (unsigned)srvcEvt.id);
 		cbStatus = KNS_STATUS_ERROR;
 	break;
 	}

@@ -582,7 +582,11 @@ static bool process_mac_events(void)
 			break;
 
 		case KNS_MAC_TX_TIMEOUT:
-			MGR_LOG_DEBUG("[DPL] TX timeout\r\n");
+		/* v11.1.0 KNS_MAC_TX_ABORT — semantically identical here: TX
+		 * did not complete, we move past this sequence slot. */
+		case KNS_MAC_TX_ABORT:
+			MGR_LOG_DEBUG("[DPL] TX %s\r\n",
+				(srvcEvt.id == KNS_MAC_TX_ABORT) ? "abort" : "timeout");
 			MGR_ERR_log(ERR_TX_TIMEOUT);
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, (uint16_t)tx_index);
 			if (doppler_state == DOPPLER_WAIT_TX_DONE) {

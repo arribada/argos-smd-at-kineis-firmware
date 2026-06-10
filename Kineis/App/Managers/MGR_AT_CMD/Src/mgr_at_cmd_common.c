@@ -15,6 +15,25 @@
 #include "mcu_at_console.h"
 #include "user_data.h"
 #include "kns_mac.h"
+#include "kns_mac_prfl_cfg.h"
+
+/* Compile-time guards on the krd_fw ABI values we depend on. If a future
+ * lib upgrade silently shifts any of these, the build fails here with a
+ * clear message instead of producing a tag that talks past its GUI.
+ * Update both halves together and bump the AT version when adjusting. */
+_Static_assert(KNS_STATUS_OK          == 0,    "KNS_STATUS_OK position");
+_Static_assert(KNS_STATUS_ERROR       == 1,    "KNS_STATUS_ERROR position");
+_Static_assert(KNS_STATUS_BAD_SETTING == 6,    "v10 ABI position preserved");
+_Static_assert(KNS_STATUS_ABORT       == 7,    "v11 inserted ABORT after BAD_SETTING");
+_Static_assert(KNS_STATUS_RF_ERR      == 100,  "RF_ERR fixed slot");
+_Static_assert(KNS_STATUS_MAX         == 1000, "ERROR_RETURN_T base assumes this");
+_Static_assert(KNS_MAC_PRFL_NONE      == 0,    "AT+KMAC reset path uses NONE=0");
+_Static_assert(KNS_MAC_PRFL_BASIC     == 1,    "UW_DOPPLER lock checks BASIC=1");
+_Static_assert(KNS_MAC_PRFL_BLIND     == 2,    "GUI may send BLIND=2");
+_Static_assert(KNS_MAC_PRFL_MAX       == 5,    "v11 adds BLIND_POS, total 5 profiles");
+_Static_assert(sizeof(struct KNS_MAC_BLIND_usrCfg_t) == 7,
+               "v11 grew BLIND_usrCfg_t by 1 byte (per_offset); "
+               "AT+KMAC=2 buffer must accommodate 14 hex chars");
 
 
 /* Public functions ----------------------------------------------------------*/
@@ -29,6 +48,13 @@ bool bMGR_AT_CMD_logFailedMsg(enum ERROR_RETURN_T eErrorType)
 {
 	MCU_AT_CONSOLE_send("+ERROR=%i\r\n", eErrorType);
 	return false;
+}
+
+enum ERROR_RETURN_T MGR_AT_CMD_mapKnsStatusToError(enum KNS_status_t s)
+{
+	if (s == KNS_STATUS_ABORT)
+		return (enum ERROR_RETURN_T)KNS_STATUS_ERROR;
+	return (enum ERROR_RETURN_T)s;
 }
 
 bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *atcmd_rsp_data)

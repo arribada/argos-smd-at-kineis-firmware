@@ -1220,7 +1220,14 @@ static bool process_mac_events(void)
 			break;
 
 		case KNS_MAC_TX_TIMEOUT:
-			MGR_LOG_ERR("[UW_DPL] TX timeout\r\n");
+		/* v11.1.0 introduces KNS_MAC_TX_ABORT — emitted when a TX is
+		 * cancelled mid-flight (FIFO flush, stop_send_data). Treat
+		 * identically to TX_TIMEOUT: it represents a TX that didn't
+		 * land, so the app must release back to MONITORING and apply
+		 * the same backoff to avoid radio thrashing. */
+		case KNS_MAC_TX_ABORT:
+			MGR_LOG_ERR("[UW_DPL] TX %s\r\n",
+				(srvcEvt.id == KNS_MAC_TX_ABORT) ? "abort" : "timeout");
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, 0);
 			MGR_TXSTATS_recordTimeout();  /* Sprint 4 */
 			/* Sprint 4: decrement test burst on failure too, otherwise a

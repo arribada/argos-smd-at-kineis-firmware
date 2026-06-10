@@ -290,6 +290,12 @@ void KNS_APP_stdln_loop(void)
 					TEST_FAIL();
 					state++;
 					break;
+				case (KNS_MAC_TX_ABORT):  /* v11.1.0 — TX aborted, treat as fail */
+					MGR_LOG_DEBUG("[%s] TX abort hdlr=%d\r\n",
+						__func__, srvcEvt.tx_ctxt.frm_hdlr);
+					TEST_FAIL();
+					state++;
+					break;
 				case (KNS_MAC_ERROR):
 					/** MAC ERROR can occure when FIFO is full, as expected per
 					 * this application
