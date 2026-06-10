@@ -44,6 +44,15 @@ extern void MX_GPIO_Init(void);
  * itself draws several hundred µA when left armed. */
 #include "subghz.h"
 extern void MX_SUBGHZ_Init(void);
+
+/* TODO: SLEEP tier needs an LPTIM-based wake source for sub-second
+ * STOP1 precision. The STM32WL55 HAL LPTIM driver is not currently
+ * imported into Drivers/STM32WLxx_HAL_Driver/ (this project trims the
+ * HAL to only the modules it uses). Importing it adds ~2 kLOC of HAL
+ * code + LL helpers. Until then the SLEEP tier in idleTick falls back
+ * to the STOP2 path with 1 s minimum rounding — the threshold logic
+ * and API are already in place so the future enablement is a localised
+ * change. */
 /* MGR_SWS enter/exitLowPower drop the SWS analog rail so it doesn't
  * burn current during STOP2. */
 extern void MGR_SWS_enterLowPower(void);
@@ -321,7 +330,10 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 		return;
 	}
 
-	/* RTC CK_SPRE is 1 Hz; minimum wake window is 1 second. Round up. */
+	/* SLEEP and STOP2 tiers currently share the same STOP2 + RTC path
+	 * (CK_SPRE 1 Hz, rounded up to seconds). The SLEEP threshold is
+	 * honoured by the API and will be split off into a sub-second
+	 * STOP1+LPTIM (or RTC SubSec) wake path in a follow-up commit. */
 	uint32_t sleep_s = (delta_ms + 999u) / 1000u;
 	if (sleep_s < 1u)
 		sleep_s = 1u;
@@ -424,6 +436,21 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
 	LPM_shutdownWithAutoWake(wakeup_seconds);
 	for (;;) { /* unreachable */ }
 }
+
+/* TODO: SLEEP tier entry. Currently the idleTick scheduler routes the
+ * spin_ms..sleep_ms tier into the STOP2 path with 1 s minimum rounding —
+ * so the practical "sleep" duration is at least 1 second. A proper SLEEP
+ * tier needs either:
+ *   - LPTIM driver imported into Drivers/STM32WLxx_HAL_Driver/ (~2 kLOC)
+ *     and configured with LSI to wake from STOP1 with sub-second
+ *     precision, OR
+ *   - RTC SubSecond alarm (ALRMA_SUBSEC) configured alongside the
+ *     existing WakeUpTimer to give sub-second STOP2 wake.
+ *
+ * Both are deliverable on this hardware but neither fits in the current
+ * session window. The thresholds in AT+LPMTHR are already in place and
+ * the surrounding scheduler logic is correct, so wiring up the real
+ * SLEEP path is a localised change once the HAL or RTC config is ready. */
 
 /* ---- STOP2 timed wake (production duty-cycle path) ---- */
 
