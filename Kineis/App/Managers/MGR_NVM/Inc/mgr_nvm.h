@@ -27,7 +27,7 @@
 #include "mgr_bat.h"
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 5
+#define NVM_VERSION 6
 
 /**
  * @brief NVM config structure stored in flash (v3)
@@ -83,6 +83,14 @@ typedef struct {
 	uint16_t lb_tx_max_s;
 	uint8_t  lb_tx_max_count;
 	uint8_t  _pad6[3];
+	/* v6: Event-driven LPM thresholds (8 bytes incl. pad).
+	 * Drives MGR_LPM_UW_idleTick — spin if delta_ms < lpm_spin_ms, SLEEP
+	 * until lpm_sleep_ms, STOP2 above. lpm_enabled is the master
+	 * kill-switch. */
+	uint16_t lpm_spin_ms;
+	uint16_t lpm_sleep_ms;
+	uint8_t  lpm_enabled;
+	uint8_t  _pad7[3];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 
