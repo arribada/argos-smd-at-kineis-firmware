@@ -1,8 +1,17 @@
 # Master Audit — argos-smd-at-kineis-firmware
 
-**Date:** 2026-06-05
+**Date:** 2026-06-05 (mise à jour 2026-06-11)
 **Scope:** STANDALONE board + UW_DOPPLER app (turtle tracker)
 **Context:** Régression MAC stack ne devient jamais READY → reboot loop. Investigation suite à demande utilisateur "reprendre proprement".
+
+> **2026-06-11 — Validation livrable.** Voir
+> [VALIDATION_2026-06-11.md](VALIDATION_2026-06-11.md) : power-off redessiné
+> (STOP2 soft-off + reed wake, option REED_WKUP3=PB3 pour vrai SHUTDOWN),
+> latence surfaçage→TX mesurée ≈ 2.5 s pire cas (détection→push MAC 48 ms),
+> MC per-sequence + seq_restart + boot-first-sequence validés au bench,
+> fenêtre de grâce console AT 30 s (surdité STOP2 corrigée), 26/26 suites
+> (395 checks), build matrix 13/13. Les P0 ADC du TL;DR ci-dessous sont
+> corrigés (MX_ADC_DeInit présent dans STANDBY/SHUTDOWN/STOP2).
 
 ---
 
