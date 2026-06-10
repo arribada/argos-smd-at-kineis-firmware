@@ -457,6 +457,11 @@ static uint32_t tx_count = 0;              /**< Number of TXs sent in current su
 static uint32_t last_tx_tick = 0;          /**< Tick of last TX */
 static uint32_t current_interval_ms = 0;   /**< Current interval between TXs in ms */
 static bool     surface_tx_pending = false; /**< Immediate TX needed on surface detection */
+/* One-shot: a fresh OPERATIONAL boot counts as the first surface event.
+ * Consumed in MONITORING as soon as the SWS state is known; if the tag is
+ * already at the surface a TX sequence starts without waiting for a
+ * dive/resurface transition. */
+static bool     boot_first_seq_pending = true;
 
 /* Surface→TX latency instrumentation. Direct-UART trace at four
  * checkpoints — greppable on `[LAT]` for the capture campaign. Disable
@@ -876,27 +881,21 @@ static uint32_t state_elapsed_ms(void)
 
 #if defined(BSP_HAS_REED_SWITCH)
 /**
- * @brief Enter SHUTDOWN mode with PWR_LATCH pulled LOW
+ * @brief Power off the board (gesture / end-of-mission path)
  *
- * Saves config to NVM, releases power latch, configures internal
- * pull-down on PB7 to overcome external pull-up, then enters SHUTDOWN.
- * Board loses power entirely - next boot via hardware reed switch circuit.
+ * Saves config to NVM then hands over to MGR_LPM_UW_enterShutdownReed:
+ * PWR_LATCH LOW (true power-off on battery, magnet re-latch = POR), with
+ * a STOP2 + reed-EXTI fallback when VDD is externally maintained (bench).
+ * Never returns; next boot is always OPERATIONAL.
  */
 static void enter_shutdown(void)
 {
-	MGR_LOG_INFO("[UW_DPL] Entering SHUTDOWN...\r\n");
+	MGR_LOG_INFO("[UW_DPL] Entering POWER_OFF...\r\n");
 	MGR_EVTLOG_log(EVT_SHUTDOWN, 0);
 	MGR_WDG_refresh();  /* Refresh before NVM save (flash write takes time) */
 	MGR_NVM_save();
 
-	/* Release power latch (drive LOW) — board will lose power once the
-	 * shutdown sequence pulls PB7 internal pull-down to maintain it LOW. */
-	MGR_REED_releasePower();
-
-	/* LPM_shutdownNow() does the full teardown (ADC deinit, GPIO analog,
-	 * pull-down PWR_LATCH PB7, wake-up RTC + pins armed, PWR flag clear),
-	 * then HAL_PWREx_EnterSHUTDOWNMode(). Never returns. */
-	LPM_shutdownNow();
+	MGR_LPM_UW_enterShutdownReed();
 }
 #endif
 
@@ -1882,6 +1881,33 @@ void KNS_APP_uw_doppler_loop(void)
 			tcxo_first_tx_skip = true;
 		}
 
+		/* Boot-as-first-surface-event: a fresh OPERATIONAL boot
+		 * (power-on, magnet wake, NRST) with the tag already at the
+		 * surface must start a TX sequence — there is no dive/resurface
+		 * transition to detect. One-shot, consumed at the first known
+		 * SWS state. Skipped on STANDBY duty-cycle wakes: sequencing
+		 * there belongs to the UW→SURF detection + seq-restart timer. */
+		if (boot_first_seq_pending &&
+		    sws_state != MGR_SWS_STATE_UNKNOWN) {
+			boot_first_seq_pending = false;
+			if (sws_state == MGR_SWS_STATE_SURFACE &&
+			    !surface_tx_pending &&
+			    !MGR_LPM_UW_isWakeFromStandby()) {
+				LAT_MARK_T0();  /* T0 boot-at-SURFACE */
+				STATE_TRACE("BOOT at SURFACE -> first sequence");
+				MGR_LOG_INFO("[UW_DPL] Boot at SURFACE, starting first sequence\r\n");
+				MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
+				reset_tx_scheduling();
+				surface_tx_pending = true;
+				first_tx_random_offset_ms =
+					prng_next() % FIRST_TX_RANDOM_WINDOW_MS;
+				last_tx_tick = 0;
+				/* Same TCXO warmup bypass as the other sequence starts. */
+				MCU_MISC_TCXO_get_warmup(&tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = true;
+			}
+		}
+
 		/* Check for surface detection */
 		if (MGR_SWS_stateChanged()) {
 			if (sws_state == MGR_SWS_STATE_SURFACE) {
@@ -2328,18 +2354,29 @@ void KNS_APP_uw_doppler_loop(void)
 
 #if defined(BSP_HAS_REED_SWITCH)
 	case UW_DOPPLER_SHUTDOWN_BLINK:
-		/* Cancel shutdown if magnet removed during blink */
+#if !defined(UW_DOPPLER_HAS_GESTURE)
+		/* Legacy reed-hold-only path: cancel if magnet is released
+		 * during the blink (deadman switch — no upstream confirmation
+		 * exists, so the blink itself is the user's last chance to
+		 * abort). */
 		if (!MGR_REED_isMagnetPresent()) {
 			MGR_LOG_INFO("[UW_DPL] Shutdown cancelled (magnet removed)\r\n");
 #if defined(BSP_HAS_LED_RGB)
 			MGR_LED_off();
 #endif
-#if !defined(UW_DOPPLER_HAS_GESTURE)
 			shutdown_triggered = false;
-#endif
 			transition_to(UW_DOPPLER_MONITORING);
 			return;
 		}
+#else
+		/* Gesture FSM path: the magnet touch inside the 2 s
+		 * WAIT_CONFIRM window IS the confirmation. Once we land here
+		 * the user has already committed (hold ≥6 s + release + touch
+		 * within 2 s) and the blink is purely visual feedback while
+		 * the LPM teardown unwinds. Don't add a second deadman — the
+		 * operator was confused by being asked to keep the magnet
+		 * applied through the slow red blink. */
+#endif
 		/* Wait for blink to finish or timeout */
 #if defined(BSP_HAS_LED_RGB)
 		if (MGR_LED_isBlinkDone() || state_elapsed_ms() > TIMEOUT_SHUTDOWN_BLINK_MS)
