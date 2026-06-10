@@ -286,7 +286,7 @@ static void boot_loop_handle(void)
 		boot_retained.factory_reset_attempted);
 
 	if (boot_retained.consecutive_failures >= BOOT_FAIL_PERMANENT_OFF) {
-		MGR_LOG_DEBUG("[BOOT-LOOP] PERMANENT_OFF: SHUTDOWN with 24h auto-wake\r\n");
+		MGR_LOG_ERR("[BOOT-LOOP] PERMANENT_OFF: SHUTDOWN with 24h auto-wake\r\n");
 		MGR_EVTLOG_log(EVT_FACTORY_RESET, 0xFFFFu);
 		boot_retained.permanent_off_armed = 1;
 		boot_retained_commit();
@@ -302,7 +302,7 @@ static void boot_loop_handle(void)
 
 	if (boot_retained.consecutive_failures >= BOOT_FAIL_FACTORY_RESET &&
 	    !boot_retained.factory_reset_attempted) {
-		MGR_LOG_DEBUG("[BOOT-LOOP] FACTORY RESET (SWS calib preserved)\r\n");
+		MGR_LOG_WARN("[BOOT-LOOP] FACTORY RESET (SWS calib preserved)\r\n");
 		MGR_EVTLOG_log(EVT_FACTORY_RESET, boot_retained.consecutive_failures);
 		boot_retained.factory_reset_attempted = 1;
 		boot_retained_commit();
@@ -330,7 +330,7 @@ static void boot_loop_mark_success(void)
 	boot_retained.factory_reset_attempted = 0;
 	boot_retained.boot_in_progress = 0;  /* MONITORING reached: this boot is OK */
 	boot_retained_commit();
-	MGR_LOG_DEBUG("[BOOT-LOOP] Boot success latched\r\n");
+	MGR_LOG_INFO("[BOOT-LOOP] Boot success latched\r\n");
 
 	/* IWDG DISABLED on this build.
 	 *
@@ -391,6 +391,63 @@ static uint32_t tx_count = 0;              /**< Number of TXs sent in current su
 static uint32_t last_tx_tick = 0;          /**< Tick of last TX */
 static uint32_t current_interval_ms = 0;   /**< Current interval between TXs in ms */
 static bool     surface_tx_pending = false; /**< Immediate TX needed on surface detection */
+
+/* Surface→TX latency instrumentation. Direct-UART trace at four
+ * checkpoints — greppable on `[LAT]` for the capture campaign. Disable
+ * by undefining UW_DOPPLER_LAT_TRACE in the final firmware. */
+#ifndef UW_DOPPLER_LAT_TRACE
+#define UW_DOPPLER_LAT_TRACE 1
+#endif
+#if UW_DOPPLER_LAT_TRACE
+static uint32_t s_lat_t0_tick = 0u;  /**< Tick of the SURFACE detection event */
+static void lat_trace(const char *tag)
+{
+	/* INFO-grade campaign instrumentation. Silenced once AT+LOGLVL is
+	 * raised above INFO, so a production sealed unit running at WARNING
+	 * doesn't waste UART time on [LAT] noise. */
+	if (!MGR_LOG_passes(MGR_LOG_LVL_INFO))
+		return;
+	if (hlpuart1.gState == HAL_UART_STATE_RESET)
+		return;
+	const uint32_t now = HAL_GetTick();
+	const uint32_t dt  = (s_lat_t0_tick == 0u) ? 0u : (now - s_lat_t0_tick);
+	char buf[64];
+	int n = snprintf(buf, sizeof(buf),
+	                 "%s[LAT] %s t=%lu dt=%lu ms\r\n",
+	                 MGR_LOG_levelTag(MGR_LOG_LVL_INFO),
+	                 tag, (unsigned long)now, (unsigned long)dt);
+	if (n > 0 && n < (int)sizeof(buf))
+		(void)HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf,
+		                        (uint16_t)n, 50);
+}
+#define LAT_MARK_T0()  do { s_lat_t0_tick = HAL_GetTick(); lat_trace("SURF"); } while (0)
+#define LAT_TRACE(tag) lat_trace(tag)
+#define LAT_RESET()    do { s_lat_t0_tick = 0u; } while (0)
+#else
+#define LAT_MARK_T0()  do {} while (0)
+#define LAT_TRACE(tag) do {} while (0)
+#define LAT_RESET()    do {} while (0)
+#endif
+
+/* Very-visible state-change trace. INFO-grade, distinct format with surrounding
+ * separators so it's impossible to miss in a busy log. Direct-UART (bypasses
+ * the ring) so the bench operator sees it the moment the transition fires. */
+static void state_trace(const char *msg)
+{
+	if (!MGR_LOG_passes(MGR_LOG_LVL_INFO))
+		return;
+	if (hlpuart1.gState == HAL_UART_STATE_RESET)
+		return;
+	char buf[96];
+	int n = snprintf(buf, sizeof(buf),
+	                 "%s>>>>>>>>>> STATE: %s @ t=%lu <<<<<<<<<<\r\n",
+	                 MGR_LOG_levelTag(MGR_LOG_LVL_INFO),
+	                 msg, (unsigned long)HAL_GetTick());
+	if (n > 0 && n < (int)sizeof(buf))
+		(void)HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf,
+		                        (uint16_t)n, 50);
+}
+#define STATE_TRACE(msg) state_trace(msg)
 /* Sprint 3: anti-collision random offset added to effective_min_ms for the
  * very first TX of each surface event. Drawn fresh from the (UID-seeded)
  * PRNG at surface detection. Up to FIRST_TX_RANDOM_WINDOW_MS. */
@@ -501,7 +558,8 @@ static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
  * Tag should be a short literal (≤32 chars) to keep the UART burst short. */
 #if defined(USE_UART_DRIVER)
 #define UWDPL_TRACE(tag) do { \
-	static const char _trace_msg[] = "[TRACE] " tag " t=%lu\r\n"; \
+	if (!MGR_LOG_passes(MGR_LOG_LVL_TRACE)) break; \
+	static const char _trace_msg[] = "[T] [TRACE] " tag " t=%lu\r\n"; \
 	static char _trace_buf[64]; \
 	int _trace_n = snprintf(_trace_buf, sizeof(_trace_buf), \
 		_trace_msg, (unsigned long)HAL_GetTick()); \
@@ -558,13 +616,19 @@ static uint32_t prng_next(void)
 static void uw_trace3(const char *fmt, uint32_t a, uint32_t b, uint32_t c)
 {
 #if defined(USE_UART_DRIVER) && (UW_DOPPLER_VERBOSE_TRACE)
+	if (!MGR_LOG_passes(MGR_LOG_LVL_TRACE))
+		return;
 	if (hlpuart1.gState == HAL_UART_STATE_RESET)
 		return;
-	static char buf[80];
-	int n = snprintf(buf, sizeof(buf), fmt,
+	static char buf[96];
+	int hdr_n = snprintf(buf, sizeof(buf), "%s",
+		MGR_LOG_levelTag(MGR_LOG_LVL_TRACE));
+	if (hdr_n < 0) hdr_n = 0;
+	int n = snprintf(buf + hdr_n, sizeof(buf) - hdr_n, fmt,
 		(unsigned long)a, (unsigned long)b, (unsigned long)c);
 	if (n > 0)
-		HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)n, 50);
+		HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf,
+		                  (uint16_t)(hdr_n + n), 50);
 #else
 	(void)fmt; (void)a; (void)b; (void)c;
 #endif
@@ -762,7 +826,7 @@ static uint32_t state_elapsed_ms(void)
  */
 static void enter_shutdown(void)
 {
-	MGR_LOG_DEBUG("[UW_DPL] Entering SHUTDOWN...\r\n");
+	MGR_LOG_INFO("[UW_DPL] Entering SHUTDOWN...\r\n");
 	MGR_EVTLOG_log(EVT_SHUTDOWN, 0);
 	MGR_WDG_refresh();  /* Refresh before NVM save (flash write takes time) */
 	MGR_NVM_save();
@@ -961,7 +1025,7 @@ static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 {
 	struct KNS_CFG_radio_t device_radio_cfg;
 	if (KNS_CFG_getRadioInfo(&device_radio_cfg) != KNS_STATUS_OK) {
-		MGR_LOG_DEBUG("[UW_DPL] Radio config read failed, skipping TX\r\n");
+		MGR_LOG_ERR("[UW_DPL] Radio config read failed, skipping TX\r\n");
 		return false;
 	}
 
@@ -1015,7 +1079,7 @@ static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 		appEvt->data_ctxt.usrdata_bitlen = 128;
 		break;
 	default:
-		MGR_LOG_DEBUG("[UW_DPL] Unknown modulation %d, fallback to LDA2\r\n",
+		MGR_LOG_WARN("[UW_DPL] Unknown modulation %d, fallback to LDA2\r\n",
 			device_radio_cfg.modulation);
 		appEvt->data_ctxt.usrdata_bitlen = 192;
 		needs_lda2_crc = true;
@@ -1049,17 +1113,17 @@ static void start_mac_profile(void)
 	appEvt.init_prfl_ctxt.id = KNS_MAC_PRFL_NONE;
 #ifdef USE_MAC_PRFL_BASIC
 	appEvt.init_prfl_ctxt.id = KNS_MAC_PRFL_BASIC;
-	MGR_LOG_DEBUG("[UW_DPL] MAC profile: BASIC\r\n");
+	MGR_LOG_INFO("[UW_DPL] MAC profile: BASIC\r\n");
 #endif
 #ifdef USE_MAC_PRFL_BLIND
 	appEvt.init_prfl_ctxt.id = KNS_MAC_PRFL_BLIND;
 	appEvt.init_prfl_ctxt.blindCfg = prflBlindUserCfg;
-	MGR_LOG_DEBUG("[UW_DPL] MAC profile: BLIND\r\n");
+	MGR_LOG_INFO("[UW_DPL] MAC profile: BLIND\r\n");
 #endif
 
 	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 	if (status != KNS_STATUS_OK) {
-		MGR_LOG_DEBUG("[UW_DPL] MAC init push failed: 0x%x\r\n", status);
+		MGR_LOG_ERR("[UW_DPL] MAC init push failed: 0x%x\r\n", status);
 		/* Don't assert — let timeout handle retry */
 	}
 }
@@ -1081,7 +1145,7 @@ static bool process_mac_events(void)
 		switch (srvcEvt.id) {
 		case KNS_MAC_OK:
 			if (uw_doppler_state == UW_DOPPLER_WAIT_MAC_READY) {
-				MGR_LOG_DEBUG("[UW_DPL] MAC ready\r\n");
+				MGR_LOG_INFO("[UW_DPL] MAC ready\r\n");
 				MGR_EVTLOG_log(EVT_MAC_READY, 0);
 				mac_init_retries = 0;
 				/* Set last_tx_tick so the MIN_INTER_TX_INTERVAL_MS check
@@ -1090,12 +1154,14 @@ static bool process_mac_events(void)
 				last_tx_tick = HAL_GetTick();
 				transition_to(UW_DOPPLER_MONITORING);
 			} else if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-				MGR_LOG_DEBUG("[UW_DPL] TX accepted\r\n");
+				MGR_LOG_INFO("[UW_DPL] TX accepted\r\n");
 			}
 			break;
 
 		case KNS_MAC_TX_DONE:
-			MGR_LOG_DEBUG("[UW_DPL] TX done (#%lu)\r\n", tx_count);
+			LAT_TRACE("TX_DONE");  /* T3: MAC reports frame on the wire */
+			LAT_RESET();           /* arm for the next surface event */
+			MGR_LOG_INFO("[UW_DPL] TX done (#%lu)\r\n", tx_count);
 			MGR_EVTLOG_log(EVT_TX_DONE, 0);
 			MGR_TXSTATS_recordDone();  /* Sprint 4 */
 			/* Sprint 4: consume one test-burst slot if any. The next
@@ -1127,7 +1193,7 @@ static bool process_mac_events(void)
 			break;
 
 		case KNS_MAC_TX_TIMEOUT:
-			MGR_LOG_DEBUG("[UW_DPL] TX timeout\r\n");
+			MGR_LOG_ERR("[UW_DPL] TX timeout\r\n");
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, 0);
 			MGR_TXSTATS_recordTimeout();  /* Sprint 4 */
 			/* Sprint 4: decrement test burst on failure too, otherwise a
@@ -1151,7 +1217,7 @@ static bool process_mac_events(void)
 			break;
 
 		case KNS_MAC_ERROR:
-			MGR_LOG_DEBUG("[UW_DPL] MAC error: %d\r\n", srvcEvt.status);
+			MGR_LOG_ERR("[UW_DPL] MAC error: %d\r\n", srvcEvt.status);
 			MGR_EVTLOG_log(EVT_MAC_ERROR, (uint16_t)srvcEvt.status);
 			/* Always cleanup PA on error — MAC may have already turned it on */
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE ||
@@ -1181,7 +1247,7 @@ static bool process_mac_events(void)
 			/* Unhandled MAC event during WAIT_TX_DONE — safer to assume the
 			 * TX cycle is over and force PA off to prevent stuck 60 mA drain. */
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE) {
-				MGR_LOG_DEBUG("[UW_DPL] Unknown MAC evt %d during WAIT_TX_DONE, cleanup PA\r\n",
+				MGR_LOG_WARN("[UW_DPL] Unknown MAC evt %d during WAIT_TX_DONE, cleanup PA\r\n",
 					srvcEvt.id);
 				MCU_MISC_turn_off_pa();
 			}
@@ -1264,21 +1330,24 @@ void KNS_APP_uw_doppler_init(void)
 		MGR_ERR_CrashInfo_t crash;
 		if (MGR_ERR_takeRetainedCrash(&crash)) {
 #if defined(USE_UART_DRIVER)
-			extern UART_HandleTypeDef hlpuart1;
-			static char cb[200];
-			int cn = snprintf(cb, sizeof(cb),
-				"\r\n[CRASH-REPLAY] type=%u state=%u tick=%lu\r\n"
-				"  PC=%08lx LR=%08lx XPSR=%08lx\r\n"
-				"  HFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
-				(unsigned)crash.fault_type, (unsigned)crash.app_state,
-				(unsigned long)crash.tick,
-				(unsigned long)crash.pc, (unsigned long)crash.lr,
-				(unsigned long)crash.xpsr,
-				(unsigned long)crash.hfsr, (unsigned long)crash.cfsr,
-				(unsigned long)crash.bfar, (unsigned long)crash.mmfar);
-			if (cn > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
-				HAL_UART_Transmit(&hlpuart1, (uint8_t *)cb,
-					(uint16_t)cn, 200);
+			if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+				extern UART_HandleTypeDef hlpuart1;
+				static char cb[208];
+				int cn = snprintf(cb, sizeof(cb),
+					"\r\n%s[CRASH-REPLAY] type=%u state=%u tick=%lu\r\n"
+					"  PC=%08lx LR=%08lx XPSR=%08lx\r\n"
+					"  HFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n",
+					MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+					(unsigned)crash.fault_type, (unsigned)crash.app_state,
+					(unsigned long)crash.tick,
+					(unsigned long)crash.pc, (unsigned long)crash.lr,
+					(unsigned long)crash.xpsr,
+					(unsigned long)crash.hfsr, (unsigned long)crash.cfsr,
+					(unsigned long)crash.bfar, (unsigned long)crash.mmfar);
+				if (cn > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
+					HAL_UART_Transmit(&hlpuart1, (uint8_t *)cb,
+						(uint16_t)cn, 200);
+			}
 #endif
 			MGR_EVTLOG_log(EVT_ERROR, (uint16_t)crash.fault_type);
 		}
@@ -1313,7 +1382,7 @@ void KNS_APP_uw_doppler_init(void)
 	/* MGR_LPM_UW owns the retention-NOLOAD duty config + defaults. */
 	MGR_LPM_UW_init();
 
-	MGR_LOG_DEBUG("[UW_DPL] Init: interval=%us growth=%u%% max=%us deploy=%u\r\n",
+	MGR_LOG_INFO("[UW_DPL] Init: interval=%us growth=%u%% max=%us deploy=%u\r\n",
 		tx_cfg.tx_initial_interval_s, tx_cfg.tx_growth_percent,
 		tx_cfg.tx_max_interval_s, deploy_mode);
 
@@ -1361,7 +1430,7 @@ void KNS_APP_uw_doppler_loop(void)
 	 * with full diagnostic context. */
 	if (MCU_MISC_PA_isStuck(PA_WDG_THRESHOLD_MS)) {
 		uint32_t on_ms = MCU_MISC_PA_onDuration_ms();
-		MGR_LOG_DEBUG("[UW_DPL] PA watchdog tripped (on=%lums)\r\n",
+		MGR_LOG_ERR("[UW_DPL] PA watchdog tripped (on=%lums)\r\n",
 			(unsigned long)on_ms);
 		MGR_EVTLOG_log(EVT_PA_STUCK, (uint16_t)(on_ms / 100));
 		MCU_MISC_turn_off_pa();
@@ -1375,7 +1444,7 @@ void KNS_APP_uw_doppler_loop(void)
 	 * etc.) catch the common cases sooner; this is the long-tail safety net. */
 	if (uw_doppler_state != UW_DOPPLER_MONITORING &&
 	    state_elapsed_ms() > MAX_STATE_HANG_MS) {
-		MGR_LOG_DEBUG("[UW_DPL] State hang: state=%u elapsed=%lums\r\n",
+		MGR_LOG_ERR("[UW_DPL] State hang: state=%u elapsed=%lums\r\n",
 			(unsigned)uw_doppler_state, (unsigned long)state_elapsed_ms());
 		MGR_EVTLOG_log(EVT_STATE_HANG, (uint16_t)uw_doppler_state);
 		MCU_MISC_turn_off_pa();  /* defensive: PA may be stuck on */
@@ -1407,13 +1476,18 @@ void KNS_APP_uw_doppler_loop(void)
 		static uint32_t hb_last_tick = 0;
 		static uint8_t  hb_tx_errors = 0;
 		const uint32_t now = HAL_GetTick();
+		/* hb is a TRACE-level forensic — silenced once the operator
+		 * raises AT+LOGLVL above TRACE. Still bypasses MGR_LOG ring on
+		 * purpose so a stuck ring doesn't lose the last-tick crumb. */
 		if ((now - hb_last_tick) >= 1000u && APP_UART_isEnabled() &&
-		    hb_tx_errors < 3u) {
+		    hb_tx_errors < 3u &&
+		    MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
 			hb_last_tick = now;
 			static char hb_buf[160];
 			const uint32_t reed_now = (uint32_t)MGR_REED_isMagnetPresent();
 			const int hb_n = snprintf(hb_buf, sizeof(hb_buf),
-				"hb t=%lu s=%lu reed=%lu reedISR=%lu pin=%lu | atRX=%lu parse=%lu cbN=%lu\r\n",
+				"%shb t=%lu s=%lu reed=%lu reedISR=%lu pin=%lu | atRX=%lu parse=%lu cbN=%lu\r\n",
+				MGR_LOG_levelTag(MGR_LOG_LVL_TRACE),
 				(unsigned long)now,
 				(unsigned long)uw_doppler_state,
 				(unsigned long)reed_now,
@@ -1493,7 +1567,7 @@ void KNS_APP_uw_doppler_loop(void)
 	{
 		MGR_GESTURE_Event_t gevt = MGR_GESTURE_getEvent();
 		if (gevt == MGR_GESTURE_EVT_ENTER_CONFIG) {
-			MGR_LOG_DEBUG("[UW_DPL] Magnet → CONFIG mode\r\n");
+			MGR_LOG_INFO("[UW_DPL] Magnet → CONFIG mode\r\n");
 			/* Power down the SWS analog rail: in CONFIG we don't
 			 * sample anymore (see main-loop pause above). */
 			MGR_SWS_enterLowPower();
@@ -1501,7 +1575,7 @@ void KNS_APP_uw_doppler_loop(void)
 			APP_UART_setEnabled(true);
 #endif
 		} else if (gevt == MGR_GESTURE_EVT_ENTER_OPERATIONAL) {
-			MGR_LOG_DEBUG("[UW_DPL] Magnet → OPERATIONAL mode\r\n");
+			MGR_LOG_INFO("[UW_DPL] Magnet → OPERATIONAL mode\r\n");
 			/* Bring the SWS analog rail back up so MGR_SWS_task()
 			 * sees stable readings on its next sample. */
 			MGR_SWS_exitLowPower();
@@ -1509,7 +1583,7 @@ void KNS_APP_uw_doppler_loop(void)
 			APP_UART_setEnabled(false);
 #endif
 		} else if (gevt == MGR_GESTURE_EVT_REQUEST_SHUTDOWN) {
-			MGR_LOG_DEBUG("[UW_DPL] Magnet → SHUTDOWN request\r\n");
+			MGR_LOG_INFO("[UW_DPL] Magnet → SHUTDOWN request\r\n");
 			transition_to(UW_DOPPLER_SHUTDOWN_BLINK);
 			return;
 		}
@@ -1667,12 +1741,12 @@ void KNS_APP_uw_doppler_loop(void)
 		/* Timeout protection */
 		if (uw_doppler_state == UW_DOPPLER_WAIT_MAC_READY &&
 		    state_elapsed_ms() > TIMEOUT_MAC_READY_MS) {
-			MGR_LOG_DEBUG("[UW_DPL] MAC ready timeout (retry %u/%u)\r\n",
+			MGR_LOG_WARN("[UW_DPL] MAC ready timeout (retry %u/%u)\r\n",
 				mac_init_retries + 1, MAX_MAC_INIT_RETRIES);
 			MGR_EVTLOG_log(EVT_TIMEOUT, (uint16_t)UW_DOPPLER_WAIT_MAC_READY);
 			MGR_ERR_log(ERR_MAC_TIMEOUT);
 			if (++mac_init_retries >= MAX_MAC_INIT_RETRIES) {
-				MGR_LOG_DEBUG("[UW_DPL] MAC init failed after %u retries, resetting\r\n",
+				MGR_LOG_ERR("[UW_DPL] MAC init failed after %u retries, resetting\r\n",
 					MAX_MAC_INIT_RETRIES);
 				MGR_EVTLOG_log(EVT_ERROR, (uint16_t)ERR_MAC_INIT_FAIL);
 				MGR_ERR_logAndReset(ERR_MAC_INIT_FAIL);
@@ -1697,21 +1771,53 @@ void KNS_APP_uw_doppler_loop(void)
 		 * SURFACE before stateChanged() was polled). Per-cycle no-op
 		 * once the persisted state matches the current one. */
 		if (MGR_LPM_UW_detectSurfaceWake((int)sws_state)) {
-			MGR_LOG_DEBUG("[UW_DPL] Cold-boot UW->SURF detected, TX ASAP\r\n");
+			LAT_MARK_T0();  /* T0 cold-boot SURF detect (post-STOP2 wake) */
+			STATE_TRACE("UW -> SURFACE (post-STOP2 wake)");
+			MGR_LOG_INFO("[UW_DPL] Cold-boot UW->SURF detected, TX ASAP\r\n");
 			MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
 			reset_tx_scheduling();
 			surface_tx_pending = true;
 			first_tx_random_offset_ms =
 				prng_next() % FIRST_TX_RANDOM_WINDOW_MS;
 			MGR_LPM_UW_clearWakeShouldTx();
+			/* HAL_GetTick is paused inside STOP2 → since_last_tx
+			 * resolves to "active-time since last TX" instead of
+			 * wall-clock seconds. A surface event after a long
+			 * STOP2 sleep would then sit waiting for the initial
+			 * interval to "elapse" in active time, which can take
+			 * dozens of sleep cycles. Clear last_tx_tick so the
+			 * first TX of the new burst is gated only by the
+			 * 5 s hardcoded safety floor + anti-collision random
+			 * offset. The rate limiter / backoff still protect
+			 * against true spam. */
+			last_tx_tick = 0;
+			/* Arm the MAC-side TCXO warmup bypass for the 1st surface
+			 * TX. The configured AT+TCXO_WU value still applies for
+			 * subsequent TXs in the same session — only the 1st gets
+			 * the fast path. Restored on TX_DONE / TIMEOUT / ERROR. */
+			MCU_MISC_TCXO_get_warmup(&tcxo_warmup_saved_ms);
+			tcxo_first_tx_skip = true;
 		}
 
 		/* Check for surface detection */
 		if (MGR_SWS_stateChanged()) {
 			if (sws_state == MGR_SWS_STATE_SURFACE) {
+				LAT_MARK_T0();  /* T0 live SURF transition */
+				STATE_TRACE("UW -> SURFACE");  /* very visible */
 				UWDPL_TRACE("SURF detected");
 				/* Surface detected! Schedule immediate TX */
-				MGR_LOG_DEBUG("[UW_DPL] Surface detected, starting TX\r\n");
+				MGR_LOG_INFO("[UW_DPL] Surface detected, starting TX\r\n");
+				/* Same reset as the cold-boot path: HAL tick paused
+				 * during STOP2 breaks the active-time interval
+				 * arithmetic, so we force the gate open by clearing
+				 * last_tx_tick. Live transitions are reached on the
+				 * very next loop after STOP2 wake when SWS samples
+				 * fresh, which is the same scenario. */
+				last_tx_tick = 0;
+				/* Arm MAC-side TCXO warmup bypass for the 1st TX of
+				 * this surface burst (see cold-boot path above). */
+				MCU_MISC_TCXO_get_warmup(&tcxo_warmup_saved_ms);
+				tcxo_first_tx_skip = true;
 				MGR_EVTLOG_log(EVT_SWS_SURFACE, MGR_SWS_getLastADC());
 				reset_tx_scheduling();
 				surface_tx_pending = true;
@@ -1753,9 +1859,15 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 			} else {
 				/* Went underwater, stop TX scheduling */
-				MGR_LOG_DEBUG("[UW_DPL] Underwater, stopping TX\r\n");
+				STATE_TRACE("SURFACE -> UW");
+				MGR_LOG_INFO("[UW_DPL] Underwater, stopping TX\r\n");
 				MGR_EVTLOG_log(EVT_SWS_UNDERWATER, MGR_SWS_getLastADC());
 				reset_tx_scheduling();
+				/* Reset latency T0 so a stale tick from a brief SURF
+				 * bounce doesn't pollute the next legit surface→TX
+				 * measurement. The campaign only cares about full
+				 * UW→SURF→TX cycles. */
+				LAT_RESET();
 				/* TCXO pre-warmup is disabled (see surface branch note above)
 				 * so there is nothing to release here. The MAC stack manages
 				 * TCXO power-down itself when the radio re-enters sleep. */
@@ -1777,7 +1889,7 @@ void KNS_APP_uw_doppler_loop(void)
 		if (test_tx_remaining > 0) {
 			uint32_t since = HAL_GetTick() - last_tx_tick;
 			if (since >= MIN_INTER_TX_INTERVAL_MS) {
-				MGR_LOG_DEBUG("[UW_DPL] Test TX %u remaining\r\n",
+				MGR_LOG_INFO("[UW_DPL] Test TX %u remaining\r\n",
 					test_tx_remaining);
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
 				transition_to(UW_DOPPLER_SURFACE_TX);
@@ -1822,12 +1934,23 @@ void KNS_APP_uw_doppler_loop(void)
 				effective_min_ms = cooldown_ms;
 
 			if (surface_tx_pending) {
-				/* Surface detected (first ever, or re-surface) — only TX if
-				 * enough time elapsed since last_tx_tick (MAC ready or last TX).
-				 * Sprint 3: add the UID-derived random offset so two tags
-				 * surfacing at the same moment fire their 1st TX seconds apart. */
-				uint32_t first_tx_min_ms = effective_min_ms + first_tx_random_offset_ms;
-				if (since_last_tx >= first_tx_min_ms) {
+				/* Surface detected (first ever, or re-surface): fire the
+				 * first TX as soon as the anti-collision random offset
+				 * has elapsed.
+				 *
+				 * Why we no longer apply `effective_min_ms` here: it
+				 * mixes `tx_initial_interval_s` (intended as the gap
+				 * BETWEEN consecutive TXs of a burst) and `tx_cooldown_s`
+				 * (intended as a post-burst quiet window) with the
+				 * 5 s safety floor. None of those should delay the
+				 * *first* TX of a surface event — the operator wants to
+				 * minimize latency from "head out of water" to "Argos
+				 * frame on the wire". Inter-TX cadence is handled below
+				 * by `current_interval_ms` once tx_count > 0, and global
+				 * spam is bounded by the rate limiter + backoff (rate
+				 * limiter uses RTC-seconds so it remains accurate even
+				 * across STOP2 cycles where HAL_GetTick is paused). */
+				if (since_last_tx >= first_tx_random_offset_ms) {
 					should_tx = true;
 					surface_tx_pending = false;
 				}
@@ -1852,7 +1975,7 @@ void KNS_APP_uw_doppler_loop(void)
 				/* Update LB hysteretic state on every fresh reading. */
 				lb_update(last_vbat_mV);
 				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
-					MGR_LOG_DEBUG("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
+					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
 						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
 					should_tx = false;
 				}
@@ -1863,7 +1986,7 @@ void KNS_APP_uw_doppler_loop(void)
 				 * Survives resets, so a crash-loop can't bypass it. */
 				uint32_t retry_in_s = 0;
 				if (MGR_RATE_isBlocked(&retry_in_s)) {
-					MGR_LOG_DEBUG("[UW_DPL] Rate limit hit, retry in %lus\r\n",
+					MGR_LOG_WARN("[UW_DPL] Rate limit hit, retry in %lus\r\n",
 						(unsigned long)retry_in_s);
 					MGR_EVTLOG_log(EVT_RATE_BLOCKED,
 						(uint16_t)(retry_in_s > 0xFFFFu ? 0xFFFFu : retry_in_s));
@@ -1875,13 +1998,14 @@ void KNS_APP_uw_doppler_loop(void)
 				 * post-error quiet window (exponential, capped). */
 				uint32_t retry_in_s = 0;
 				if (tx_backoff_blocked(&retry_in_s)) {
-					MGR_LOG_DEBUG("[UW_DPL] Backoff active, retry in %lus\r\n",
+					MGR_LOG_WARN("[UW_DPL] Backoff active, retry in %lus\r\n",
 						(unsigned long)retry_in_s);
 					should_tx = false;
 				}
 			}
 			if (should_tx) {
 				UWDPL_TRACE("TX should=yes");
+				LAT_TRACE("SURF_TX");  /* T1: enter SURFACE_TX state */
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
 				transition_to(UW_DOPPLER_SURFACE_TX);
 				/* Fall through to SURFACE_TX */
@@ -1925,31 +2049,50 @@ void KNS_APP_uw_doppler_loop(void)
 	{
 		UWDPL_TRACE("SURF_TX enter");
 #if defined(BSP_HAS_LED_RGB)
-		/* BLUE solid for TX-in-flight. Was VIOLET (R+B) but the SMD_STDALONE
-		 * common-anode LED only lights one colour at a time due to a single
-		 * anode current-limit resistor — use single-colour codes only. */
-		MGR_LED_set(MGR_LED_BLUE);
+		/* VIOLET (R+B soft-PWM) for TX-in-flight. The common-anode RGB with a
+		 * single anode resistor can't drive R+B simultaneously, so a solid
+		 * VIOLET would clamp to RED only. We use the soft-PWM rotator in
+		 * MGR_LED (333 Hz channel switching) which time-multiplexes the
+		 * cathodes — the eye integrates a clean magenta. */
+		MGR_LED_set(MGR_LED_VIOLET);
 #endif
 		UWDPL_TRACE("SURF_TX LED set");
 
-		/* TCXO pre-warmup BEFORE pushing to MAC — replicates GUI flow at
-		 * mgr_at_cmd_list_user_data.c:150. Ensures TCXO is fully stable
-		 * when MAC starts the actual RF TX. Without this, MAC's internal
-		 * TCXO handling appears to hang on this board, leading to the loop
-		 * starvation + IWDG reset pattern observed. */
+		/* TCXO pre-warmup: SKIPPED on UW_DOPPLER.
+		 *
+		 * Why: MCU_MISC_TCXO_Force_State(true) consistently returns
+		 * HAL_TIMEOUT (= 3) on this board because VDDTCXO is gated by the
+		 * SubGHz radio peripheral (not a GPIO). Between TX bursts the radio
+		 * is in sleep mode → VDDTCXO is LOW → TCXO doesn't oscillate →
+		 * HSERDY never asserts within the HAL timeout. The subsequent
+		 * MGR_WDG_delayWithKick(warmup_ms) call then sits doing nothing
+		 * useful for `warmup_ms` (2 s default) — pure dead time on the
+		 * surface→TX critical path.
+		 *
+		 * The Kineis MAC stack manages TCXO power itself when it wakes the
+		 * radio for the TX request: it sets up VDDTCXO via SubGHz commands
+		 * BEFORE clocking the PLL. So the warmup happens naturally inside
+		 * KNS_Q_push → MAC processing, costing the same time but no longer
+		 * sequential to our app loop.
+		 *
+		 * Override at compile time with `-DUW_DOPPLER_PREWARM_TCXO=1` if
+		 * you want to re-enable (e.g. testing a board with GPIO-controlled
+		 * VDDTCXO). Default: disabled. Removes ~2 s from the latency. */
+#ifndef UW_DOPPLER_PREWARM_TCXO
+#define UW_DOPPLER_PREWARM_TCXO 0
+#endif
+#if UW_DOPPLER_PREWARM_TCXO
 		{
 			uint32_t warmup_ms = 0;
 			MCU_MISC_TCXO_Force_State(true);
 			MCU_MISC_TCXO_get_warmup(&warmup_ms);
-			/* The 14s cap is no longer required now that we use
-			 * MGR_WDG_delayWithKick (refreshes IWDG every 1s). Kept a
-			 * generous 30s cap to match what AT+TCXO=N allows. */
 			if (warmup_ms > 30000)
 				warmup_ms = 30000;
-			{
+			if (MGR_LOG_passes(MGR_LOG_LVL_INFO)) {
 				static char _tcxo_buf[48];
 				int _n = snprintf(_tcxo_buf, sizeof(_tcxo_buf),
-					"[TRACE] TCXO warmup %lums\r\n",
+					"%s[TCXO] warmup %lums\r\n",
+					MGR_LOG_levelTag(MGR_LOG_LVL_INFO),
 					(unsigned long)warmup_ms);
 				if (_n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
 					HAL_UART_Transmit(&hlpuart1,
@@ -1960,6 +2103,9 @@ void KNS_APP_uw_doppler_loop(void)
 				MGR_WDG_delayWithKick(warmup_ms);
 			UWDPL_TRACE("TCXO ready");
 		}
+#else
+		UWDPL_TRACE("TCXO skip (MAC manages)");
+#endif
 
 		struct KNS_MAC_appEvt_t appEvt;
 		if (!build_tx_payload(&appEvt)) {
@@ -1984,7 +2130,8 @@ void KNS_APP_uw_doppler_loop(void)
 		enum KNS_status_t status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 		UWDPL_TRACE("KNS_Q_push done");
 		if (status == KNS_STATUS_OK) {
-			MGR_LOG_DEBUG("[UW_DPL] TX #%lu sent (interval=%lums)\r\n",
+			LAT_TRACE("MAC_PUSH");  /* T2: frame submitted to MAC */
+			MGR_LOG_INFO("[UW_DPL] TX #%lu sent (interval=%lums)\r\n",
 				tx_count, current_interval_ms);
 
 			MGR_TXSTATS_recordAttempt();  /* Sprint 4 — count the request */
@@ -1995,7 +2142,7 @@ void KNS_APP_uw_doppler_loop(void)
 			UWDPL_TRACE("→ WAIT_TX_DONE");
 			transition_to(UW_DOPPLER_WAIT_TX_DONE);
 		} else {
-			MGR_LOG_DEBUG("[UW_DPL] TX push failed: 0x%x\r\n", status);
+			MGR_LOG_ERR("[UW_DPL] TX push failed: 0x%x\r\n", status);
 			/* Restore TCXO warmup since the MAC never picked up the request */
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
@@ -2020,7 +2167,7 @@ void KNS_APP_uw_doppler_loop(void)
 		/* Timeout protection */
 		if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE &&
 		    state_elapsed_ms() > TIMEOUT_TX_DONE_MS) {
-			MGR_LOG_DEBUG("[UW_DPL] TX done timeout\r\n");
+			MGR_LOG_ERR("[UW_DPL] TX done timeout\r\n");
 			MGR_EVTLOG_log(EVT_TIMEOUT, (uint16_t)UW_DOPPLER_WAIT_TX_DONE);
 			MGR_ERR_log(ERR_TX_TIMEOUT);
 			/* MAC stack never fired TX_DONE/TIMEOUT/ERROR. PA may have been
@@ -2042,7 +2189,7 @@ void KNS_APP_uw_doppler_loop(void)
 	case UW_DOPPLER_SHUTDOWN_BLINK:
 		/* Cancel shutdown if magnet removed during blink */
 		if (!MGR_REED_isMagnetPresent()) {
-			MGR_LOG_DEBUG("[UW_DPL] Shutdown cancelled (magnet removed)\r\n");
+			MGR_LOG_INFO("[UW_DPL] Shutdown cancelled (magnet removed)\r\n");
 #if defined(BSP_HAS_LED_RGB)
 			MGR_LED_off();
 #endif
@@ -2066,7 +2213,7 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 
 	default:
-		MGR_LOG_DEBUG("[UW_DPL] Invalid state %u, resetting to INIT_MAC\r\n",
+		MGR_LOG_ERR("[UW_DPL] Invalid state %u, resetting to INIT_MAC\r\n",
 			uw_doppler_state);
 		transition_to(UW_DOPPLER_INIT_MAC);
 		break;
@@ -2096,7 +2243,7 @@ uint8_t KNS_APP_uw_doppler_getDeployMode(void)
 void KNS_APP_uw_doppler_setDeployMode(uint8_t mode)
 {
 	deploy_mode = mode ? 1 : 0;
-	MGR_LOG_DEBUG("[UW_DPL] Deploy mode: %u\r\n", deploy_mode);
+	MGR_LOG_INFO("[UW_DPL] Deploy mode: %u\r\n", deploy_mode);
 }
 
 uint8_t KNS_APP_uw_doppler_getStateRaw(void)
@@ -2145,7 +2292,7 @@ uint8_t KNS_APP_uw_doppler_startTestBurst(uint8_t count)
 	if (count == 0) count = 1;
 	if (count > TEST_BURST_MAX_COUNT) count = TEST_BURST_MAX_COUNT;
 	test_tx_remaining = count;
-	MGR_LOG_DEBUG("[UW_DPL] Test burst started: %u TX queued\r\n", count);
+	MGR_LOG_INFO("[UW_DPL] Test burst started: %u TX queued\r\n", count);
 	return count;
 }
 
@@ -2164,12 +2311,12 @@ static bool lb_update(uint16_t bat_mV)
 	}
 	if (!lb_active && bat_mV > 0 && bat_mV < lb_cfg.lb_enter_mV) {
 		lb_active = true;
-		MGR_LOG_DEBUG("[UW_DPL] LB mode ENTER (%umV < %umV)\r\n",
+		MGR_LOG_INFO("[UW_DPL] LB mode ENTER (%umV < %umV)\r\n",
 			bat_mV, lb_cfg.lb_enter_mV);
 		MGR_EVTLOG_log(EVT_LB_ENTER, bat_mV);
 	} else if (lb_active && bat_mV > lb_cfg.lb_exit_mV) {
 		lb_active = false;
-		MGR_LOG_DEBUG("[UW_DPL] LB mode EXIT (%umV > %umV)\r\n",
+		MGR_LOG_INFO("[UW_DPL] LB mode EXIT (%umV > %umV)\r\n",
 			bat_mV, lb_cfg.lb_exit_mV);
 		MGR_EVTLOG_log(EVT_LB_EXIT, bat_mV);
 	}

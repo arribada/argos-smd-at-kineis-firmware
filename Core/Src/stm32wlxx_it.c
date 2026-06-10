@@ -25,6 +25,7 @@
 #include <stdio.h>  /* snprintf in HardFault_Handler */
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
 #include "mgr_err.h"
+#include "mgr_log.h"
 extern volatile uint32_t g_uw_doppler_state_for_err;
 #endif
 /* USER CODE END Includes */
@@ -131,21 +132,28 @@ void NMI_Handler(void)
 
 static void fault_handler_c(uint32_t *frame, uint8_t fault_type, const char *tag)
 {
-  extern UART_HandleTypeDef hlpuart1;
-  static char buf[160];
-  int n = snprintf(buf, sizeof(buf),
-    "\r\n!!! %s !!!\r\nHFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n"
-    "PC=%08lx LR=%08lx R0=%08lx R12=%08lx XPSR=%08lx\r\n",
-    tag,
-    (unsigned long)SCB->HFSR, (unsigned long)SCB->CFSR,
-    (unsigned long)SCB->BFAR, (unsigned long)SCB->MMFAR,
-    (unsigned long)(frame ? frame[6] : 0),
-    (unsigned long)(frame ? frame[5] : 0),
-    (unsigned long)(frame ? frame[0] : 0),
-    (unsigned long)(frame ? frame[4] : 0),
-    (unsigned long)(frame ? frame[7] : 0));
-  if (n > 0)
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)n, 100);
+  /* CPU fault forensic — ERROR-grade. Gated at LOGLVL=NONE only so a
+   * GUI parser sees a clean stream even if the device crashes during
+   * its session. The frame is always persisted to TAMP/SRAM2 below,
+   * so the next boot replay will surface it regardless. */
+  if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+    extern UART_HandleTypeDef hlpuart1;
+    static char buf[168];
+    int n = snprintf(buf, sizeof(buf),
+      "\r\n%s!!! %s !!!\r\nHFSR=%08lx CFSR=%08lx BFAR=%08lx MMFAR=%08lx\r\n"
+      "PC=%08lx LR=%08lx R0=%08lx R12=%08lx XPSR=%08lx\r\n",
+      MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+      tag,
+      (unsigned long)SCB->HFSR, (unsigned long)SCB->CFSR,
+      (unsigned long)SCB->BFAR, (unsigned long)SCB->MMFAR,
+      (unsigned long)(frame ? frame[6] : 0),
+      (unsigned long)(frame ? frame[5] : 0),
+      (unsigned long)(frame ? frame[0] : 0),
+      (unsigned long)(frame ? frame[4] : 0),
+      (unsigned long)(frame ? frame[7] : 0));
+    if (n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)n, 100);
+  }
 
   MGR_ERR_captureFault(frame, fault_type, (uint8_t)g_uw_doppler_state_for_err);
   MGR_ERR_LOG_FAULT(fault_type, g_uw_doppler_state_for_err);

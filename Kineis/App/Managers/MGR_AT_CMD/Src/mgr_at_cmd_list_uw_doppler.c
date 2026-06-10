@@ -56,6 +56,7 @@
 #include "mgr_err.h"
 #include "mgr_txstats.h"
 #include "mgr_pmlog.h"
+#include "mgr_gesture.h"
 #include "stm32wlxx_hal.h"
 
 /* Functions -----------------------------------------------------------------*/
@@ -87,7 +88,7 @@ bool bMGR_AT_CMD_SWS_cmd(uint8_t *pu8_cmdParamString,
 		MGR_SWS_Config_t cfg = MGR_SWS_getConfig();
 		cfg.enabled = (en != 0);
 		MGR_SWS_setConfig(&cfg);
-		MGR_LOG_DEBUG("[AT] SWS enabled=%u\r\n", cfg.enabled);
+		MGR_LOG_INFO("[AT] SWS enabled=%u\r\n", cfg.enabled);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -157,7 +158,7 @@ bool bMGR_AT_CMD_SWSCFG_cmd(uint8_t *pu8_cmdParamString,
 			cfg.sample_delay_default_us = cfg.sample_delay_max_us;
 		MGR_SWS_setConfig(&cfg);
 
-		MGR_LOG_DEBUG("[AT] SWSCFG set: surf=%lums uw=%lums delay=%u-%uus\r\n",
+		MGR_LOG_INFO("[AT] SWSCFG set: surf=%lums uw=%lums delay=%u-%uus\r\n",
 			(unsigned long)int_surf_ms, (unsigned long)int_uw_ms,
 			(unsigned)delay_min_us, (unsigned)delay_max_us);
 		return bMGR_AT_CMD_logSucceedMsg();
@@ -219,7 +220,7 @@ bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString,
 		cfg.tx_cooldown_s = (uint16_t)cooldown_s;
 		KNS_APP_uw_doppler_setTxCfg(&cfg);
 
-		MGR_LOG_DEBUG("[AT] TXCFG set: T0=%us growth=%u%% max=%us count=%u jit=%u%% cool=%us\r\n",
+		MGR_LOG_INFO("[AT] TXCFG set: T0=%us growth=%u%% max=%us count=%u jit=%u%% cool=%us\r\n",
 			interval_s, growth, max_interval_s, max_count, jitter_pct, cooldown_s);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
@@ -266,7 +267,7 @@ bool bMGR_AT_CMD_LED_cmd(uint8_t *pu8_cmdParamString,
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 		MGR_LED_setMode((MGR_LED_Mode_t)mode);
-		MGR_LOG_DEBUG("[AT] LED mode=%u\r\n", mode);
+		MGR_LOG_INFO("[AT] LED mode=%u\r\n", mode);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -297,7 +298,7 @@ bool bMGR_AT_CMD_DEPLOY_cmd(uint8_t *pu8_cmdParamString,
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 		KNS_APP_uw_doppler_setDeployMode((uint8_t)mode);
-		MGR_LOG_DEBUG("[AT] Deploy mode=%u\r\n", mode);
+		MGR_LOG_INFO("[AT] Deploy mode=%u\r\n", mode);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -309,10 +310,10 @@ bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 {
 	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
 		if (!MGR_NVM_save()) {
-			MGR_LOG_DEBUG("[AT] NVM save failed\r\n");
+			MGR_LOG_WARN("[AT] NVM save failed\r\n");
 			return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 		}
-		MGR_LOG_DEBUG("[AT] Config saved to NVM\r\n");
+		MGR_LOG_INFO("[AT] Config saved to NVM\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -354,7 +355,7 @@ bool bMGR_AT_CMD_LOG_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		MGR_EVTLOG_clear();
-		MGR_LOG_DEBUG("[AT] Event log cleared\r\n");
+		MGR_LOG_INFO("[AT] Event log cleared\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -384,7 +385,7 @@ bool bMGR_AT_CMD_BATCFG_cmd(uint8_t *pu8_cmdParamString,
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 		MGR_BAT_setMinTxVoltage_mV((uint16_t)min_mV);
-		MGR_LOG_DEBUG("[AT] BATCFG min_tx=%umV\r\n", min_mV);
+		MGR_LOG_INFO("[AT] BATCFG min_tx=%umV\r\n", min_mV);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 
@@ -419,7 +420,7 @@ bool bMGR_AT_CMD_RATECFG_cmd(uint8_t *pu8_cmdParamString,
 		/* setConfig clamps to MGR_RATE_MIN/MAX bounds — accept anything
 		 * non-zero. Use AT+SAVE to persist. */
 		MGR_RATE_setConfig((uint32_t)window_s, (uint16_t)max_tx);
-		MGR_LOG_DEBUG("[AT] RATECFG window=%lus max_tx=%u\r\n",
+		MGR_LOG_INFO("[AT] RATECFG window=%lus max_tx=%u\r\n",
 			window_s, max_tx);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
@@ -457,7 +458,7 @@ bool bMGR_AT_CMD_RATECLEAR_cmd(uint8_t *pu8_cmdParamString,
 		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 
 	MGR_RATE_clear();
-	MGR_LOG_DEBUG("[AT] RATECLEAR\r\n");
+	MGR_LOG_INFO("[AT] RATECLEAR\r\n");
 	return bMGR_AT_CMD_logSucceedMsg();
 }
 
@@ -553,14 +554,17 @@ bool bMGR_AT_CMD_DIAG_cmd(uint8_t *pu8_cmdParamString,
 	 * Total blocking time ~3.6 s — comfortably under IWDG (16 s). The
 	 * WDG is refreshed at each step so even the longer composite holds
 	 * leave headroom. */
+	/* AT+DIAG is a commissioning command: the operator MUST see the
+	 * color cycle to validate the LED chain regardless of AT+LED=0
+	 * (which silences deployment status indicators, not test feedback). */
 	MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_RED);    HAL_Delay(250); MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_GREEN);  HAL_Delay(250); MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_BLUE);   HAL_Delay(250); MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_WHITE);  HAL_Delay(700); MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_VIOLET); HAL_Delay(700); MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_CYAN);   HAL_Delay(700); MGR_WDG_refresh();
-	MGR_LED_set(MGR_LED_YELLOW); HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_RED);    HAL_Delay(250); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_GREEN);  HAL_Delay(250); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_BLUE);   HAL_Delay(250); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_WHITE);  HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_VIOLET); HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_CYAN);   HAL_Delay(700); MGR_WDG_refresh();
+	MGR_LED_setForced(MGR_LED_YELLOW); HAL_Delay(700); MGR_WDG_refresh();
 	MGR_LED_off();
 	uint8_t led_ok = 1;
 #else
@@ -687,6 +691,63 @@ bool bMGR_AT_CMD_UARTLOG_cmd(uint8_t *pu8_cmdParamString,
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
+bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		MCU_AT_CONSOLE_send("+LOGLVL=%u\r\n",
+			(unsigned)MGR_LOG_getLevel());
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int lvl = 0u;
+		if (sscanf((const char *)pu8_cmdParamString,
+		           "AT+LOGLVL=%u", &lvl) != 1)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		if (lvl > (unsigned)MGR_LOG_LVL_NONE)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		MGR_LOG_setLevel((MGR_LOG_Level_t)lvl);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
+bool bMGR_AT_CMD_MODE_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		MCU_AT_CONSOLE_send("+MODE=%u\r\n",
+			(unsigned)MGR_GESTURE_getMode());
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int mode = 0u;
+		if (sscanf((const char *)pu8_cmdParamString,
+		           "AT+MODE=%u", &mode) != 1)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		if (mode >= (unsigned)MGR_GESTURE_MODE_COUNT)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+
+		MGR_LOG_INFO("[AT] MODE=%u requested\r\n", mode);
+
+		if (!MGR_GESTURE_requestMode((MGR_GESTURE_Mode_t)mode))
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+
+		bMGR_AT_CMD_logSucceedMsg();
+
+		/* For OPERATIONAL switches in production builds, the next main
+		 * loop iter will tear down the UART. Give the +OK time to leave
+		 * the FIFO before that happens. */
+		HAL_Delay(50);
+		return true;
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
 bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString,
 	enum atcmd_type_t e_exec_mode)
 {
@@ -694,7 +755,7 @@ bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString,
 	if (e_exec_mode != ATCMD_ACTION_MODE)
 		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 
-	MGR_LOG_DEBUG("[AT] RESET requested\r\n");
+	MGR_LOG_INFO("[AT] RESET requested\r\n");
 	bMGR_AT_CMD_logSucceedMsg();
 	/* Give the +OK response 100 ms to physically leave the UART before the
 	 * NVIC reset wipes the TX FIFO. The Cortex-M reset path is < 1 ms so
@@ -721,7 +782,7 @@ bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString,
 			"AT+SHUTDOWN=%lu", &wake_s);
 	}
 
-	MGR_LOG_DEBUG("[AT] SHUTDOWN requested (wake=%lus)\r\n",
+	MGR_LOG_INFO("[AT] SHUTDOWN requested (wake=%lus)\r\n",
 		(unsigned long)wake_s);
 	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)(wake_s & 0xFFFFu));
 	bMGR_AT_CMD_logSucceedMsg();
@@ -777,7 +838,7 @@ bool bMGR_AT_CMD_LBCFG_cmd(uint8_t *pu8_cmdParamString,
 			.lb_tx_max_count   = (uint8_t)lb_count,
 		};
 		KNS_APP_uw_doppler_setLbCfg(&cfg);
-		MGR_LOG_DEBUG("[AT] LBCFG enter=%umV exit=%umV intvl=%us max=%us cnt=%u\r\n",
+		MGR_LOG_INFO("[AT] LBCFG enter=%umV exit=%umV intvl=%us max=%us cnt=%u\r\n",
 			enter_mV, exit_mV, lb_int, lb_max, lb_count);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
@@ -824,7 +885,7 @@ bool bMGR_AT_CMD_TXSTATS_cmd(uint8_t *pu8_cmdParamString,
 	}
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		MGR_TXSTATS_clear();
-		MGR_LOG_DEBUG("[AT] TXSTATS cleared\r\n");
+		MGR_LOG_INFO("[AT] TXSTATS cleared\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
@@ -855,7 +916,7 @@ bool bMGR_AT_CMD_PMLOG_cmd(uint8_t *pu8_cmdParamString,
 	}
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		MGR_PMLOG_clear();
-		MGR_LOG_DEBUG("[AT] PMLOG cleared\r\n");
+		MGR_LOG_INFO("[AT] PMLOG cleared\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);

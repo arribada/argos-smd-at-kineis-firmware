@@ -927,7 +927,7 @@ static bool detector_state(void)
 		if (sws_config.min_surface_time_s > 0)
 			surface_lockout_until = HAL_GetTick() + sws_config.min_surface_time_s * 1000;
 
-		MGR_LOG_DEBUG("[SWS] SURFACE L%u raw=%u filt=%u air=%u->%u water=%u\r\n",
+		MGR_LOG_INFO("[SWS] SURFACE L%u raw=%u filt=%u air=%u->%u water=%u\r\n",
 			surface_level, raw_value, filtered, old_air, air_baseline, water_baseline);
 	}
 
@@ -954,12 +954,12 @@ static bool detector_state(void)
 			surface_readings_idx = 0;
 			update_dynamic_threshold();
 			mark_calib_dirty();
-			MGR_LOG_DEBUG("[SWS] Dive timeout escalation -> force surface (water %u->%u)\r\n",
+			MGR_LOG_WARN("[SWS] Dive timeout escalation -> force surface (water %u->%u)\r\n",
 				old_water, water_baseline);
 		} else {
 			/* Reset state timer for next escalation interval */
 			state_enter_tick = HAL_GetTick();
-			MGR_LOG_DEBUG("[SWS] Dive timeout %u/%u (water %u->%u)\r\n",
+			MGR_LOG_WARN("[SWS] Dive timeout %u/%u (water %u->%u)\r\n",
 				consecutive_dive_timeouts, MAX_CONSECUTIVE_DIVE_TIMEOUTS,
 				old_water, water_baseline);
 		}
@@ -1062,7 +1062,7 @@ void MGR_SWS_init(void)
 		prev_raw = initial_read;
 	}
 
-	MGR_LOG_DEBUG("[SWS] Init: state=%d air=%u water=%u thresh=%u hyst=%u delay=%uus\r\n",
+	MGR_LOG_INFO("[SWS] Init: state=%d air=%u water=%u thresh=%u hyst=%u delay=%uus\r\n",
 		sws_state, air_baseline, water_baseline, threshold_current, hysteresis_value,
 		sample_delay_us);
 }
@@ -1095,7 +1095,7 @@ void MGR_SWS_task(void)
 		air_baseline, water_baseline, threshold_current);
 
 	if (new_state != sws_state) {
-		MGR_LOG_DEBUG("[SWS] %s -> %s (adc=%u air=%u water=%u th=%u peak=%u)\r\n",
+		MGR_LOG_INFO("[SWS] %s -> %s (adc=%u air=%u water=%u th=%u peak=%u)\r\n",
 			sws_state == MGR_SWS_STATE_UNDERWATER ? "UW" : "SURF",
 			new_state == MGR_SWS_STATE_UNDERWATER ? "UW" : "SURF",
 			last_raw_adc, air_baseline, water_baseline, threshold_current,
@@ -1198,7 +1198,7 @@ void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water)
 		air_baseline = air;
 		water_baseline = water;
 		update_dynamic_threshold();
-		MGR_LOG_DEBUG("[SWS] Baselines restored: air=%u water=%u th=%u hyst=%u\r\n",
+		MGR_LOG_INFO("[SWS] Baselines restored: air=%u water=%u th=%u hyst=%u\r\n",
 			air, water, threshold_current, hysteresis_value);
 	}
 }

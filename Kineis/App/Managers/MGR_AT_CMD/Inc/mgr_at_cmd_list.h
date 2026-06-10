@@ -81,6 +81,8 @@ enum  atcmd_idx_t {
 	AT_STOPTEST,     /**< STOP2-cycling validation (RTC + reed EXTI wake) */
 	AT_DUTYCFG,      /**< Event-driven LPM duty cycle (uw_s, surf_s, enable) */
 	AT_UARTLOG,      /**< Toggle spontaneous UART log stream (AT responses always emit) */
+	AT_MODE,         /**< Query/change OPERATIONAL/CONFIG/POWER_OFF mode via UART */
+	AT_LOGLVL,       /**< Query/set runtime log severity threshold (TRACE..NONE) */
 	AT_LBCFG,        /**< Sprint 2: low-battery mode config */
 	AT_LB,           /**< Sprint 2: live LB mode state */
 	AT_TXSTATS,      /**< Sprint 4: persistent TX counters */

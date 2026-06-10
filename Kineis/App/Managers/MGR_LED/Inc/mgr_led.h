@@ -49,6 +49,21 @@ void MGR_LED_set(MGR_LED_Color_t color);
  */
 void MGR_LED_blink(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms, uint16_t off_ms);
 
+/** @brief Forced variants — bypass the `led_mode = OFF` gate.
+ *
+ * Use these for events the operator MUST see regardless of the deployment
+ * LED policy:
+ *   - gesture FSM feedback (magnet detection, mode switch confirmation)
+ *   - AT command responses (AT+DIAG cycle, commissioning indicators)
+ *   - boot-time wake blink
+ *
+ * The plain MGR_LED_set / MGR_LED_blink remain gated and silence
+ * themselves when AT+LED=0 has muted the deployment status indicators
+ * (TX-in-flight, SWS surface/UW transitions, low-battery hint). */
+void MGR_LED_setForced(MGR_LED_Color_t color);
+void MGR_LED_blinkForced(MGR_LED_Color_t color, uint8_t count,
+                         uint16_t on_ms, uint16_t off_ms);
+
 /** @brief Turn off LED and cancel any blink sequence */
 void MGR_LED_off(void);
 

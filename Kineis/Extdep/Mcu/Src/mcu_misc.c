@@ -77,11 +77,12 @@ void MCU_MISC_turn_on_pa()
 #if defined(SMD_PA) || defined(SMD_STDALONE) || defined(SMD_OP)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 #ifdef DEBUG
-	/* DEV: PA entry trace — gated on DEBUG so an OPERATIONAL tag is silent
-	 * during normal TX. Brownout investigation already concluded
-	 * (memory/pa_brownout.md) — kept for re-debug only. */
-	{
-		static const char _pa_enter[] = "\r\n[PA-TRACE] turn_on_pa ENTER\r\n";
+	/* DEV: PA entry trace — TRACE-grade, gated by MGR_LOG_passes so an
+	 * AT+LOGLVL=4 session stays clean (the GUI parses raw AT responses
+	 * and would choke on extra prints). Brownout investigation concluded
+	 * (memory/pa_brownout.md); kept for re-debug only. */
+	if (MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
+		static const char _pa_enter[] = "\r\n[T] [PA-TRACE] turn_on_pa ENTER\r\n";
 		if (hlpuart1.gState != HAL_UART_STATE_RESET)
 			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_enter,
 				sizeof(_pa_enter) - 1, 100);
@@ -141,9 +142,9 @@ void MCU_MISC_turn_on_pa()
 #ifdef DEBUG
 	/* DEV: brownout signature markers around the PA inrush. "[<" before,
 	 * "[>" after — if "[<" prints but "[>" never does, chip browned out.
-	 * Resolved by 22µF cap (memory/pa_brownout.md) — kept DEBUG-only. */
-	{
-		static const char _pa_pre[] = "[<\r\n";
+	 * Resolved by 22µF cap (memory/pa_brownout.md) — TRACE-grade only. */
+	if (MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
+		static const char _pa_pre[] = "[T] [<\r\n";
 		if (hlpuart1.gState != HAL_UART_STATE_RESET)
 			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_pre,
 				sizeof(_pa_pre) - 1, 50);
@@ -167,8 +168,8 @@ void MCU_MISC_turn_on_pa()
 	}
 
 #ifdef DEBUG
-	{
-		static const char _pa_post[] = "[>\r\n";
+	if (MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
+		static const char _pa_post[] = "[T] [>\r\n";
 		if (hlpuart1.gState != HAL_UART_STATE_RESET)
 			HAL_UART_Transmit(&hlpuart1, (uint8_t *)_pa_post,
 				sizeof(_pa_post) - 1, 50);
@@ -287,15 +288,22 @@ void MCU_MISC_TCXO_Force_State(bool enable)
 
     HAL_StatusTypeDef st = HAL_RCC_OscConfig(&RCC_OscInitStruct);
     if (st != HAL_OK) {
-        extern UART_HandleTypeDef hlpuart1;
-        static char tcxo_buf[80];
-        int tcxo_n = snprintf(tcxo_buf, sizeof(tcxo_buf),
-            "\r\n!!! TCXO_Force_State(%d) HAL_RCC_OscConfig=%d tick=%lu !!!\r\n",
-            (int)enable, (int)st, (unsigned long)HAL_GetTick());
-        if (tcxo_n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
-            HAL_UART_Transmit(&hlpuart1, (uint8_t *)tcxo_buf,
-                (uint16_t)tcxo_n, 200);
-        MGR_LOG_DEBUG("[MCU_MISC] TCXO_Force_State(%d) failed: HAL=%d\r\n",
+        /* TCXO HAL failure — ERROR-grade, the radio chain won't tune
+         * correctly without the TCXO locked. Gated so AT+LOGLVL=4 stays
+         * quiet for the GUI parser; promoted to ERR so default LOGLVL=INFO
+         * still surfaces the fault. */
+        if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+            extern UART_HandleTypeDef hlpuart1;
+            static char tcxo_buf[88];
+            int tcxo_n = snprintf(tcxo_buf, sizeof(tcxo_buf),
+                "\r\n%s!!! TCXO_Force_State(%d) HAL_RCC_OscConfig=%d tick=%lu !!!\r\n",
+                MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+                (int)enable, (int)st, (unsigned long)HAL_GetTick());
+            if (tcxo_n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET)
+                HAL_UART_Transmit(&hlpuart1, (uint8_t *)tcxo_buf,
+                    (uint16_t)tcxo_n, 200);
+        }
+        MGR_LOG_ERR("[MCU_MISC] TCXO_Force_State(%d) failed: HAL=%d\r\n",
             (int)enable, (int)st);
     }
 #else

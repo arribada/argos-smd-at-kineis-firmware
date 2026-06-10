@@ -515,12 +515,12 @@ bool MGR_NVM_load(void)
 	NVM_Config_t cfg;
 
 	if (MCU_FLASH_read(FLASH_NVM_CONFIG_ADDR, &cfg, sizeof(cfg)) != KNS_STATUS_OK) {
-		MGR_LOG_DEBUG("[NVM] Flash read error\r\n");
+		MGR_LOG_ERR("[NVM] Flash read error\r\n");
 		return false;
 	}
 
 	if (cfg.magic != NVM_MAGIC) {
-		MGR_LOG_DEBUG("[NVM] No valid config (magic=0x%08lx), using defaults\r\n",
+		MGR_LOG_INFO("[NVM] No valid config (magic=0x%08lx), using defaults\r\n",
 			cfg.magic);
 		return false;
 	}
@@ -532,11 +532,11 @@ bool MGR_NVM_load(void)
 			return false;
 		uint32_t computed = nvm_crc32(&v1, offsetof(NVM_Config_v1_t, crc32));
 		if (computed != v1.crc32) {
-			MGR_LOG_DEBUG("[NVM] v1 CRC mismatch\r\n");
+			MGR_LOG_WARN("[NVM] v1 CRC mismatch\r\n");
 			return false;
 		}
 		migrate_v1_to_v3(&v1, &cfg);
-		MGR_LOG_DEBUG("[NVM] Migrated v1 -> v5\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v1 -> v5\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -548,11 +548,11 @@ bool MGR_NVM_load(void)
 			return false;
 		uint32_t computed = nvm_crc32(&v2, offsetof(NVM_Config_v2_t, crc32));
 		if (computed != v2.crc32) {
-			MGR_LOG_DEBUG("[NVM] v2 CRC mismatch\r\n");
+			MGR_LOG_WARN("[NVM] v2 CRC mismatch\r\n");
 			return false;
 		}
 		migrate_v2_to_v3(&v2, &cfg);
-		MGR_LOG_DEBUG("[NVM] Migrated v2 -> v5\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v2 -> v5\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -564,11 +564,11 @@ bool MGR_NVM_load(void)
 			return false;
 		uint32_t computed = nvm_crc32(&v3, offsetof(NVM_Config_v3_t, crc32));
 		if (computed != v3.crc32) {
-			MGR_LOG_DEBUG("[NVM] v3 CRC mismatch\r\n");
+			MGR_LOG_WARN("[NVM] v3 CRC mismatch\r\n");
 			return false;
 		}
 		migrate_v3_to_v4(&v3, &cfg);
-		MGR_LOG_DEBUG("[NVM] Migrated v3 -> v5\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v3 -> v5\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -580,37 +580,37 @@ bool MGR_NVM_load(void)
 			return false;
 		uint32_t computed = nvm_crc32(&v4, offsetof(NVM_Config_v4_t, crc32));
 		if (computed != v4.crc32) {
-			MGR_LOG_DEBUG("[NVM] v4 CRC mismatch\r\n");
+			MGR_LOG_WARN("[NVM] v4 CRC mismatch\r\n");
 			return false;
 		}
 		migrate_v4_to_v5(&v4, &cfg);
-		MGR_LOG_DEBUG("[NVM] Migrated v4 -> v5\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v4 -> v5\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
 	}
 
 	if (cfg.version != NVM_VERSION) {
-		MGR_LOG_DEBUG("[NVM] Unknown version %u, using defaults\r\n", cfg.version);
+		MGR_LOG_WARN("[NVM] Unknown version %u, using defaults\r\n", cfg.version);
 		return false;
 	}
 
 	/* v5: verify CRC32 */
 	uint32_t computed_crc = nvm_crc32(&cfg, offsetof(NVM_Config_t, crc32));
 	if (computed_crc != cfg.crc32) {
-		MGR_LOG_DEBUG("[NVM] v5 CRC mismatch (stored=0x%08lx computed=0x%08lx)\r\n",
+		MGR_LOG_ERR("[NVM] v5 CRC mismatch (stored=0x%08lx computed=0x%08lx)\r\n",
 			cfg.crc32, computed_crc);
 		return false;
 	}
 
 	if (!validate_config(&cfg)) {
-		MGR_LOG_DEBUG("[NVM] Config values invalid, using defaults\r\n");
+		MGR_LOG_WARN("[NVM] Config values invalid, using defaults\r\n");
 		return false;
 	}
 
 	apply_config(&cfg);
 
-	MGR_LOG_DEBUG("[NVM] v5 loaded: deploy=%u tx=%us jit=%u%% sws_surf=%lums sws_uw=%lums "
+	MGR_LOG_INFO("[NVM] v5 loaded: deploy=%u tx=%us jit=%u%% sws_surf=%lums sws_uw=%lums "
 		"run_air=%u run_water=%u peak=%u rate=%u/%lus lb=%u/%u\r\n",
 		cfg.deploy_mode, cfg.tx_initial_interval_s, cfg.tx_jitter_percent,
 		(unsigned long)cfg.sws_test_interval_surface_ms,
@@ -633,13 +633,13 @@ bool MGR_NVM_save(void)
 	MGR_WDG_refresh();
 
 	if (MCU_FLASH_write(FLASH_NVM_CONFIG_ADDR, &cfg, sizeof(cfg)) != KNS_STATUS_OK) {
-		MGR_LOG_DEBUG("[NVM] Flash write error\r\n");
+		MGR_LOG_ERR("[NVM] Flash write error\r\n");
 		return false;
 	}
 
 	last_save_tick = HAL_GetTick();
 	MGR_SWS_clearCalibDirty();
-	MGR_LOG_DEBUG("[NVM] Saved (CRC=0x%08lx)\r\n", cfg.crc32);
+	MGR_LOG_INFO("[NVM] Saved (CRC=0x%08lx)\r\n", cfg.crc32);
 	return true;
 }
 
@@ -662,11 +662,11 @@ bool MGR_NVM_reset(void)
 	memset(&cfg, 0xFF, sizeof(cfg));
 
 	if (MCU_FLASH_write(FLASH_NVM_CONFIG_ADDR, &cfg, sizeof(cfg)) != KNS_STATUS_OK) {
-		MGR_LOG_DEBUG("[NVM] Flash reset error\r\n");
+		MGR_LOG_ERR("[NVM] Flash reset error\r\n");
 		return false;
 	}
 
-	MGR_LOG_DEBUG("[NVM] Config reset to defaults\r\n");
+	MGR_LOG_INFO("[NVM] Config reset to defaults\r\n");
 	return true;
 }
 

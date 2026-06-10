@@ -46,7 +46,7 @@ static bool pmlog_erase_page(void)
 	HAL_FLASH_Lock();
 
 	if (st != HAL_OK) {
-		MGR_LOG_DEBUG("[PMLOG] Erase failed (st=%d page_err=%lu)\r\n",
+		MGR_LOG_ERR("[PMLOG] Erase failed (st=%d page_err=%lu)\r\n",
 			(int)st, (unsigned long)page_err);
 		return false;
 	}
@@ -82,7 +82,7 @@ void MGR_PMLOG_init(void)
 	}
 
 	if (corrupt) {
-		MGR_LOG_DEBUG("[PMLOG] Corrupt page detected — erasing\r\n");
+		MGR_LOG_WARN("[PMLOG] Corrupt page detected — erasing\r\n");
 		(void)pmlog_erase_page();
 		return;
 	}
@@ -94,7 +94,7 @@ void MGR_PMLOG_init(void)
 		s_next_slot = 0;  /* will trigger an erase on next write */
 	}
 
-	MGR_LOG_DEBUG("[PMLOG] Init: %u valid entries, next_slot=%u next_seq=%u\r\n",
+	MGR_LOG_INFO("[PMLOG] Init: %u valid entries, next_slot=%u next_seq=%u\r\n",
 		s_valid_count, s_next_slot, s_next_seq);
 }
 
@@ -111,7 +111,7 @@ static bool program_two_dwords(uint32_t addr, const uint64_t *dw)
 	HAL_FLASH_Lock();
 
 	if (st1 != HAL_OK || st2 != HAL_OK) {
-		MGR_LOG_DEBUG("[PMLOG] Program failed st1=%d st2=%d\r\n",
+		MGR_LOG_ERR("[PMLOG] Program failed st1=%d st2=%d\r\n",
 			(int)st1, (int)st2);
 		return false;
 	}
@@ -173,5 +173,5 @@ const MGR_PMLOG_Entry_t *MGR_PMLOG_get(uint16_t index)
 void MGR_PMLOG_clear(void)
 {
 	if (pmlog_erase_page())
-		MGR_LOG_DEBUG("[PMLOG] Cleared\r\n");
+		MGR_LOG_INFO("[PMLOG] Cleared\r\n");
 }

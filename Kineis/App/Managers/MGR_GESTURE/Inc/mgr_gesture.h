@@ -108,6 +108,15 @@ MGR_GESTURE_Mode_t MGR_GESTURE_getMode(void);
 /** Force a mode (e.g. boot path applying restored mode). Persisted. */
 void MGR_GESTURE_setMode(MGR_GESTURE_Mode_t mode);
 
+/** @brief AT-driven mode change with full side-effects.
+ *
+ * Unlike MGR_GESTURE_setMode (which only persists the value), this also
+ * emits the matching MGR_GESTURE_EVT_* so the app loop applies the
+ * same UART/SWS/LED gating as a magnet-driven transition. Returns false
+ * if mode is out of range. POWER_OFF is treated as a SHUTDOWN request:
+ * the event is emitted but the caller is expected to flush + tear down. */
+bool MGR_GESTURE_requestMode(MGR_GESTURE_Mode_t mode);
+
 /** @brief True if the gesture FSM is currently driving the LED.
  *
  * Used by the app to gate competing LED writers (e.g. the CONFIG-mode

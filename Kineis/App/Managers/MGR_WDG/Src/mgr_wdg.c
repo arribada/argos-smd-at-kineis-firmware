@@ -56,16 +56,16 @@ bool MGR_WDG_ensureIwdgStopOptionByte(void)
 		return false;
 	}
 
-	MGR_LOG_DEBUG("[WDG] IWDG_STOP option byte not frozen — programming FREEZE...\r\n");
+	MGR_LOG_INFO("[WDG] IWDG_STOP option byte not frozen — programming FREEZE...\r\n");
 
 	/* Unlock FLASH for option-byte access. Order matters: FLASH first,
 	 * then option-byte. Both must succeed before any HAL_FLASHEx_OBProgram. */
 	if (HAL_FLASH_Unlock() != HAL_OK) {
-		MGR_LOG_DEBUG("[WDG] FLASH unlock failed\r\n");
+		MGR_LOG_ERR("[WDG] FLASH unlock failed\r\n");
 		return false;
 	}
 	if (HAL_FLASH_OB_Unlock() != HAL_OK) {
-		MGR_LOG_DEBUG("[WDG] OB unlock failed\r\n");
+		MGR_LOG_ERR("[WDG] OB unlock failed\r\n");
 		HAL_FLASH_Lock();
 		return false;
 	}
@@ -76,7 +76,7 @@ bool MGR_WDG_ensureIwdgStopOptionByte(void)
 	obInit.UserConfig = OB_IWDG_STOP_FREEZE;  /* 0 = bit cleared = IWDG frozen during STOP */
 
 	if (HAL_FLASHEx_OBProgram(&obInit) != HAL_OK) {
-		MGR_LOG_DEBUG("[WDG] OB program failed\r\n");
+		MGR_LOG_ERR("[WDG] OB program failed\r\n");
 		HAL_FLASH_OB_Lock();
 		HAL_FLASH_Lock();
 		return false;
@@ -116,7 +116,7 @@ void MGR_WDG_init(void)
 		/* SR bits PVU and RVU clear when update is done */
 	}
 	if (timeout == 0U)
-		MGR_LOG_DEBUG("[WDG] WARNING: IWDG SR update timeout\r\n");
+		MGR_LOG_WARN("[WDG] IWDG SR update timeout\r\n");
 
 	/* First refresh */
 	IWDG->KR = IWDG_KEY_REFRESH;
@@ -125,9 +125,9 @@ void MGR_WDG_init(void)
 	 * If not set, IWDG would keep running during STOP and reset the device
 	 * during long sleep intervals. FLASH_OPTR bit 17 = IWDG_STOP (1=frozen). */
 	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U)
-		MGR_LOG_DEBUG("[WDG] WARNING: IWDG_STOP not set in option bytes!\r\n");
+		MGR_LOG_WARN("[WDG] IWDG_STOP not set in option bytes!\r\n");
 
-	MGR_LOG_DEBUG("[WDG] IWDG started (timeout ~16s)\r\n");
+	MGR_LOG_INFO("[WDG] IWDG started (timeout ~16s)\r\n");
 }
 
 void MGR_WDG_refresh(void)

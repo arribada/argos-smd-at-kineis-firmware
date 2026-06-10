@@ -69,10 +69,10 @@ static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
     bool ret = true;
 
 #ifdef DEBUG
-    /* Direct UART output for DFU_ENTER command (0x3F) */
-    if (cmd == 0x3F) {
+    /* DFU_ENTER trace — TRACE-grade, gated so AT+LOGLVL=4 stays clean. */
+    if (cmd == 0x3F && MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
         extern UART_HandleTypeDef hlpuart1;
-        const char msg[] = "\r\n>>> PROCESSING CMD 0x3F <<<\r\n";
+        const char msg[] = "\r\n[T] >>> PROCESSING CMD 0x3F <<<\r\n";
         HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
     }
 #endif

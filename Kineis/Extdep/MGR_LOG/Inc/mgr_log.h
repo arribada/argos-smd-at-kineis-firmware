@@ -54,20 +54,29 @@
 
 /* Defines -------------------------------------------------------------------*/
 
+/* Legacy macros — preserved for the 500+ existing call sites.
+ *
+ * In DEBUG=1 they route to the new level system at TRACE (runtime-gated by
+ * AT+LOGLVL). In DEBUG=0 they remain compile-time no-ops to keep the
+ * production binary footprint unchanged. New code SHOULD use the
+ * severity-named macros declared further down (MGR_LOG_TRACE / INFO / WARN
+ * / ERR) which work in both builds. */
 #ifdef DEBUG
 
-/* log with RTC timestamp - single atomic call to prevent interleaving */
-#define MGR_LOG_DEBUG(...)		vMGR_LOG_printf_ts(__VA_ARGS__)
-
-/* direct logging without timestamp */
-#define MGR_LOG_DEBUG_RAW(...)		vMGR_LOG_printf(__VA_ARGS__)
+/* Forward-declare the runtime gate so the macros below can reference it
+ * before the function prototypes appear (USE_LOCAL_PRINTF block). */
+#define MGR_LOG_DEBUG(...)		MGR_LOG_AT(MGR_LOG_LVL_TRACE, __VA_ARGS__)
+#define MGR_LOG_DEBUG_RAW(...)		do { \
+		if (MGR_LOG_passes(MGR_LOG_LVL_TRACE)) \
+			vMGR_LOG_printf(__VA_ARGS__); \
+	} while (0)
 
 #ifdef VERBOSE
-/* log with RTC timestamp - single atomic call to prevent interleaving */
-#define MGR_LOG_VERBOSE(...)		vMGR_LOG_printf_ts(__VA_ARGS__)
-
-/* direct logging without timestamp */
-#define MGR_LOG_VERBOSE_RAW(...)	vMGR_LOG_printf(__VA_ARGS__)
+#define MGR_LOG_VERBOSE(...)		MGR_LOG_AT(MGR_LOG_LVL_TRACE, __VA_ARGS__)
+#define MGR_LOG_VERBOSE_RAW(...)	do { \
+		if (MGR_LOG_passes(MGR_LOG_LVL_TRACE)) \
+			vMGR_LOG_printf(__VA_ARGS__); \
+	} while (0)
 #else  // else VERBOSE
 #define MGR_LOG_VERBOSE(...)		do {} while (0)
 #define MGR_LOG_VERBOSE_RAW(...)	do {} while (0)
@@ -109,6 +118,74 @@ void vMGR_LOG_printf_ts(const char *format, ...);
  *  AT responses intact. Default is enabled. Persisted in retention NOLOAD. */
 void vMGR_LOG_setEnabled(bool enabled);
 bool vMGR_LOG_isEnabled(void);
+
+/** @brief Forget the runtime override and fall back to the compile-time
+ *  default (DEBUG=0 -> off, DEBUG=1 -> on). Called by the gesture FSM when
+ *  leaving CONFIG so the temporary force-on doesn't persist. */
+void vMGR_LOG_resetToDefault(void);
+
+/** @brief Log severity classification.
+ *
+ * Ordered low-to-high so a runtime threshold "emit if level >= threshold"
+ * naturally silences chatty levels first. NONE is a sentinel meaning
+ * "drop everything" (useful for race-time silent runs). */
+typedef enum {
+	MGR_LOG_LVL_TRACE   = 0,  /**< per-sample chatter (hb, [SWS], KNS_Q...). */
+	MGR_LOG_LVL_INFO    = 1,  /**< state transitions, TX lifecycle, modes. */
+	MGR_LOG_LVL_WARNING = 2,  /**< recoverable: rate limit, low-bat, backoff. */
+	MGR_LOG_LVL_ERROR   = 3,  /**< unrecoverable: HW fault, TX timeout, IWDG. */
+	MGR_LOG_LVL_NONE    = 4,  /**< total silence — emits nothing. */
+} MGR_LOG_Level_t;
+
+/** @brief Compile-time default level. Overridable from the Makefile via
+ *  `make ... LOG_LEVEL=<n>` which sets `-DLOG_DEFAULT_LEVEL=<n>`. If unset:
+ *  TRACE in DEBUG=1, INFO in DEBUG=0 (production keeps state-level traces). */
+#ifndef LOG_DEFAULT_LEVEL
+#  ifdef DEBUG
+#    define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_TRACE
+#  else
+#    define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_INFO
+#  endif
+#endif
+
+/** @brief Get / set the current runtime threshold. Persisted in retention
+ *  NOLOAD so it survives every soft reset; VBAT loss reverts to default. */
+void            MGR_LOG_setLevel(MGR_LOG_Level_t level);
+MGR_LOG_Level_t MGR_LOG_getLevel(void);
+
+/** @brief True iff a message of this severity should be emitted now. Cheap
+ *  inline gate suitable for hot paths (single comparison + an isEnabled()
+ *  check that itself is two reads). */
+bool            MGR_LOG_passes(MGR_LOG_Level_t level);
+
+/** @brief Return the 4-char tag string ("[T] " / "[I] " / "[W] " / "[E] ")
+ *  for the given level. Useful for direct-UART traces that bypass the ring
+ *  but still want their level visible in the output stream.
+ *
+ *  Example: `snprintf(buf, sz, "%shb t=%lu ...", MGR_LOG_levelTag(MGR_LOG_LVL_TRACE), tick);` */
+const char *    MGR_LOG_levelTag(MGR_LOG_Level_t level);
+
+/** @brief Level-aware ring-buffer printf. Prefix in the emitted line is
+ *  `<RTC ts> <level-tag> <payload>`. The macros below route through this. */
+void vMGR_LOG_printf_ts_lvl(MGR_LOG_Level_t level, const char *format, ...);
+
+/** @brief Severity-tagged log macros. All share the timestamp-prefixed
+ *  ring-buffer path. Output format:
+ *      `2026/06/10 00:11:02 [I] [UW_DPL] Surface detected, starting TX`
+ *  Cost when filtered out: one comparison + one isEnabled() check.
+ *
+ *  The legacy MGR_LOG_DEBUG / MGR_LOG_VERBOSE macros below are aliased to
+ *  TRACE so existing call sites need no edit. New code should use the
+ *  severity-named macros directly. */
+#define MGR_LOG_AT(level, ...)  do { \
+	if (MGR_LOG_passes(level)) \
+		vMGR_LOG_printf_ts_lvl((level), __VA_ARGS__); \
+} while (0)
+
+#define MGR_LOG_TRACE(...)   MGR_LOG_AT(MGR_LOG_LVL_TRACE,   __VA_ARGS__)
+#define MGR_LOG_INFO(...)    MGR_LOG_AT(MGR_LOG_LVL_INFO,    __VA_ARGS__)
+#define MGR_LOG_WARN(...)    MGR_LOG_AT(MGR_LOG_LVL_WARNING, __VA_ARGS__)
+#define MGR_LOG_ERR(...)     MGR_LOG_AT(MGR_LOG_LVL_ERROR,   __VA_ARGS__)
 
 
 /**

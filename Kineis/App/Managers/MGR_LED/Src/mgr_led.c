@@ -192,18 +192,33 @@ void MGR_LED_init(void)
 	mode_start_tick = HAL_GetTick();
 }
 
-void MGR_LED_set(MGR_LED_Color_t color)
+/* Internal set: the bypass flag skips is_mode_active() check. Used by the
+ * "Forced" public variant for gesture FSM + AT command feedback which must
+ * remain visible even when AT+LED=0 has silenced the deployment status
+ * LEDs (TX-in-flight, surface/UW transitions, low-battery indicator). */
+static void set_impl(MGR_LED_Color_t color, bool bypass)
 {
 	blinking = false;
-	if (is_mode_active()) {
+	if (bypass || is_mode_active()) {
 		led_reinit_gpio();
 		led_apply_color(color);
 	}
 }
 
-void MGR_LED_blink(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms, uint16_t off_ms)
+void MGR_LED_set(MGR_LED_Color_t color)
 {
-	if (!is_mode_active()) {
+	set_impl(color, false);
+}
+
+void MGR_LED_setForced(MGR_LED_Color_t color)
+{
+	set_impl(color, true);
+}
+
+static void blink_impl(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms,
+                       uint16_t off_ms, bool bypass)
+{
+	if (!bypass && !is_mode_active()) {
 		blinking = false;
 		return;
 	}
@@ -238,6 +253,18 @@ void MGR_LED_blink(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms, uint16_
 	blinking = true;
 
 	led_apply_color(color);
+}
+
+void MGR_LED_blink(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms,
+                   uint16_t off_ms)
+{
+	blink_impl(color, count, on_ms, off_ms, false);
+}
+
+void MGR_LED_blinkForced(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms,
+                         uint16_t off_ms)
+{
+	blink_impl(color, count, on_ms, off_ms, true);
 }
 
 void MGR_LED_off(void)
@@ -436,7 +463,10 @@ void MGR_LED_bootTest(void)
 
 void MGR_LED_init(void) {}
 void MGR_LED_set(MGR_LED_Color_t color) { (void)color; }
+void MGR_LED_setForced(MGR_LED_Color_t color) { (void)color; }
 void MGR_LED_blink(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms, uint16_t off_ms)
+{ (void)color; (void)count; (void)on_ms; (void)off_ms; }
+void MGR_LED_blinkForced(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms, uint16_t off_ms)
 { (void)color; (void)count; (void)on_ms; (void)off_ms; }
 void MGR_LED_off(void) {}
 void MGR_LED_task(void) {}

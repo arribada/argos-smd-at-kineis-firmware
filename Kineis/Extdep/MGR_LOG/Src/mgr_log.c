@@ -182,58 +182,142 @@ void vMGR_LOG_setEnabled(bool en)
 	s_uart_log_enabled_word = en ? 1u : 0u;
 }
 
+/* Clear the retention magic so the next isEnabled() call falls back to the
+ * compile-time default (DEBUG=0 -> off, DEBUG=1 -> on). Used when leaving
+ * gesture CONFIG mode: the temporary force-on imposed by entering CONFIG
+ * must not stick after returning to OPERATIONAL. */
+void vMGR_LOG_resetToDefault(void)
+{
+	s_uart_log_magic = 0u;
+	s_uart_log_enabled_word = 0u;
+}
+
+/* Severity threshold lives in retention NOLOAD so AT+LOGLVL=N survives
+ * STOP2/STANDBY cycles + IWDG/SFT resets. A separate magic word keeps
+ * "level was explicitly set" distinguishable from "RAM residue" — the
+ * fallback returns the compile-time LOG_DEFAULT_LEVEL whenever the magic
+ * doesn't match. Bump LOG_LEVEL_MAGIC on layout change. */
+static __attribute__((section(".retentionRamNoload"))) uint32_t s_log_level_magic;
+static __attribute__((section(".retentionRamNoload"))) uint32_t s_log_level_word;
+#define LOG_LEVEL_MAGIC   0x4C564C31u  /* "LVL1" */
+
+void MGR_LOG_setLevel(MGR_LOG_Level_t level)
+{
+	if ((unsigned)level > (unsigned)MGR_LOG_LVL_NONE)
+		level = MGR_LOG_LVL_NONE;
+	s_log_level_magic = LOG_LEVEL_MAGIC;
+	s_log_level_word  = (uint32_t)level;
+}
+
+MGR_LOG_Level_t MGR_LOG_getLevel(void)
+{
+	if (s_log_level_magic != LOG_LEVEL_MAGIC)
+		return (MGR_LOG_Level_t)LOG_DEFAULT_LEVEL;
+	if (s_log_level_word > (uint32_t)MGR_LOG_LVL_NONE)
+		return MGR_LOG_LVL_NONE;
+	return (MGR_LOG_Level_t)s_log_level_word;
+}
+
+bool MGR_LOG_passes(MGR_LOG_Level_t level)
+{
+	if (!vMGR_LOG_isEnabled())
+		return false;
+	return (unsigned)level >= (unsigned)MGR_LOG_getLevel();
+}
+
+/* DEBUG-flag-derived cold-boot default. Production builds (DEBUG=0)
+ * boot with the log stream silenced for sealed deployments — the host
+ * gets a clean parser stream and the chip saves the UART flush cost.
+ * DEBUG=1 builds boot verbose so a developer sees activity without
+ * having to send any AT command first. Either default can still be
+ * overridden at runtime via AT+UARTLOG or by the gesture FSM forcing
+ * UART back on when the operator enters CONFIG mode. */
+#ifdef DEBUG
+#define LOG_DEFAULT_ENABLED  1
+#else
+#define LOG_DEFAULT_ENABLED  0
+#endif
+
 bool vMGR_LOG_isEnabled(void)
 {
-	/* Default verbose if retention is uninitialised (true cold boot). */
 	if (s_uart_log_magic != LOG_STATE_MAGIC)
-		return true;
+		return (LOG_DEFAULT_ENABLED != 0);
 	return s_uart_log_enabled_word != 0u;
+}
+
+/* Single-source-of-truth tag table. Index = MGR_LOG_Level_t value.
+ * NONE included so out-of-range writes are bounded. 4-char strings
+ * ("[T] ", "[I] ", "[W] ", "[E] ", "[-] ") so output stays aligned. */
+static const char * const s_level_tags[] = {
+	"[T] ",  /* TRACE   */
+	"[I] ",  /* INFO    */
+	"[W] ",  /* WARNING */
+	"[E] ",  /* ERROR   */
+	"[-] ",  /* NONE — should never reach the printf path */
+};
+
+const char *MGR_LOG_levelTag(MGR_LOG_Level_t level)
+{
+	unsigned idx = (unsigned)level;
+	if (idx > (unsigned)MGR_LOG_LVL_NONE)
+		idx = (unsigned)MGR_LOG_LVL_NONE;
+	return s_level_tags[idx];
+}
+
+/* Internal helper. Format: `<RTC ts> <tag> <payload>`. tag may be empty
+ * string (level-less legacy callers via vMGR_LOG_printf_ts). */
+static void log_emit_ts(const char *tag, const char *format, va_list args)
+{
+	char local_buf[LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN];
+	RTC_DateTypeDef sdate;
+	RTC_TimeTypeDef stime;
+	int prefix_len, msg_len, total_len;
+
+	HAL_RTC_WaitForSynchro(&hrtc);
+	HAL_RTC_GetTime(&hrtc, &stime, RTC_FORMAT_BIN);
+	HAL_RTC_GetDate(&hrtc, &sdate, RTC_FORMAT_BIN);
+
+	prefix_len = snprintf(local_buf, LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN,
+	                      "%04d/%02d/%02d %02d:%02d:%02d %s",
+	                      2000 + sdate.Year, sdate.Month, sdate.Date,
+	                      stime.Hours, stime.Minutes, stime.Seconds,
+	                      tag ? tag : "");
+
+	if (prefix_len < 0) prefix_len = 0;
+	if (prefix_len >= LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN)
+		prefix_len = LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN - 1;
+
+	msg_len = vsnprintf(local_buf + prefix_len,
+	                    LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN - prefix_len,
+	                    format, args);
+
+	if (msg_len < 0) msg_len = 0;
+	if (prefix_len + msg_len >= LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN)
+		msg_len = LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN - prefix_len - 1;
+
+	total_len = prefix_len + msg_len;
+	if (total_len > 0)
+		log_ring_put_string(local_buf, (uint16_t)total_len);
 }
 
 void vMGR_LOG_printf_ts(const char *format, ...)
 {
 	if (!vMGR_LOG_isEnabled())
 		return;
-
-	char local_buf[LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN];
-	RTC_DateTypeDef sdate;
-	RTC_TimeTypeDef stime;
 	va_list args;
-	int timestamp_len, msg_len, total_len;
-
-	/* Get RTC time first */
-	HAL_RTC_WaitForSynchro(&hrtc);
-	HAL_RTC_GetTime(&hrtc, &stime, RTC_FORMAT_BIN);
-	HAL_RTC_GetDate(&hrtc, &sdate, RTC_FORMAT_BIN);
-
-	/* Format timestamp at start of buffer */
-	timestamp_len = snprintf(local_buf, LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN,
-							 "%04d/%02d/%02d %02d:%02d:%02d ",
-							 2000 + sdate.Year, sdate.Month, sdate.Date,
-							 stime.Hours, stime.Minutes, stime.Seconds);
-
-	if (timestamp_len < 0) timestamp_len = 0;
-	if (timestamp_len >= LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN) {
-		timestamp_len = LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN - 1;
-	}
-
-	/* Format message right after timestamp */
 	va_start(args, format);
-	msg_len = vsnprintf(local_buf + timestamp_len,
-						LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN - timestamp_len,
-						format, args);
+	log_emit_ts("", format, args);  /* level-less legacy path */
 	va_end(args);
+}
 
-	if (msg_len < 0) msg_len = 0;
-	if (timestamp_len + msg_len >= LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN) {
-		msg_len = LOGGING_PURPOSE_STORAGE_MAX_MESSAGE_LEN - timestamp_len - 1;
-	}
-
-	/* Add entire formatted message to ring buffer atomically */
-	total_len = timestamp_len + msg_len;
-	if (total_len > 0) {
-		log_ring_put_string(local_buf, (uint16_t)total_len);
-	}
+void vMGR_LOG_printf_ts_lvl(MGR_LOG_Level_t level, const char *format, ...)
+{
+	if (!vMGR_LOG_isEnabled())
+		return;
+	va_list args;
+	va_start(args, format);
+	log_emit_ts(MGR_LOG_levelTag(level), format, args);
+	va_end(args);
 }
 
 /**

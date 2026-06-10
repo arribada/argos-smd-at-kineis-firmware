@@ -99,16 +99,18 @@ static bool MGR_AT_CMD_parseStreamCb(uint8_t *pu8_RxBuffer, int16_t *pi16_nbRxVa
 	uint8_t u8_lastChar = pu8_RxBuffer[*pi16_nbRxValidChar - 1];
 
 #ifdef DEBUG
-	/* DEV: when a control char arrives that is NOT one of our accepted
-	 * line endings, emit a direct-UART hex trace of the byte. Helps
-	 * spot terminals that send something exotic. Silent on production. */
-	if (u8_lastChar < 0x20u && u8_lastChar != (uint8_t)'\r' &&
+	/* DEV: unexpected control char on the AT line — TRACE-grade hint for
+	 * exotic terminals. Gated so AT+LOGLVL=4 stays clean (other apps
+	 * depend on a bare AT response stream). */
+	if (MGR_LOG_passes(MGR_LOG_LVL_TRACE) &&
+	    u8_lastChar < 0x20u && u8_lastChar != (uint8_t)'\r' &&
 	    u8_lastChar != (uint8_t)'\n' && u8_lastChar != (uint8_t)'\t') {
 		extern UART_HandleTypeDef hlpuart1;
 		if (hlpuart1.gState != HAL_UART_STATE_RESET) {
-			char hb[24];
+			char hb[28];
 			int n = snprintf(hb, sizeof(hb),
-			                 "[AT] rx ctrl=0x%02X\r\n",
+			                 "%s[AT] rx ctrl=0x%02X\r\n",
+			                 MGR_LOG_levelTag(MGR_LOG_LVL_TRACE),
 			                 (unsigned)u8_lastChar);
 			if (n > 0)
 				(void)HAL_UART_Transmit(&hlpuart1,

@@ -544,6 +544,18 @@ CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno
 # (e.g. `make ... EXTRA_CFLAGS="-DUW_DOPPLER_KEEP_UART_ALIVE=0 -DUW_DOPPLER_VERBOSE_TRACE=0"`).
 CFLAGS += $(EXTRA_CFLAGS)
 
+# LOG_LEVEL passthrough — boot-time default severity threshold for the
+# MGR_LOG ring. Accepts 0..4:
+#   0 = TRACE   (everything — hb, [SWS], [KNS_Q]…)
+#   1 = INFO    (state transitions, modes, TX lifecycle)
+#   2 = WARNING (rate limit, low-battery, backoff)
+#   3 = ERROR   (TX timeouts, HW faults, IWDG forensics)
+#   4 = NONE    (silent)
+# Unset → header picks TRACE for DEBUG=1 builds, INFO for DEBUG=0.
+ifdef LOG_LEVEL
+CFLAGS += -DLOG_DEFAULT_LEVEL=$(LOG_LEVEL)
+endif
+
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
 endif

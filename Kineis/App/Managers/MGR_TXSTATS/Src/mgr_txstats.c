@@ -51,11 +51,11 @@ static bool stats_valid(void)
 void MGR_TXSTATS_init(void)
 {
 	if (!stats_valid()) {
-		MGR_LOG_DEBUG("[TXSTATS] Retention invalid — zeroing\r\n");
+		MGR_LOG_WARN("[TXSTATS] Retention invalid — zeroing\r\n");
 		memset(&stats, 0, sizeof(stats));
 		stats_commit();
 	} else {
-		MGR_LOG_DEBUG("[TXSTATS] att=%lu done=%lu to=%lu err=%lu streak=%lu/%lu\r\n",
+		MGR_LOG_INFO("[TXSTATS] att=%lu done=%lu to=%lu err=%lu streak=%lu/%lu\r\n",
 			(unsigned long)stats.s.attempts,
 			(unsigned long)stats.s.done,
 			(unsigned long)stats.s.timeouts,
@@ -111,5 +111,5 @@ void MGR_TXSTATS_clear(void)
 {
 	memset(&stats.s, 0, sizeof(stats.s));
 	stats_commit();
-	MGR_LOG_DEBUG("[TXSTATS] Cleared\r\n");
+	MGR_LOG_INFO("[TXSTATS] Cleared\r\n");
 }

@@ -49,14 +49,18 @@
   */
 void kns_assert_failed(uint8_t *file, uint32_t line)
 {
-  /* Direct synchronous UART write so the file/line reaches the host before reset. */
-  static char ka_buf[160];
-  int ka_n = snprintf(ka_buf, sizeof(ka_buf),
-    "\r\n!!! KNS_ASSERT %s:%lu !!!\r\n",
-    (file ? (const char *)file : "(null)"), (unsigned long)line);
-  if (ka_n > 0)
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)ka_buf, (uint16_t)ka_n, 200);
-  MGR_LOG_DEBUG("ASSERT FAIL: %ld %s\r\n", line, file);
+  /* Kineis-stack assert — ERROR-grade. Gated at LOGLVL=NONE only so the
+   * GUI parser sees a clean stream; lower levels still surface the fault. */
+  if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+    static char ka_buf[168];
+    int ka_n = snprintf(ka_buf, sizeof(ka_buf),
+      "\r\n%s!!! KNS_ASSERT %s:%lu !!!\r\n",
+      MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+      (file ? (const char *)file : "(null)"), (unsigned long)line);
+    if (ka_n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)ka_buf, (uint16_t)ka_n, 200);
+  }
+  MGR_LOG_ERR("ASSERT FAIL: %ld %s\r\n", line, file);
   Error_Handler();
 }
 

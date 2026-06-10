@@ -34,6 +34,7 @@
 #include "adc.h"           /* MX_ADC_Init/DeInit — STOP2 entry/exit */
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"       /* MGR_LED_off before STOP2 */
+#include "mgr_reed.h"      /* MGR_REED_isMagnetPresent + REED_MCU_Pin */
 #endif
 /* GPIO disable to analog for minimum STOP2 leakage. */
 extern void GPIO_DisableAllToAnalogInput(void);
@@ -140,7 +141,7 @@ void MGR_LPM_UW_setDutyCfg(uint16_t uw_s, uint16_t surf_s, uint8_t enabled)
 	s_duty.uw_sleep_s   = uw_s;
 	s_duty.surf_sleep_s = surf_s;
 	s_duty.enabled      = enabled ? 1u : 0u;
-	MGR_LOG_DEBUG("[LPM_UW] DUTYCFG uw=%us surf=%us en=%u\r\n",
+	MGR_LOG_INFO("[LPM_UW] DUTYCFG uw=%us surf=%us en=%u\r\n",
 		uw_s, surf_s, s_duty.enabled);
 }
 
@@ -155,7 +156,7 @@ void MGR_LPM_UW_setShutdownThreshold(uint16_t seconds)
 {
 	s_duty.magic               = DUTY_CFG_MAGIC;
 	s_duty.shutdown_threshold_s = seconds;
-	MGR_LOG_DEBUG("[LPM_UW] SHUTDOWN threshold=%us\r\n", (unsigned)seconds);
+	MGR_LOG_INFO("[LPM_UW] SHUTDOWN threshold=%us\r\n", (unsigned)seconds);
 }
 
 uint16_t MGR_LPM_UW_getShutdownThreshold(void)
@@ -218,6 +219,14 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 		return;
 	if (!s_monitoring_ever_entered)
 		return;
+	/* Keep the chip awake while the reed debouncer has an in-flight
+	 * transition. Each STOP2 wake accumulates ~1 sample at most before
+	 * re-entering sleep, so a magnet edge arriving during STOP2 would
+	 * never reach the 5-sample (50 ms) confirmation window — the gesture
+	 * LED would silently fail to fire. ~50 ms of extra awake current is
+	 * the right trade for a working magnet interaction on bench. */
+	if (MGR_REED_isDebouncing())
+		return;
 	/* Stabilization gate. Full 5s on true cold-boot to give the user a
 	 * UART window for AT commands. On wake-from-STANDBY the previous
 	 * cycle has proven the device is healthy, the box is sealed and no
@@ -278,7 +287,7 @@ void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
 
 void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 {
-	MGR_LOG_DEBUG("[LPM_UW] STANDBY %lus\r\n", (unsigned long)seconds);
+	MGR_LOG_INFO("[LPM_UW] STANDBY %lus\r\n", (unsigned long)seconds);
 
 	/* NO MGR_NVM_save() here — calling it every cycle would burn the
 	 * flash within weeks at the deployment cadence and the 50 ms write
@@ -340,7 +349,7 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 
 void MGR_LPM_UW_enterShutdownReed(void)
 {
-	MGR_LOG_DEBUG("[LPM_UW] SHUTDOWN+reed\r\n");
+	MGR_LOG_INFO("[LPM_UW] SHUTDOWN+reed\r\n");
 	/* Use the existing LPM_shutdownNow path. On SMD_STDALONE it pulls
 	 * PWR_LATCH LOW which lets the regulator collapse — the HW reed
 	 * circuit then re-energises VBUS when the magnet is applied. */
@@ -350,7 +359,7 @@ void MGR_LPM_UW_enterShutdownReed(void)
 
 void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
 {
-	MGR_LOG_DEBUG("[LPM_UW] SHUTDOWN auto-wake %lus\r\n",
+	MGR_LOG_INFO("[LPM_UW] SHUTDOWN auto-wake %lus\r\n",
 		(unsigned long)wakeup_seconds);
 	LPM_shutdownWithAutoWake(wakeup_seconds);
 	for (;;) { /* unreachable */ }
@@ -385,7 +394,7 @@ static void uw_restore_clock_from_stop(void)
 
 void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 {
-	MGR_LOG_DEBUG("[LPM_UW] STOP2 %lus\r\n", (unsigned long)seconds);
+	MGR_LOG_INFO("[LPM_UW] STOP2 %lus\r\n", (unsigned long)seconds);
 
 	if (seconds > 0xFFFFu) seconds = 0xFFFFu;
 
@@ -438,6 +447,18 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 * in MONITORING and our wake path has re-run MX_SUBGHZ_Init. */
 	(void)HAL_SUBGHZ_DeInit(&hsubghz);
 
+	/* PB6 EXTI is intentionally LEFT ARMED through STOP2 so a magnet edge
+	 * during sleep wakes the chip and the operator gets prompt gesture
+	 * feedback (the LED has to come on within the human-perception
+	 * window, ~100 ms). Earlier rev tried masking it when the Hall was
+	 * stuck HIGH at entry to dodge ~28 000 ISR/s on the bench — but that
+	 * also killed all magnet wakes, so a new tap during STOP2 produced no
+	 * visible response until the next RTC wake. Bench operators with the
+	 * magnet nearby will see the chip stuck at MONITORING current
+	 * (~5 mA) because the ISR keeps re-waking it; this is a commissioning
+	 * scenario only. In deployment there is no magnet → no ISR storm →
+	 * STOP2 reaches its µA-floor normally. */
+
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
 	HAL_SuspendTick();
@@ -458,6 +479,12 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 *
 	 * Resume tick FIRST so the rest of the restore can use timed HAL. */
 	HAL_ResumeTick();
+
+	/* Clear the PB6 EXTI pending flag so a stale magnet edge captured
+	 * while we were still in the wake-up critical path doesn't fire a
+	 * phantom IRQ now that the NVIC is back to normal priority. The line
+	 * stays unmasked at all times (see entry-side comment). */
+	__HAL_GPIO_EXTI_CLEAR_IT(REED_MCU_Pin);
 
 	/* Disarm the RTC wake timer so it doesn't fire again mid-MONITORING. */
 	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);

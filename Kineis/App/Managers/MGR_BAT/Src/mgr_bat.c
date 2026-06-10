@@ -133,7 +133,7 @@ cleanup:
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
 
 	if (raw_vref == 0 || raw_vbat == 0) {
-		MGR_LOG_DEBUG("[BAT] ADC read failed, using cached %umV\r\n",
+		MGR_LOG_WARN("[BAT] ADC read failed, using cached %umV\r\n",
 			last_good_vbat_mV);
 		return last_good_vbat_mV;
 	}
@@ -195,7 +195,7 @@ uint16_t MGR_BAT_getMinTxVoltage_mV(void)
 void MGR_BAT_setMinTxVoltage_mV(uint16_t min_mV)
 {
 	min_tx_voltage_mV = min_mV;
-	MGR_LOG_DEBUG("[BAT] Min TX voltage: %umV\r\n", min_mV);
+	MGR_LOG_INFO("[BAT] Min TX voltage: %umV\r\n", min_mV);
 }
 
 #else /* No VBAT ADC */

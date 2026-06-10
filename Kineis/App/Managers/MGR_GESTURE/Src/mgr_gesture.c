@@ -66,14 +66,22 @@ extern uint32_t g_boot_rcc_csr_raw;
  * the function is reentrant. TX timeout 20 ms (cap at 115200 baud). */
 static void gst_trace(const char *fmt, uint32_t a)
 {
+	/* INFO-grade trace: mode transitions are the canonical "what just
+	 * changed" event the operator + post-mortem care about. Silenced
+	 * once AT+LOGLVL is raised above INFO. */
+	if (!MGR_LOG_passes(MGR_LOG_LVL_INFO))
+		return;
 	extern UART_HandleTypeDef hlpuart1;
 	if (hlpuart1.gState == HAL_UART_STATE_RESET)
 		return;
-	char buf[80];
-	int n = snprintf(buf, sizeof(buf), fmt, (unsigned long)a);
-	if (n > 0 && n < (int)sizeof(buf))
+	char buf[96];
+	int hdr_n = snprintf(buf, sizeof(buf), "%s",
+		MGR_LOG_levelTag(MGR_LOG_LVL_INFO));
+	if (hdr_n < 0) hdr_n = 0;
+	int n = snprintf(buf + hdr_n, sizeof(buf) - hdr_n, fmt, (unsigned long)a);
+	if (n > 0 && (hdr_n + n) < (int)sizeof(buf))
 		(void)HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf,
-		                        (uint16_t)n, 20);
+		                        (uint16_t)(hdr_n + n), 20);
 }
 
 /* ---- Mode persistence (TAMP BKP10R) --------------------------------------- */
@@ -176,22 +184,22 @@ static void led_show_phase(HoldPhase_t phase)
 	 * led_show_confirm). */
 	switch (phase) {
 	case HOLD_PHASE_NONE:
-		MGR_LED_set(MGR_LED_WHITE);
+		MGR_LED_setForced(MGR_LED_WHITE);
 		gst_trace("[GST] phase=DETECT (white solid)\r\n", 0);
 		break;
 	case HOLD_PHASE_SWITCH: {
 		const MGR_LED_Color_t c = switch_target_color();
-		MGR_LED_blink(c, 0,
-		              MGR_GESTURE_BLINK_FAST_ON_MS,
-		              MGR_GESTURE_BLINK_FAST_OFF_MS);
+		MGR_LED_blinkForced(c, 0,
+		                    MGR_GESTURE_BLINK_FAST_ON_MS,
+		                    MGR_GESTURE_BLINK_FAST_OFF_MS);
 		gst_trace("[GST] phase=SWITCH fast target=%lu\r\n",
 		          (uint32_t)c);
 		break;
 	}
 	case HOLD_PHASE_SHUTDOWN:
-		MGR_LED_blink(MGR_LED_RED, 0,
-		              MGR_GESTURE_BLINK_FAST_ON_MS,
-		              MGR_GESTURE_BLINK_FAST_OFF_MS);
+		MGR_LED_blinkForced(MGR_LED_RED, 0,
+		                    MGR_GESTURE_BLINK_FAST_ON_MS,
+		                    MGR_GESTURE_BLINK_FAST_OFF_MS);
 		gst_trace("[GST] phase=SHUTDOWN (red fast)\r\n", 0);
 		break;
 	}
@@ -206,9 +214,9 @@ static void led_show_phase(HoldPhase_t phase)
 static void led_show_confirm(MGR_GESTURE_Mode_t target, bool is_shutdown)
 {
 	const MGR_LED_Color_t c = target_color(target, is_shutdown);
-	MGR_LED_blink(c, 3u,
-	              MGR_GESTURE_BLINK_SLOW_ON_MS,
-	              MGR_GESTURE_BLINK_SLOW_OFF_MS);
+	MGR_LED_blinkForced(c, 3u,
+	                    MGR_GESTURE_BLINK_SLOW_ON_MS,
+	                    MGR_GESTURE_BLINK_SLOW_OFF_MS);
 }
 
 /** WAIT_CONFIRM indicator: FAST blink (5 Hz) in the colour that will be
@@ -219,10 +227,10 @@ static void led_show_confirm(MGR_GESTURE_Mode_t target, bool is_shutdown)
 static void led_show_wait_confirm(MGR_GESTURE_Mode_t target, bool is_shutdown)
 {
 	const MGR_LED_Color_t c = target_color(target, is_shutdown);
-	MGR_LED_blink(c, 0u,  /* infinite — WAIT_CONFIRM state will MGR_LED_off
-	                       * on expiry / completion */
-	              MGR_GESTURE_BLINK_FAST_ON_MS,
-	              MGR_GESTURE_BLINK_FAST_OFF_MS);
+	MGR_LED_blinkForced(c, 0u,  /* infinite — WAIT_CONFIRM state will MGR_LED_off
+	                             * on expiry / completion */
+	                    MGR_GESTURE_BLINK_FAST_ON_MS,
+	                    MGR_GESTURE_BLINK_FAST_OFF_MS);
 }
 
 /* ---- Public API ---- */
@@ -267,12 +275,25 @@ void MGR_GESTURE_init(void)
 		const uint32_t cold_mask =
 		    RCC_CSR_BORRSTF | RCC_CSR_PINRSTF | RCC_CSR_OBLRSTF;
 		if (g_boot_rcc_csr_raw & cold_mask) {
-			MGR_LED_blink(MGR_LED_GREEN, MGR_GESTURE_WAKE_BLINK_COUNT,
-			              MGR_GESTURE_BLINK_SLOW_ON_MS,
-			              MGR_GESTURE_BLINK_SLOW_OFF_MS);
+			MGR_LED_blinkForced(MGR_LED_GREEN, MGR_GESTURE_WAKE_BLINK_COUNT,
+			                    MGR_GESTURE_BLINK_SLOW_ON_MS,
+			                    MGR_GESTURE_BLINK_SLOW_OFF_MS);
 			s_fsm = GFSM_WAKE_BLINK;
 		}
 	}
+
+	/* Align the LPUART peripheral with the cold-boot log policy. Gated at
+	 * compile time on DEBUG so a residual .retentionRamNoload state from
+	 * an earlier flash (e.g. AT+UARTLOG=0 left over) cannot accidentally
+	 * silence a dev build. DEBUG=1 → never teardown at boot. DEBUG=0 →
+	 * teardown unconditionally; the gesture-driven CONFIG transition is
+	 * the only re-entry path in production. The boot trace above runs
+	 * before this so flashing operators still see "[MODE] boot in
+	 * OPERATIONAL" once per power-up. */
+#ifndef DEBUG
+	MGR_LOG_flush_all();
+	APP_UART_setEnabled(false);
+#endif
 }
 
 MGR_GESTURE_Mode_t MGR_GESTURE_getMode(void)
@@ -286,6 +307,45 @@ void MGR_GESTURE_setMode(MGR_GESTURE_Mode_t mode)
 		return;
 	s_mode = mode;
 	persist_mode(mode);
+}
+
+bool MGR_GESTURE_requestMode(MGR_GESTURE_Mode_t mode)
+{
+	if (mode >= MGR_GESTURE_MODE_COUNT)
+		return false;
+
+	const uint32_t now = HAL_GetTick();
+
+	switch (mode) {
+	case MGR_GESTURE_MODE_OPERATIONAL:
+		MGR_GESTURE_setMode(mode);
+		s_pending_event = MGR_GESTURE_EVT_ENTER_OPERATIONAL;
+		gst_trace("[MODE] OPERATIONAL via AT t=%lu\r\n", now);
+		/* Mirror the gesture-FSM exit-from-CONFIG cleanup: restore the
+		 * cold-boot default log gate. UART teardown happens in the
+		 * app-loop event consumer; the AT response has already left
+		 * the wire by then. */
+		vMGR_LOG_resetToDefault();
+		return true;
+
+	case MGR_GESTURE_MODE_CONFIG:
+		/* AT command means UART is already up — bringing it up again
+		 * is idempotent inside APP_UART_setEnabled, so no-op cost. */
+		APP_UART_setEnabled(true);
+		vMGR_LOG_setEnabled(true);
+		MGR_GESTURE_setMode(mode);
+		s_pending_event = MGR_GESTURE_EVT_ENTER_CONFIG;
+		gst_trace("[MODE] CONFIG via AT t=%lu\r\n", now);
+		return true;
+
+	case MGR_GESTURE_MODE_POWER_OFF:
+		s_pending_event = MGR_GESTURE_EVT_REQUEST_SHUTDOWN;
+		gst_trace("[MODE] SHUTDOWN via AT t=%lu\r\n", now);
+		return true;
+
+	default:
+		return false;
+	}
 }
 
 MGR_GESTURE_Event_t MGR_GESTURE_getEvent(void)
@@ -368,16 +428,27 @@ void MGR_GESTURE_task(void)
 		return;
 	}
 
-	/* ----- IDLE: fresh magnet ON kicks off hold tracking. Use the explicit
-	 *             EXTI event when available, fall back to polled state so the
-	 *             FSM still works if the boot-time edge was missed (chip
-	 *             booted with magnet already present) or debounce ate it. ---- */
+	/* ----- IDLE: only react to debouncer-confirmed MAGNET_ON edges. ----
+	 *
+	 * The driver now does 200 ms poll-based confirmation before publishing
+	 * any event, so Hall-hysteresis lingering and contact bounce are both
+	 * filtered upstream. Removed the polled-fallback path that used to
+	 * read MGR_REED_isMagnetPresent() — when the Hall stuck HIGH after
+	 * release, that path re-armed HOLDING on every loop iteration,
+	 * producing the watchdog→HOLDING→watchdog cycle. The boot-with-magnet
+	 * case is now handled by the debouncer: ~200 ms after boot, if the
+	 * pin is still HIGH, it publishes a clean MAGNET_ON the FSM picks
+	 * up here. */
 	if (s_fsm == GFSM_IDLE) {
-		if (reed_evt == MGR_REED_EVT_MAGNET_ON || magnet_present) {
+		if (reed_evt == MGR_REED_EVT_MAGNET_ON) {
 			s_fsm = GFSM_HOLDING;
 			s_press_tick = now;
 			s_max_phase = HOLD_PHASE_NONE;
-			MGR_LED_setMode(MGR_LED_MODE_ON);
+			/* No more MGR_LED_setMode(ON) here — that would override
+			 * the user's AT+LED=0 setting permanently. The gesture
+			 * phase LEDs now use the *Forced variants (led_show_phase
+			 * → MGR_LED_setForced / MGR_LED_blinkForced) which
+			 * bypass the gate without touching the persisted mode. */
 			led_show_phase(HOLD_PHASE_NONE);
 			gst_trace("[GST] ON t=%lu\r\n", now);
 		}
@@ -473,11 +544,32 @@ void MGR_GESTURE_task(void)
 				    ? MGR_GESTURE_EVT_ENTER_CONFIG
 				    : MGR_GESTURE_EVT_ENTER_OPERATIONAL;
 				if (s_pending_mode == MGR_GESTURE_MODE_CONFIG) {
-					gst_trace("[MODE] CONFIG entered (TX disabled) t=%lu\r\n",
+					/* CONFIG = operator interacting on the bench. Order
+					 * matters: bring the LPUART peripheral back up *before*
+					 * unmuting the log ring or emitting any trace, otherwise
+					 * the gst_trace below no-ops and the operator gets no
+					 * confirmation on the wire. */
+					APP_UART_setEnabled(true);
+					vMGR_LOG_setEnabled(true);
+					gst_trace("[MODE] CONFIG entered (UART forced ON, TX disabled) t=%lu\r\n",
 					          now);
 				} else {
-					gst_trace("[MODE] OPERATIONAL entered (TX enabled) t=%lu\r\n",
+					/* OPERATIONAL = back to deployment behaviour. Order:
+					 *   1. Emit the trace WHILE the UART is still alive
+					 *      (gst_trace no-ops once gState=RESET).
+					 *   2. Restore the cold-boot default — silent in DEBUG=0
+					 *      production builds, verbose in DEBUG=1.
+					 *   3. Drain the log ring so nothing is left pending.
+					 *   4. Tear down the LPUART peripheral *only* if the new
+					 *      effective state is "log off" (i.e. production).
+					 *      In DEBUG builds we leave UART up. */
+					gst_trace("[MODE] OPERATIONAL entered (TX enabled, UART default) t=%lu\r\n",
 					          now);
+					vMGR_LOG_resetToDefault();
+					MGR_LOG_flush_all();
+					if (!vMGR_LOG_isEnabled()) {
+						APP_UART_setEnabled(false);
+					}
 				}
 			}
 			led_show_confirm(s_pending_mode, is_shutdown);

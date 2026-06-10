@@ -95,11 +95,11 @@ void MGR_ERR_init(void)
 
 	/* Log the reset cause for THIS boot (most useful diagnostic).
 	 * The previous-session summary follows for context. */
-	MGR_LOG_DEBUG("[ERR] Boot #%lu reset_cause=%s csr=0x%08lx\r\n",
+	MGR_LOG_INFO("[ERR] Boot #%lu reset_cause=%s csr=0x%08lx\r\n",
 		prev_count + 1, reset_cause_str(csr), (unsigned long)csr);
 
 	/* Log previous session info */
-	MGR_LOG_DEBUG("[ERR] Boot #%lu: prev_reset=%s last_err=%s last_state=%lu tick=%lu\r\n",
+	MGR_LOG_INFO("[ERR] Boot #%lu: prev_reset=%s last_err=%s last_state=%lu tick=%lu\r\n",
 		prev_count + 1,
 		reset_cause_str(prev_csr),
 		err_code_str(prev_err),
@@ -123,7 +123,7 @@ void MGR_ERR_init(void)
 	ERR_BKP_CRASH = prev_crash;
 
 	if (prev_crash > 0) {
-		MGR_LOG_DEBUG("[ERR] Consecutive crashes: %lu\r\n", prev_crash);
+		MGR_LOG_WARN("[ERR] Consecutive crashes: %lu\r\n", prev_crash);
 	}
 
 	/* Clear RCC reset flags for next reset detection */
@@ -137,7 +137,7 @@ void MGR_ERR_log(MGR_ERR_Code_t code)
 	ERR_BKP_STATE = g_uw_doppler_state_for_err;
 	ERR_BKP_TICK  = HAL_GetTick();
 
-	MGR_LOG_DEBUG("[ERR] Error logged: %s (tick=%lu)\r\n",
+	MGR_LOG_ERR("[ERR] Error logged: %s (tick=%lu)\r\n",
 		err_code_str(code), HAL_GetTick());
 }
 
@@ -178,7 +178,7 @@ bool MGR_ERR_checkCrashLoop(void)
 	if (ERR_BKP_CRASH < MGR_ERR_CRASH_LOOP_MAX)
 		return false;
 
-	MGR_LOG_DEBUG("[ERR] CRASH LOOP detected (%lu consecutive), safe sleep %us\r\n",
+	MGR_LOG_ERR("[ERR] CRASH LOOP detected (%lu consecutive), safe sleep %us\r\n",
 		ERR_BKP_CRASH, MGR_ERR_CRASH_LOOP_SLEEP_S);
 
 	/* Configure RTC wakeup timer to wake after CRASH_LOOP_SLEEP_S seconds.
@@ -222,7 +222,7 @@ bool MGR_ERR_checkCrashLoop(void)
 	/* Reset crash counter to give the device another chance */
 	ERR_BKP_CRASH = 0;
 
-	MGR_LOG_DEBUG("[ERR] Woke from safe sleep, retrying\r\n");
+	MGR_LOG_INFO("[ERR] Woke from safe sleep, retrying\r\n");
 	return true;
 }
 

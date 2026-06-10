@@ -845,12 +845,12 @@ int main(void)
   g_boot_pwr_sr1_raw = boot_pwr_sr1;
 
 #ifdef DEBUG
-  /* BOOT trace: only visible in DEBUG builds. Production OPERATIONAL must
-   * stay silent on every boot. Reset-cause letters:
-   * L=LPWR W=WWDG I=IWDG S=SFT B=BOR P=PIN O=OBL ?=none */
-  {
+  /* BOOT trace: INFO-grade. Gated so AT+LOGLVL=4 stays clean — external
+   * apps (GUI / parsers) depend on a bare AT response stream.
+   * Reset-cause letters: L=LPWR W=WWDG I=IWDG S=SFT B=BOR P=PIN O=OBL ?=none */
+  if (MGR_LOG_passes(MGR_LOG_LVL_INFO)) {
     extern UART_HandleTypeDef hlpuart1;
-    static char _bt[80];
+    static char _bt[88];
     char fl[16] = {0};
     int idx = 0;
     if (g_boot_rcc_csr_raw & RCC_CSR_LPWRRSTF) fl[idx++] = 'L';
@@ -863,7 +863,8 @@ int main(void)
     if (idx == 0) fl[idx++] = '?';
     fl[idx] = 0;
     int n = snprintf(_bt, sizeof(_bt),
-        "\r\n==== BOOT cause=[%s] CSR=0x%08lX SR1=0x%08lX ====\r\n",
+        "\r\n%s==== BOOT cause=[%s] CSR=0x%08lX SR1=0x%08lX ====\r\n",
+        MGR_LOG_levelTag(MGR_LOG_LVL_INFO),
         fl, (unsigned long)g_boot_rcc_csr_raw, (unsigned long)boot_pwr_sr1);
     if (n > 0)
       HAL_UART_Transmit(&hlpuart1, (uint8_t *)_bt, (uint16_t)n, 100);
@@ -1118,19 +1119,23 @@ void Error_Handler(void)
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
   extern volatile uint32_t g_uw_doppler_state_for_err;
   extern UART_HandleTypeDef hlpuart1;
-  /* Direct synchronous UART write — bypasses MGR_LOG ring buffer so the
-   * message physically leaves the chip before NVIC_SystemReset(). At 9600
-   * baud, 80 bytes ≈ 80 ms, well within the 200 ms HAL timeout. */
-  static char err_buf[96];
-  int err_n = snprintf(err_buf, sizeof(err_buf),
-    "\r\n!!! Error_Handler: state=%lu tick=%lu !!!\r\n",
-    (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
-  if (err_n > 0)
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)err_buf, (uint16_t)err_n, 200);
-  MGR_LOG_DEBUG("!!! Error_Handler: state=%lu tick=%lu\r\n",
+  /* Fatal forensic — ERROR-grade. Gated at LOGLVL=NONE so a GUI parser
+   * sees a clean stream; everything ≤ ERROR still surfaces the fault.
+   * Direct synchronous UART so it physically leaves the chip before the
+   * potential NVIC_SystemReset() further down. */
+  if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+    static char err_buf[104];
+    int err_n = snprintf(err_buf, sizeof(err_buf),
+      "\r\n%s!!! Error_Handler: state=%lu tick=%lu !!!\r\n",
+      MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+      (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
+    if (err_n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)err_buf, (uint16_t)err_n, 200);
+  }
+  MGR_LOG_ERR("!!! Error_Handler: state=%lu tick=%lu\r\n",
     (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
 #else
-  MGR_LOG_DEBUG("Error_Handler\r\n");
+  MGR_LOG_ERR("Error_Handler\r\n");
 #endif
 
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
@@ -1180,15 +1185,19 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* Direct synchronous UART write so the file/line reaches the host before reset. */
-  extern UART_HandleTypeDef hlpuart1;
-  static char af_buf[160];
-  int af_n = snprintf(af_buf, sizeof(af_buf),
-    "\r\n!!! HAL_ASSERT %s:%lu !!!\r\n",
-    (file ? (const char *)file : "(null)"), (unsigned long)line);
-  if (af_n > 0)
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)af_buf, (uint16_t)af_n, 200);
-  MGR_LOG_DEBUG("ASSERT FAIL: %lu %s\r\n", line, file);
+  /* Fatal forensic — gated at LOGLVL=NONE only. Direct synchronous UART
+   * so file/line reach the host before the reset chained by Error_Handler. */
+  if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+    extern UART_HandleTypeDef hlpuart1;
+    static char af_buf[168];
+    int af_n = snprintf(af_buf, sizeof(af_buf),
+      "\r\n%s!!! HAL_ASSERT %s:%lu !!!\r\n",
+      MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+      (file ? (const char *)file : "(null)"), (unsigned long)line);
+    if (af_n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)af_buf, (uint16_t)af_n, 200);
+  }
+  MGR_LOG_ERR("ASSERT FAIL: %lu %s\r\n", line, file);
   Error_Handler();
   /* USER CODE END 6 */
 }

@@ -28,6 +28,14 @@ void MGR_REED_init(void);
 /** @brief Check if magnet is currently present (PB6 = HIGH) */
 bool MGR_REED_isMagnetPresent(void);
 
+/** @brief True iff a magnet-state transition is currently being polled but
+ *  has not yet accumulated enough consecutive samples to confirm. The LPM
+ *  client checks this before entering STOP2 — otherwise the chip can
+ *  re-enter sleep mid-debounce and the magnet edge never gets recognised
+ *  (debouncer accumulates ~1 sample per wake → never reaches the N-sample
+ *  confirmation window). */
+bool MGR_REED_isDebouncing(void);
+
 /** @brief Get and clear pending reed event (call from main loop)
  *  @return Event type, or MGR_REED_EVT_NONE if no pending event
  */

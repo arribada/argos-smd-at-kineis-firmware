@@ -81,7 +81,7 @@ void MGR_RATE_init(void)
 	init_tick_ms = HAL_GetTick();
 
 	if (!ring_valid()) {
-		MGR_LOG_DEBUG("[RATE] Retention buffer invalid (magic=0x%08lx) — reinit\r\n",
+		MGR_LOG_WARN("[RATE] Retention buffer invalid (magic=0x%08lx) — reinit\r\n",
 			(unsigned long)ring.magic);
 		memset(&ring, 0, sizeof(ring));
 		ring.magic = MGR_RATE_RETAIN_MAGIC;
@@ -157,7 +157,7 @@ void MGR_RATE_setConfig(uint32_t window_s, uint16_t max_tx)
 
 	cfg_window_s = window_s;
 	cfg_max_tx   = max_tx;
-	MGR_LOG_DEBUG("[RATE] Config: %u TX / %lus\r\n",
+	MGR_LOG_INFO("[RATE] Config: %u TX / %lus\r\n",
 		cfg_max_tx, (unsigned long)cfg_window_s);
 }
 
@@ -177,5 +177,5 @@ void MGR_RATE_clear(void)
 	ring.head = 0;
 	ring.count = 0;
 	ring_commit();
-	MGR_LOG_DEBUG("[RATE] Ring cleared\r\n");
+	MGR_LOG_INFO("[RATE] Ring cleared\r\n");
 }

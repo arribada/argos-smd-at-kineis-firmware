@@ -227,6 +227,40 @@ bool bMGR_AT_CMD_STOPTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_e
  */
 bool bMGR_AT_CMD_UARTLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+MODE: query / change the operational mode via UART.
+ *
+ * Status: `+MODE=<n>` where n is the current MGR_GESTURE_Mode_t value
+ *   1 = OPERATIONAL (TX enabled, SWS sampling, UART torn down in prod)
+ *   2 = CONFIG      (TX disabled, UART always up, SWS paused)
+ *
+ * Action: `AT+MODE=<n>` with n in {0, 1, 2}
+ *   0 → request HW SHUTDOWN (equivalent to AT+SHUTDOWN, magnet-wake only)
+ *   1 → switch to OPERATIONAL (the GUI loses UART in production builds)
+ *   2 → switch to CONFIG      (force UART up, mute TX)
+ *
+ * Implementation note: routed through MGR_GESTURE_requestMode so the
+ * app loop applies the same UART/SWS/LED side effects as a magnet-driven
+ * transition. The +OK response is sent before any UART teardown.
+ */
+bool bMGR_AT_CMD_MODE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LOGLVL: query / set the runtime log severity threshold.
+ *
+ * Status: `+LOGLVL=<n>` where n in {0..4}:
+ *   0=TRACE   (hb, [SWS] every sample, [KNS_Q] internals — very chatty)
+ *   1=INFO    (state transitions, modes, TX lifecycle)
+ *   2=WARNING (rate limit, low-battery, backoff, recovered errors)
+ *   3=ERROR   (TX timeouts, HW faults, IWDG forensics)
+ *   4=NONE    (silence — direct-UART traces still emit when level<=ERROR)
+ *
+ * Action: `AT+LOGLVL=<n>` where n in {0..4}. Persisted in retention NOLOAD
+ * so it survives every soft reset; VBAT loss reverts to the build-time
+ * default (LOG_DEFAULT_LEVEL — TRACE in DEBUG=1, INFO in DEBUG=0).
+ *
+ * Compile-time override: `make ... LOG_LEVEL=<n>` sets the boot default.
+ */
+bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
  *
  * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`
