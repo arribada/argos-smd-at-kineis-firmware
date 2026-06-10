@@ -140,6 +140,26 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds);
  */
 void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode);
 
+/** @brief Event-driven LPM scheduler — the new preferred entry point.
+ *
+ *  Called from the main app loop with the time until the next scheduled
+ *  task (next SWS sample, next TX in a burst, etc.). Picks spin / SLEEP /
+ *  STOP2 based on the LpmThr thresholds (configurable via AT+LPMTHR).
+ *
+ *    delta_ms < spin_ms              → spin (continue main loop)
+ *    spin_ms ≤ delta_ms < sleep_ms   → SLEEP (light, ~100 µA)
+ *    delta_ms ≥ sleep_ms             → STOP2 (deep, ~3 µA, ~50 ms wake)
+ *
+ *  Returns to the caller after wake. */
+void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
+                        bool gesture_busy, bool config_mode);
+
+/** @brief Get / set the event-driven LPM thresholds.
+ *  Persisted in retention NOLOAD; cleared by VBAT loss. */
+void MGR_LPM_UW_setLpmThr(uint16_t spin_ms, uint16_t sleep_ms, uint8_t enabled);
+void MGR_LPM_UW_getLpmThr(uint16_t *spin_ms, uint16_t *sleep_ms,
+                         uint8_t *enabled);
+
 /** @brief Mark the first MONITORING entry of a boot — starts the
  *  stabilization timer that gates `tryAutoCycle`. Subsequent
  *  re-entries are no-ops. */

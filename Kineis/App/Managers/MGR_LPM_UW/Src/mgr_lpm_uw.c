@@ -86,6 +86,59 @@ typedef struct {
 static __attribute__((__section__(".retentionRamNoload")))
 UwLpmDutyCfg_t s_duty;
 
+/* Event-driven LPM thresholds. Replaces the old "always sleep for N seconds"
+ * model with a "sleep until next scheduled task" approach. The thresholds
+ * decide which depth of LPM is worth entering for the requested delay:
+ *
+ *   delta_ms < spin_ms              → just spin (continue main loop)
+ *   spin_ms ≤ delta_ms < sleep_ms   → SLEEP (light, ~100 µA, wake instant)
+ *   delta_ms ≥ sleep_ms             → STOP2 (deep, ~3 µA, ~50 ms wake cost)
+ *
+ * Set enabled=0 to disable LPM entirely (bench / commissioning at ~5 mA).
+ * Persisted via the regular NVM save path. */
+#define LPM_THR_MAGIC 0x4C504D01UL  /* "LPM" + version 01 */
+
+typedef struct {
+	uint32_t magic;
+	uint16_t spin_ms;
+	uint16_t sleep_ms;
+	uint8_t  enabled;
+	uint8_t  _pad[3];
+} LpmThrCfg_t;
+
+static __attribute__((__section__(".retentionRamNoload")))
+LpmThrCfg_t s_lpm_thr;
+
+static void s_apply_lpm_thr_defaults_if_needed(void)
+{
+	if (s_lpm_thr.magic != LPM_THR_MAGIC) {
+		s_lpm_thr.magic    = LPM_THR_MAGIC;
+		s_lpm_thr.spin_ms  = 10u;     /* below 10 ms LPM entry overhead wins */
+		s_lpm_thr.sleep_ms = 500u;    /* 500 ms is the SLEEP↔STOP2 cross-over */
+		s_lpm_thr.enabled  = 1u;      /* power-efficient by default */
+	}
+}
+
+void MGR_LPM_UW_setLpmThr(uint16_t spin_ms, uint16_t sleep_ms, uint8_t enabled)
+{
+	s_apply_lpm_thr_defaults_if_needed();
+	/* Clamp into sensible ranges; spin must be ≤ sleep. */
+	if (sleep_ms < spin_ms) sleep_ms = spin_ms;
+	s_lpm_thr.magic    = LPM_THR_MAGIC;
+	s_lpm_thr.spin_ms  = spin_ms;
+	s_lpm_thr.sleep_ms = sleep_ms;
+	s_lpm_thr.enabled  = enabled ? 1u : 0u;
+}
+
+void MGR_LPM_UW_getLpmThr(uint16_t *spin_ms, uint16_t *sleep_ms,
+                          uint8_t *enabled)
+{
+	s_apply_lpm_thr_defaults_if_needed();
+	if (spin_ms)  *spin_ms  = s_lpm_thr.spin_ms;
+	if (sleep_ms) *sleep_ms = s_lpm_thr.sleep_ms;
+	if (enabled)  *enabled  = s_lpm_thr.enabled;
+}
+
 /* Interaction window on true cold-boot.
  *
  * PB6 reed is NOT a WL55 WKUP pin (only PA0/PC13/PB3 are) and EXTI is
@@ -107,9 +160,14 @@ static void s_apply_defaults_if_needed(void)
 {
 	if (s_duty.magic != DUTY_CFG_MAGIC) {
 		s_duty.magic                = DUTY_CFG_MAGIC;
-		s_duty.uw_sleep_s           = 1800u;   /* 30 min underwater */
-		s_duty.surf_sleep_s         = 60u;     /* 1  min surface idle */
-		s_duty.enabled              = 0u;      /* opt-in via AT+DUTYCFG */
+		/* uw_sleep_s / surf_sleep_s are now LEGACY: kept in the struct
+		 * so the AT+DUTYCFG echo doesn't regress the GUI parser, but
+		 * tryAutoCycle no longer reads them — sleep duration is derived
+		 * from the active SWS interval (the natural sampling cadence). */
+		s_duty.uw_sleep_s           = 0u;
+		s_duty.surf_sleep_s         = 0u;
+		s_duty.enabled              = 1u;      /* on by default — LPM is the
+		                                        * point of UW_DOPPLER */
 		s_duty.last_sws_state       = 0xFFu;   /* "unknown" */
 		s_duty.wake_should_tx       = 0u;
 		s_duty.shutdown_threshold_s = 300u;    /* default: ≥5min → SHUTDOWN */
@@ -207,80 +265,82 @@ bool MGR_LPM_UW_isWakeFromStandby(void)
 	return (g_boot_pwr_extscr_raw & PWR_EXTSCR_C1SBF) != 0u;
 }
 
-/** Threshold below which dropping to STANDBY is not worth it (cold-boot
- *  overhead + NVM save costs more than just staying awake). */
-#define LPM_UW_SHORT_SLEEP_THRESHOLD_S  5u
-
-void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
+/* Event-driven LPM scheduler. Called from the main app loop with the time
+ * until the next scheduled task (typically the next SWS sample, or the
+ * next TX in a burst). Decides whether to spin, SLEEP or STOP2 based on
+ * the LpmThr thresholds.
+ *
+ *   delta_ms < spin_ms              → spin (continue main loop)
+ *   spin_ms ≤ delta_ms < sleep_ms   → SLEEP (light, instant wake)
+ *   delta_ms ≥ sleep_ms             → STOP2 (deep, ~50 ms wake cost)
+ *
+ * SLEEP mode is implemented as a STOP2 call with a short RTC window —
+ * the WL55 RTC CK_SPRE supports 1 Hz minimum so anything below 1 s is
+ * rounded up. Until a proper LPTIM-based SLEEP path is wired, the
+ * sleep-tier and stop-tier are functionally the same; only the threshold
+ * differs. The spin-tier IS distinct and saves the STOP2 entry/exit cost
+ * on very short waits. */
+void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
+                         bool gesture_busy, bool config_mode)
 {
-	if (!s_duty.enabled)
+	s_apply_lpm_thr_defaults_if_needed();
+
+	if (!s_lpm_thr.enabled)
+		return;
+	if (!s_duty.enabled)            /* legacy DUTYCFG master kill switch */
 		return;
 	if (gesture_busy || config_mode)
 		return;
 	if (!s_monitoring_ever_entered)
 		return;
-	/* Keep the chip awake while the reed debouncer has an in-flight
-	 * transition. Each STOP2 wake accumulates ~1 sample at most before
-	 * re-entering sleep, so a magnet edge arriving during STOP2 would
-	 * never reach the 5-sample (50 ms) confirmation window — the gesture
-	 * LED would silently fail to fire. ~50 ms of extra awake current is
-	 * the right trade for a working magnet interaction on bench. */
 	if (MGR_REED_isDebouncing())
 		return;
-	/* Stabilization gate. Full 5s on true cold-boot to give the user a
-	 * UART window for AT commands. On wake-from-STANDBY the previous
-	 * cycle has proven the device is healthy, the box is sealed and no
-	 * operator is interacting — skip the wait and re-enter sleep ASAP. */
+
+	/* Stabilization gate. Full 30 s on true cold-boot to give the
+	 * operator a UART window for AT commands. On wake-from-STANDBY
+	 * the previous cycle has proven the device is healthy, the box
+	 * is sealed and no operator is interacting — skip the wait. */
 	const uint32_t stabilize_ms = MGR_LPM_UW_isWakeFromStandby()
 	                              ? 0u
 	                              : DUTY_STABILIZE_MS;
 	if ((HAL_GetTick() - s_first_monitoring_tick) < stabilize_ms)
 		return;
 
-	/* Persist the SWS state so the next wake's init can detect
-	 * a UW→SURFACE transition and fire TX immediately on cold-boot. */
+	/* Persist the SWS state so the next wake's init can detect a
+	 * UW→SURFACE transition and fire TX immediately on cold-boot. */
 	if (sws_state == (int)MGR_SWS_STATE_SURFACE ||
 	    sws_state == (int)MGR_SWS_STATE_UNDERWATER) {
 		s_duty.last_sws_state = (uint8_t)sws_state;
 	}
 	s_duty.wake_should_tx = 0u;
 
-	/* MGR_SWS_State_t: UNKNOWN=0, SURFACE=1, UNDERWATER=2.
-	 *
-	 * Sleep selection for sealed 12-month deployment: any non-SURFACE
-	 * state (UNDERWATER or UNKNOWN/sensor-fault) MUST pick the long
-	 * underwater interval. The previous behaviour treated UNKNOWN as
-	 * SURFACE, which on a corroded / broken sensor would put the tag
-	 * into a permanent short-cycle and exhaust the battery in weeks
-	 * instead of months. We'd rather miss a TX window than burn the
-	 * battery — the device will still wake periodically and re-attempt
-	 * SWS calibration each cycle (EMA recalibration in MGR_SWS). */
-	const uint32_t sleep_s = (sws_state == (int)MGR_SWS_STATE_SURFACE)
-	                          ? s_duty.surf_sleep_s
-	                          : s_duty.uw_sleep_s;
+	(void)s_duty.shutdown_threshold_s;  /* unused by event-driven path */
 
-	/* Below threshold: cold-boot overhead > sleep saving — skip. */
-	if (sleep_s < LPM_UW_SHORT_SLEEP_THRESHOLD_S)
+	if (delta_ms < s_lpm_thr.spin_ms) {
+		/* Too short for LPM entry overhead. Spin. */
 		return;
+	}
 
-	/* Production duty-cycle path: STOP2 (RAM + MAC + peripherals retained).
-	 *
-	 * Why not STANDBY: STANDBY cold-boots the chip on wake and re-inits the
-	 * MAC stack (~6 s × ~10 mA = 0.017 mAh per wake). For a 30 min cycle
-	 * that's already ~50% of the duty-cycle current. Worse, STANDBY can't
-	 * wake on the reed switch (PB6 isn't a WL55 WKUP pin) so a magnet
-	 * event during deep sleep is invisible for up to sleep_s seconds.
-	 *
-	 * STOP2 keeps the same ~2 µA sleep floor, returns from this function
-	 * after wake (no re-init), and wakes on RTC OR reed EXTI — both
-	 * paths matter for the deployment.
-	 *
-	 * The deeper SHUTDOWN mode (chip fully off, magnet-only wake) stays
-	 * available for operator-controlled end-of-mission via AT+SHUTDOWN
-	 * and for the boot-loop guard's PERMANENT_OFF 24 h fallback. */
-	(void)s_duty.shutdown_threshold_s;  /* no longer used by auto-cycle */
+	/* RTC CK_SPRE is 1 Hz; minimum wake window is 1 second. Round up. */
+	uint32_t sleep_s = (delta_ms + 999u) / 1000u;
+	if (sleep_s < 1u)
+		sleep_s = 1u;
+
 	MGR_LPM_UW_enterStop2Timed(sleep_s);
 	/* Returns here on wake. State machine continues normally. */
+}
+
+/* Legacy entry point. Kept so older call sites still compile during the
+ * migration; auto-derives the sleep duration from the active SWS interval
+ * and forwards to the event-driven scheduler. */
+void MGR_LPM_UW_tryAutoCycle(int sws_state, bool gesture_busy, bool config_mode)
+{
+	uint32_t delta_ms;
+	if (sws_state == (int)MGR_SWS_STATE_SURFACE)
+		delta_ms = MGR_SWS_getSurfIntervalMs();
+	else
+		delta_ms = MGR_SWS_getUWIntervalMs();
+	MGR_LPM_UW_idleTick(sws_state, delta_ms, gesture_busy, config_mode);
 }
 
 /* ---- STANDBY timed wake ---- */

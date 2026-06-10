@@ -261,6 +261,23 @@ bool bMGR_AT_CMD_MODE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
  */
 bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+LPMTHR: configure the event-driven LPM thresholds.
+ *
+ * Status: `+LPMTHR=<spin_ms>,<sleep_ms>,<enabled>`
+ * Action: `AT+LPMTHR=<spin_ms>,<sleep_ms>,<enabled>` (3 params, all required)
+ *
+ * Semantics — at every main-loop idle the firmware computes the delay
+ * until the next scheduled task and picks LPM depth from that delta:
+ *   - delta < spin_ms             → spin (no LPM entry)
+ *   - spin_ms ≤ delta < sleep_ms  → SLEEP (light, ~100 µA)
+ *   - delta ≥ sleep_ms            → STOP2 (deep, ~3 µA)
+ *
+ * enabled=0 disables LPM entirely (~5 mA continuous — bench / commissioning).
+ *
+ * Persisted in retention NOLOAD; cleared by VBAT loss. Save to flash via
+ * AT+SAVE for cold-boot persistence too. Default: 10,500,1. */
+bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
  *
  * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`

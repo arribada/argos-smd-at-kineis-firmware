@@ -691,6 +691,37 @@ bool bMGR_AT_CMD_UARTLOG_cmd(uint8_t *pu8_cmdParamString,
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
+bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint16_t spin_ms = 0u, sleep_ms = 0u;
+		uint8_t en = 0u;
+		MGR_LPM_UW_getLpmThr(&spin_ms, &sleep_ms, &en);
+		MCU_AT_CONSOLE_send("+LPMTHR=%u,%u,%u\r\n",
+			(unsigned)spin_ms, (unsigned)sleep_ms, (unsigned)en);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int spin = 0u, sleep_x = 0u, en = 0u;
+		if (sscanf((const char *)pu8_cmdParamString,
+		           "AT+LPMTHR=%u,%u,%u", &spin, &sleep_x, &en) != 3)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		if (spin > 0xFFFFu || sleep_x > 0xFFFFu || en > 1u)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		if (sleep_x < spin)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		MGR_LPM_UW_setLpmThr((uint16_t)spin, (uint16_t)sleep_x,
+		                     (uint8_t)en);
+		MGR_LOG_INFO("[AT] LPMTHR spin=%ums sleep=%ums en=%u\r\n",
+			spin, sleep_x, en);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
 bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString,
 	enum atcmd_type_t e_exec_mode)
 {

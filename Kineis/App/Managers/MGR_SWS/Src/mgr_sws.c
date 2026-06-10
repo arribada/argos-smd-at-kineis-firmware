@@ -242,6 +242,19 @@ static uint32_t current_test_interval_ms(void)
 	return sws_config.test_interval_underwater_ms;
 }
 
+/* Public accessors used by the event-driven LPM scheduler to compute the
+ * next wake delay. The LPM client treats the SWS interval as the natural
+ * idle-period source of truth (see MGR_LPM_UW_idleTick). */
+uint32_t MGR_SWS_getSurfIntervalMs(void)
+{
+	return sws_config.test_interval_surface_ms;
+}
+
+uint32_t MGR_SWS_getUWIntervalMs(void)
+{
+	return sws_config.test_interval_underwater_ms;
+}
+
 static void update_dynamic_threshold(void)
 {
 	if (water_baseline <= air_baseline) {

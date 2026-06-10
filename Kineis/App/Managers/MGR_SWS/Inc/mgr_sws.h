@@ -76,6 +76,13 @@ MGR_SWS_Config_t MGR_SWS_getConfig(void);
 /** @brief Set detection config */
 void MGR_SWS_setConfig(const MGR_SWS_Config_t *config);
 
+/** @brief Get the configured sampling interval (ms) for SURFACE state.
+ *  The event-driven LPM scheduler uses this to compute the next wake. */
+uint32_t MGR_SWS_getSurfIntervalMs(void);
+
+/** @brief Get the configured sampling interval (ms) for UNDERWATER state. */
+uint32_t MGR_SWS_getUWIntervalMs(void);
+
 /** @brief Force immediate measurement (bypass interval timer) */
 void MGR_SWS_forceMeasurement(void);
 

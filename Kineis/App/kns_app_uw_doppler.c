@@ -2022,8 +2022,16 @@ void KNS_APP_uw_doppler_loop(void)
 #else
 					const bool g_busy = false, g_config = false;
 #endif
-					MGR_LPM_UW_tryAutoCycle((int)sws_state,
-					                       g_busy, g_config);
+					/* Event-driven LPM: ask the scheduler to drop into
+					 * whatever depth is right for the next scheduled
+					 * task (next SWS sample). spin / SLEEP / STOP2 is
+					 * picked from AT+LPMTHR thresholds. */
+					const uint32_t delta_ms =
+					    (sws_state == MGR_SWS_STATE_SURFACE)
+					    ? MGR_SWS_getSurfIntervalMs()
+					    : MGR_SWS_getUWIntervalMs();
+					MGR_LPM_UW_idleTick((int)sws_state, delta_ms,
+					                    g_busy, g_config);
 				}
 				return;
 			}
