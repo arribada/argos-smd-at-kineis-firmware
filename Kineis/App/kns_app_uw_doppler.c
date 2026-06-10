@@ -54,6 +54,28 @@
  * @{
  */
 
+/* UW_DOPPLER is strictly validated against the BASIC MAC profile.
+ *
+ * BLIND / SATDET / BLIND_POS delegate their TX scheduling to the MAC
+ * stack (retx pattern, parallel messages, period). The UW_DOPPLER app
+ * does its own schedule (current_interval_ms, tx_max_count, surface
+ * detection) — running both layers in parallel produces conflicting
+ * radio bursts AND leaves retx pulses firing after the tag has dived
+ * because no path issues KNS_MAC_STOP_SEND_DATA on UW transitions.
+ *
+ * Lock at compile time so an accidental `make MAC_PRFL=BLIND` doesn't
+ * ship a tag whose state machine is silently broken. AT+KMAC also
+ * refuses runtime profile switches (see mgr_at_cmd_list_mac.c). */
+#if defined(USE_MAC_PRFL_BLIND) || defined(USE_MAC_PRFL_SATDET) || \
+    defined(USE_MAC_PRFL_BLIND_POS)
+#  error "UW_DOPPLER is only validated with MAC_PRFL=BASIC. " \
+         "Other profiles delegate TX scheduling to the MAC and conflict " \
+         "with the surface-driven app scheduler."
+#endif
+#if !defined(USE_MAC_PRFL_BASIC)
+#  error "UW_DOPPLER requires MAC_PRFL=BASIC. Check the top-level Makefile."
+#endif
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -781,14 +803,6 @@ void KNS_APP_uw_doppler_getDutyCfg(uint16_t *uw_s, uint16_t *surf_s, uint8_t *en
 	MGR_LPM_UW_getDutyCfg(uw_s, surf_s, enabled);
 }
 
-#ifdef USE_MAC_PRFL_BLIND
-static struct KNS_MAC_BLIND_usrCfg_t prflBlindUserCfg = {
-	.retx_nb = 0,
-	.retx_period_s = 60,
-	.nb_parrallel_msg = 1
-};
-#endif
-
 /* ---- State transition helper ---- */
 
 static void transition_to(UwDopplerState_t new_state)
@@ -1110,16 +1124,12 @@ static void start_mac_profile(void)
 	struct KNS_MAC_appEvt_t appEvt;
 
 	appEvt.id = KNS_MAC_INIT;
-	appEvt.init_prfl_ctxt.id = KNS_MAC_PRFL_NONE;
-#ifdef USE_MAC_PRFL_BASIC
+	/* UW_DOPPLER is locked to BASIC at compile time — see the guard at
+	 * the top of this file. The other profile branches were removed
+	 * intentionally; do NOT re-introduce a USE_MAC_PRFL_BLIND fallback
+	 * without first fixing the app-side / MAC-side TX scheduling clash. */
 	appEvt.init_prfl_ctxt.id = KNS_MAC_PRFL_BASIC;
 	MGR_LOG_INFO("[UW_DPL] MAC profile: BASIC\r\n");
-#endif
-#ifdef USE_MAC_PRFL_BLIND
-	appEvt.init_prfl_ctxt.id = KNS_MAC_PRFL_BLIND;
-	appEvt.init_prfl_ctxt.blindCfg = prflBlindUserCfg;
-	MGR_LOG_INFO("[UW_DPL] MAC profile: BLIND\r\n");
-#endif
 
 	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 	if (status != KNS_STATUS_OK) {

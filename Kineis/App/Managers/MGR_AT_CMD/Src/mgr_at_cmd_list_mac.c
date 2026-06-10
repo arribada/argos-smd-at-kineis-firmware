@@ -31,20 +31,41 @@
 bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
 {
 #if defined(USE_UW_DOPPLER_APP)
-	/* UW_DOPPLER hardcodes the MAC profile to BASIC at boot and the
-	 * surface-driven TX path is the only one in this build — re-init via
-	 * AT+KMAC is meaningless. The GUI sends it as part of its KIM-device
-	 * discovery probe, so we acknowledge synchronously instead of pushing
-	 * an event the app loop never replies to (legacy behaviour was a
-	 * 1.5 s GUI timeout on every connect). */
-	(void)pu8_cmdParamString;
+	/* UW_DOPPLER is locked to MAC profile BASIC at compile time (see the
+	 * compile-time guard at the top of kns_app_uw_doppler.c). The AT
+	 * command runtime path enforces the same rule:
+	 *   - status query → report BASIC + zero-filled context
+	 *   - action with id ∈ {NONE=0, BASIC=1} → ack (id=0 is the rare
+	 *     "reset profile" sequence the GUI sometimes sends, harmless
+	 *     because we don't actually re-init the MAC here)
+	 *   - any other id (BLIND=2, SATDET=3, BLIND_POS=4) → refuse loud,
+	 *     emit a WARN log so the operator knows a non-validated profile
+	 *     was attempted and the request was discarded.
+	 *
+	 * Refusing at the AT layer prevents an operator who's reading stale
+	 * documentation from "trying BLIND to see what happens" — the
+	 * app-side scheduler would conflict with BLIND retx and silently
+	 * waste battery on underwater TX. */
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
-		/* Hardcoded BASIC profile = id 1; report a zero-filled context
-		 * so the GUI doesn't choke on a missing comma. */
 		MCU_AT_CONSOLE_send("+KMAC=1,0000000000\r\n");
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
-	return bMGR_AT_CMD_logSucceedMsg();
+
+	int16_t requested_id = -1;
+	if (pu8_cmdParamString != NULL) {
+		(void)sscanf((const char *)pu8_cmdParamString,
+		             "AT+KMAC=%hd", &requested_id);
+	}
+
+	if (requested_id == (int16_t)KNS_MAC_PRFL_NONE ||
+	    requested_id == (int16_t)KNS_MAC_PRFL_BASIC) {
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	MGR_LOG_WARN("[KMAC] Profile %d refused — UW_DOPPLER only "
+	             "validates BASIC. Use a non-UW_DOPPLER build for "
+	             "BLIND/SATDET/BLIND_POS.\r\n", requested_id);
+	return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 #else
 	int16_t scan_param_res;
 	uint16_t prflCtxtCharNb;
