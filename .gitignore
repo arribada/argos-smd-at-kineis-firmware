@@ -7,7 +7,9 @@ Tests/unit/build/*
 Kineis/doc/html/
 .externalToolBuilders/
 *.log/
+*.log
 *.bak
 .claude/*
 Tools/*
 Bootloader/build/*
+Tests/report/
