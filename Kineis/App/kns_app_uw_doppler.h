@@ -34,6 +34,16 @@ typedef struct {
 	uint16_t tx_cooldown_s;         /**< Global post-TX quiet time (default 60s, 0=off).
 	                                     Survives surface/dive cycles so a turtle that
 	                                     resurfaces immediately can't burst-TX. */
+	uint16_t tx_seq_restart_s;      /**< Idle-at-surface timer (default 0 = disabled).
+	                                     If the tag is still at SURFACE this many
+	                                     seconds after the last TX of a completed
+	                                     sequence (tx_max_count reached), automatically
+	                                     start a new sequence — even without a
+	                                     UW→SURFACE transition or cold-boot wake. New
+	                                     sequence increments the Message Counter.
+	                                     Useful for animals that surface for long
+	                                     stretches without diving. Only meaningful when
+	                                     tx_max_count > 0 (a capped sequence). */
 } KNS_APP_UwDopplerTxCfg_t;
 
 /** @brief Low-battery (LB) mode config.
@@ -57,6 +67,13 @@ typedef struct {
 
 /** @brief Initialize UW_DOPPLER application and MAC profile */
 void KNS_APP_uw_doppler_init(void);
+
+/** @brief Override the session Message Counter (called from AT+MC handler).
+ *
+ * When the operator sets MC explicitly via AT+MC, we must update the
+ * retention-NOLOAD session_mc snapshot too, otherwise our setMC stomp
+ * before the next TX would revert to the previous session value. */
+void KNS_APP_uw_doppler_setSessionMC(uint16_t mc);
 
 /** @brief Main UW_DOPPLER loop - register with KNS_OS as APP task */
 void KNS_APP_uw_doppler_loop(void);

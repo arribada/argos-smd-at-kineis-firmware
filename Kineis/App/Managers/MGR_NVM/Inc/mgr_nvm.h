@@ -30,7 +30,7 @@
  * where mgr_led is compiled out. */
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 6
+#define NVM_VERSION 7
 
 /**
  * @brief NVM config structure stored in flash (v3)
@@ -94,6 +94,13 @@ typedef struct {
 	uint16_t lpm_sleep_ms;
 	uint8_t  lpm_enabled;
 	uint8_t  _pad7[3];
+	/* v7: Surface sequence-restart timer (4 bytes incl. pad).
+	 * Auto-restarts a TX sequence tx_seq_restart_s seconds after the last
+	 * TX of a capped sequence (tx_max_count > 0) when still at SURFACE.
+	 * 0 = disabled (legacy behaviour — only UW→SURFACE / cold-boot wake
+	 * starts a new sequence). */
+	uint16_t tx_seq_restart_s;
+	uint8_t  _pad8[2];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 

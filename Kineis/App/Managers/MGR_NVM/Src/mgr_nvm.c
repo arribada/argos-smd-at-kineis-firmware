@@ -221,6 +221,56 @@ typedef struct {
 	uint32_t crc32;
 } NVM_Config_v5_t;
 
+/* v6 layout (event-driven LPM thresholds; lacks v7 tx_seq_restart_s). */
+typedef struct {
+	uint32_t magic;
+	uint8_t  version;
+	uint8_t  deploy_mode;
+	uint8_t  led_mode;
+	uint8_t  _pad0;
+	uint16_t tx_initial_interval_s;
+	uint8_t  tx_growth_percent;
+	uint8_t  tx_max_count;
+	uint16_t tx_max_interval_s;
+	uint8_t  tx_jitter_percent;
+	uint8_t  _pad1;
+	uint16_t tx_cooldown_s;
+	uint8_t  _pad1b[2];
+	uint16_t sws_threshold_min;
+	uint16_t sws_threshold_max;
+	uint16_t sws_initial_air_baseline;
+	uint16_t sws_initial_water_baseline;
+	uint32_t sws_test_interval_surface_ms;
+	uint32_t sws_test_interval_underwater_ms;
+	uint32_t sws_max_dive_time_s;
+	uint32_t sws_min_surface_time_s;
+	uint16_t sws_sample_delay_min_us;
+	uint16_t sws_sample_delay_max_us;
+	uint16_t sws_sample_delay_default_us;
+	uint8_t  sws_enabled;
+	uint8_t  _pad2;
+	uint16_t sws_run_air_baseline;
+	uint16_t sws_run_water_baseline;
+	uint16_t sws_run_observed_peak;
+	uint8_t  _pad3[2];
+	uint16_t bat_min_tx_mV;
+	uint8_t  _pad4[2];
+	uint32_t rate_window_s;
+	uint16_t rate_max_tx;
+	uint8_t  _pad5[2];
+	uint16_t lb_enter_mV;
+	uint16_t lb_exit_mV;
+	uint16_t lb_tx_interval_s;
+	uint16_t lb_tx_max_s;
+	uint8_t  lb_tx_max_count;
+	uint8_t  _pad6[3];
+	uint16_t lpm_spin_ms;
+	uint16_t lpm_sleep_ms;
+	uint8_t  lpm_enabled;
+	uint8_t  _pad7[3];
+	uint32_t crc32;
+} NVM_Config_v6_t;
+
 /* ---- Last save timestamp (for debouncing) ---- */
 
 static uint32_t last_save_tick = 0;
@@ -314,6 +364,7 @@ static void apply_config(const NVM_Config_t *cfg)
 	tx_cfg.tx_max_count          = cfg->tx_max_count;
 	tx_cfg.tx_jitter_percent     = cfg->tx_jitter_percent;
 	tx_cfg.tx_cooldown_s         = cfg->tx_cooldown_s;
+	tx_cfg.tx_seq_restart_s      = cfg->tx_seq_restart_s;  /* v7, 0=disabled */
 	KNS_APP_uw_doppler_setTxCfg(&tx_cfg);
 
 	/* SWS config */
@@ -398,6 +449,7 @@ static void gather_config(NVM_Config_t *cfg)
 	cfg->tx_max_count          = tx_cfg.tx_max_count;
 	cfg->tx_jitter_percent     = tx_cfg.tx_jitter_percent;
 	cfg->tx_cooldown_s         = tx_cfg.tx_cooldown_s;
+	cfg->tx_seq_restart_s      = tx_cfg.tx_seq_restart_s;  /* v7 */
 
 	/* SWS */
 	MGR_SWS_Config_t sws_cfg = MGR_SWS_getConfig();
@@ -511,12 +563,55 @@ static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
 	out->bat_min_tx_mV           = v2->bat_min_tx_mV;
 }
 
+static void migrate_v6_to_v7(const NVM_Config_v6_t *v6, NVM_Config_t *out)
+{
+	/* v6 is a strict prefix of v7: same fields plus tx_seq_restart_s.
+	 * Default the new field to 0 (= disabled, legacy behaviour) so an
+	 * existing deployment doesn't suddenly start auto-restarting
+	 * sequences after a firmware upgrade. */
+	memset(out, 0, sizeof(*out));
+	out->magic                          = NVM_MAGIC;
+	out->version                        = NVM_VERSION;
+	out->deploy_mode                    = v6->deploy_mode;
+	out->led_mode                       = v6->led_mode;
+	out->tx_initial_interval_s          = v6->tx_initial_interval_s;
+	out->tx_growth_percent              = v6->tx_growth_percent;
+	out->tx_max_count                   = v6->tx_max_count;
+	out->tx_max_interval_s              = v6->tx_max_interval_s;
+	out->tx_jitter_percent              = v6->tx_jitter_percent;
+	out->tx_cooldown_s                  = v6->tx_cooldown_s;
+	out->sws_threshold_min              = v6->sws_threshold_min;
+	out->sws_threshold_max              = v6->sws_threshold_max;
+	out->sws_initial_air_baseline       = v6->sws_initial_air_baseline;
+	out->sws_initial_water_baseline     = v6->sws_initial_water_baseline;
+	out->sws_test_interval_surface_ms   = v6->sws_test_interval_surface_ms;
+	out->sws_test_interval_underwater_ms= v6->sws_test_interval_underwater_ms;
+	out->sws_max_dive_time_s            = v6->sws_max_dive_time_s;
+	out->sws_min_surface_time_s         = v6->sws_min_surface_time_s;
+	out->sws_sample_delay_min_us        = v6->sws_sample_delay_min_us;
+	out->sws_sample_delay_max_us        = v6->sws_sample_delay_max_us;
+	out->sws_sample_delay_default_us    = v6->sws_sample_delay_default_us;
+	out->sws_enabled                    = v6->sws_enabled;
+	out->sws_run_air_baseline           = v6->sws_run_air_baseline;
+	out->sws_run_water_baseline         = v6->sws_run_water_baseline;
+	out->sws_run_observed_peak          = v6->sws_run_observed_peak;
+	out->bat_min_tx_mV                  = v6->bat_min_tx_mV;
+	out->rate_window_s                  = v6->rate_window_s;
+	out->rate_max_tx                    = v6->rate_max_tx;
+	out->lb_enter_mV                    = v6->lb_enter_mV;
+	out->lb_exit_mV                     = v6->lb_exit_mV;
+	out->lb_tx_interval_s               = v6->lb_tx_interval_s;
+	out->lb_tx_max_s                    = v6->lb_tx_max_s;
+	out->lb_tx_max_count                = v6->lb_tx_max_count;
+	out->lpm_spin_ms                    = v6->lpm_spin_ms;
+	out->lpm_sleep_ms                   = v6->lpm_sleep_ms;
+	out->lpm_enabled                    = v6->lpm_enabled;
+	/* out->tx_seq_restart_s already 0 from memset — leave as disabled */
+}
+
 static void migrate_v5_to_v6(const NVM_Config_v5_t *v5, NVM_Config_t *out)
 {
-	/* v5 is a strict prefix of v6: same fields, plus the new LPM
-	 * threshold block. Leave the LPM fields at 0 (all-zero sentinel) so
-	 * apply_config() keeps the LpmThrCfg retention NOLOAD defaults
-	 * instead of silently disabling LPM. */
+	/* v5 → v7 chain. Same fields as before, leave LPM + seq_restart at 0. */
 	memset(out, 0, sizeof(*out));
 	out->magic                          = NVM_MAGIC;
 	out->version                        = NVM_VERSION;
@@ -651,7 +746,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v1_to_v3(&v1, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v1 -> v6\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v1 -> v7\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -667,7 +762,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v2_to_v3(&v2, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v2 -> v6\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v2 -> v7\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -683,7 +778,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v3_to_v4(&v3, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v3 -> v6\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v3 -> v7\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -699,7 +794,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v4_to_v5(&v4, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v4 -> v6\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v4 -> v7\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -715,7 +810,23 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v5_to_v6(&v5, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v5 -> v6\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v5 -> v7\r\n");
+		if (!validate_config(&cfg)) return false;
+		apply_config(&cfg);
+		return true;
+	}
+
+	if (cfg.version == 6) {
+		NVM_Config_v6_t v6;
+		if (MCU_FLASH_read(FLASH_NVM_CONFIG_ADDR, &v6, sizeof(v6)) != KNS_STATUS_OK)
+			return false;
+		uint32_t computed = nvm_crc32(&v6, offsetof(NVM_Config_v6_t, crc32));
+		if (computed != v6.crc32) {
+			MGR_LOG_WARN("[NVM] v6 CRC mismatch\r\n");
+			return false;
+		}
+		migrate_v6_to_v7(&v6, &cfg);
+		MGR_LOG_INFO("[NVM] Migrated v6 -> v7 (tx_seq_restart_s defaults to 0)\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -726,10 +837,10 @@ bool MGR_NVM_load(void)
 		return false;
 	}
 
-	/* v6: verify CRC32 */
+	/* v7: verify CRC32 */
 	uint32_t computed_crc = nvm_crc32(&cfg, offsetof(NVM_Config_t, crc32));
 	if (computed_crc != cfg.crc32) {
-		MGR_LOG_ERR("[NVM] v6 CRC mismatch (stored=0x%08lx computed=0x%08lx)\r\n",
+		MGR_LOG_ERR("[NVM] v7 CRC mismatch (stored=0x%08lx computed=0x%08lx)\r\n",
 			cfg.crc32, computed_crc);
 		return false;
 	}
@@ -741,13 +852,12 @@ bool MGR_NVM_load(void)
 
 	apply_config(&cfg);
 
-	MGR_LOG_INFO("[NVM] v6 loaded: deploy=%u tx=%us jit=%u%% sws_surf=%lums sws_uw=%lums "
-		"run_air=%u run_water=%u peak=%u rate=%u/%lus lb=%u/%u\r\n",
+	MGR_LOG_INFO("[NVM] v7 loaded: deploy=%u tx=%us jit=%u%% seqrst=%us "
+		"sws_surf=%lums sws_uw=%lums rate=%u/%lus lb=%u/%u\r\n",
 		cfg.deploy_mode, cfg.tx_initial_interval_s, cfg.tx_jitter_percent,
+		cfg.tx_seq_restart_s,
 		(unsigned long)cfg.sws_test_interval_surface_ms,
 		(unsigned long)cfg.sws_test_interval_underwater_ms,
-		cfg.sws_run_air_baseline, cfg.sws_run_water_baseline,
-		cfg.sws_run_observed_peak,
 		cfg.rate_max_tx, (unsigned long)cfg.rate_window_s,
 		cfg.lb_enter_mV, cfg.lb_exit_mV);
 

@@ -194,6 +194,31 @@ struct {
 	uint32_t crc32;
 } boot_retained;
 
+/* Session-scoped Message Counter (Argos MC).
+ *
+ * Semantics: every TX inside one surface sequence ships the SAME MC. A new
+ * sequence (UW→SURFACE transition, cold-boot wake at SURFACE, or the
+ * tx_seq_restart_s timer firing) bumps the MC by one. The lib's auto-
+ * increment after each TX still happens — we just stomp it back to
+ * `s_session_mc` before the next push. The persisted NVM value at the end
+ * of a sequence is therefore `s_session_mc + 1`, which is precisely the
+ * value the next sequence should start at (read via KNS_CFG_getMC and
+ * saved as the new `s_session_mc`). No explicit add is needed in our
+ * code — the lib's increment supplies it.
+ *
+ * Retention NOLOAD: survives STOP1 / STOP2 / STANDBY / SHUTDOWN cold-boot
+ * cycles, lost only on full VBAT removal. On power-on we re-seed from the
+ * NVM-persisted MC, which preserves continuity across battery swaps.
+ */
+static __attribute__((__section__(".retentionRamNoload")))
+struct {
+	uint32_t magic;
+	uint16_t session_mc;  /**< MC reused for every TX of the current sequence */
+	uint8_t  initialised; /**< 1 once boot has seeded from KNS_CFG_getMC */
+	uint8_t  _pad;
+} mc_retained;
+#define MC_RETAINED_MAGIC 0x4D4344CCUL  /* "MCD" + version 0xCC */
+
 static uint32_t boot_retained_crc(void)
 {
 	/* CRC of all fields before crc32. Simple Adler-style sum is enough —
@@ -394,6 +419,8 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 	.tx_max_count          = 0,    /**< unlimited */
 	.tx_jitter_percent     = 10,   /**< +/-10% randomization to avoid TX collisions */
 	.tx_cooldown_s         = 60,   /**< 60s quiet time between TX, survives dive/surface */
+	.tx_seq_restart_s      = 0,    /**< 0 = disabled (legacy behaviour); restart sequence
+	                                  *  N seconds after last TX of a capped sequence */
 };
 
 /* LB mode (low-battery) config. Defaults engage LB at 2.9V (just above the
@@ -1416,6 +1443,24 @@ void KNS_APP_uw_doppler_init(void)
 	/* MGR_LPM_UW owns the retention-NOLOAD duty config + defaults. */
 	MGR_LPM_UW_init();
 
+	/* Seed the session-MC retention block. On full power-on the retention
+	 * RAM contains garbage and the magic mismatches → re-seed from NVM via
+	 * KNS_CFG_getMC. On STOP2/STANDBY/SHUTDOWN cold-boot the retention is
+	 * preserved and we keep the in-flight value. */
+	if (mc_retained.magic != MC_RETAINED_MAGIC ||
+	    mc_retained.initialised != 1u) {
+		uint16_t mc = 0;
+		if (KNS_CFG_getMC(&mc) == KNS_STATUS_OK) {
+			mc_retained.session_mc = mc;
+		} else {
+			mc_retained.session_mc = 0;
+		}
+		mc_retained.magic = MC_RETAINED_MAGIC;
+		mc_retained.initialised = 1u;
+		MGR_LOG_INFO("[UW_DPL] Session MC seeded from NVM = %u\r\n",
+			(unsigned)mc_retained.session_mc);
+	}
+
 	MGR_LOG_INFO("[UW_DPL] Init: interval=%us growth=%u%% max=%us deploy=%u\r\n",
 		tx_cfg.tx_initial_interval_s, tx_cfg.tx_growth_percent,
 		tx_cfg.tx_max_interval_s, deploy_mode);
@@ -2006,6 +2051,36 @@ void KNS_APP_uw_doppler_loop(void)
 					should_tx = false;
 			}
 
+			/* Sequence-restart timer (tx_seq_restart_s). If the cap was
+			 * reached and the tag has been idle at the surface for
+			 * tx_seq_restart_s seconds since the last TX, start a fresh
+			 * sequence — without needing a UW→SURFACE transition or
+			 * cold-boot wake. reset_tx_scheduling() zeroes tx_count, so
+			 * the next loop pass sees `tx_count == 0` and rolls over to
+			 * the "first TX" branch which bumps the Message Counter
+			 * automatically via mc_retained.session_mc update. Only
+			 * meaningful when tx_max_count > 0 (otherwise the cap is
+			 * never reached). */
+			{
+				const uint8_t cap =
+					lb_active ? lb_cfg.lb_tx_max_count : tx_cfg.tx_max_count;
+				if (tx_cfg.tx_seq_restart_s > 0u &&
+				    cap > 0u && tx_count >= cap &&
+				    last_tx_tick > 0u &&
+				    (HAL_GetTick() - last_tx_tick) >=
+				        ((uint32_t)tx_cfg.tx_seq_restart_s * 1000u)) {
+					MGR_LOG_INFO("[UW_DPL] Seq restart timer fired "
+						"(%us since last TX, MC will bump)\r\n",
+						(unsigned)tx_cfg.tx_seq_restart_s);
+					reset_tx_scheduling();
+					/* Trigger the first TX of the new sequence on the
+					 * next loop pass (do not set should_tx here so the
+					 * normal first-TX guards — battery, rate limiter,
+					 * backoff — still run). */
+					surface_tx_pending = true;
+				}
+			}
+
 			if (should_tx) {
 #if defined(BSP_HAS_VBAT_ADC)
 				last_vbat_mV = MGR_BAT_readVoltage_mV();
@@ -2172,6 +2247,26 @@ void KNS_APP_uw_doppler_loop(void)
 			MGR_LOG_DEBUG("[UW_DPL] First TX: TCXO warmup bypassed (was prewarmed)\r\n");
 		}
 
+		/* Session-MC handling. On the very first TX of a sequence
+		 * (tx_count == 0), snapshot the current persisted MC and adopt
+		 * it as the session value. The lib's auto-increment after each
+		 * TX has already supplied the +1 from the previous sequence, so
+		 * we don't bump explicitly — just read what the lib persisted.
+		 * For every TX of the sequence (including the first), stomp MC
+		 * back to s_session_mc so retransmissions ship the same value
+		 * the GUI / ground segment expects for the sequence. */
+		if (tx_count == 0u) {
+			uint16_t mc_now = 0;
+			if (KNS_CFG_getMC(&mc_now) == KNS_STATUS_OK) {
+				mc_retained.session_mc = mc_now;
+				MGR_LOG_INFO("[UW_DPL] New sequence, MC=%u\r\n",
+					(unsigned)mc_retained.session_mc);
+			}
+		}
+		/* Override the auto-incremented MC so every TX in this sequence
+		 * uses the same Message Counter. */
+		(void)KNS_CFG_setMC(mc_retained.session_mc);
+
 		UWDPL_TRACE("KNS_Q_push start");
 		enum KNS_status_t status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 		UWDPL_TRACE("KNS_Q_push done");
@@ -2290,6 +2385,15 @@ void KNS_APP_uw_doppler_setDeployMode(uint8_t mode)
 {
 	deploy_mode = mode ? 1 : 0;
 	MGR_LOG_INFO("[UW_DPL] Deploy mode: %u\r\n", deploy_mode);
+}
+
+void KNS_APP_uw_doppler_setSessionMC(uint16_t mc)
+{
+	mc_retained.session_mc  = mc;
+	mc_retained.magic       = MC_RETAINED_MAGIC;
+	mc_retained.initialised = 1u;
+	MGR_LOG_INFO("[UW_DPL] Session MC overridden by AT+MC = %u\r\n",
+		(unsigned)mc);
 }
 
 uint8_t KNS_APP_uw_doppler_getStateRaw(void)

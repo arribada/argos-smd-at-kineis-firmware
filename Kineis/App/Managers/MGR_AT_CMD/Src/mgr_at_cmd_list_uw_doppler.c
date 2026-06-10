@@ -173,14 +173,16 @@ bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString,
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		KNS_APP_UwDopplerTxCfg_t cfg = KNS_APP_uw_doppler_getTxCfg();
 
-		/* Format: +TXCFG=<interval_s>,<growth%>,<max_interval_s>,<max_count>,<jitter%>,<cooldown_s> */
-		MCU_AT_CONSOLE_send("+TXCFG=%u,%u,%u,%u,%u,%u\r\n",
+		/* Format: +TXCFG=<interval_s>,<growth%>,<max_interval_s>,<max_count>,
+		 *                <jitter%>,<cooldown_s>,<seq_restart_s> */
+		MCU_AT_CONSOLE_send("+TXCFG=%u,%u,%u,%u,%u,%u,%u\r\n",
 			(unsigned)cfg.tx_initial_interval_s,
 			(unsigned)cfg.tx_growth_percent,
 			(unsigned)cfg.tx_max_interval_s,
 			(unsigned)cfg.tx_max_count,
 			(unsigned)cfg.tx_jitter_percent,
-			(unsigned)cfg.tx_cooldown_s);
+			(unsigned)cfg.tx_cooldown_s,
+			(unsigned)cfg.tx_seq_restart_s);
 
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
@@ -188,26 +190,32 @@ bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString,
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		unsigned int interval_s, growth, max_interval_s, max_count, jitter_pct;
 		unsigned int cooldown_s = 0;
+		unsigned int seq_restart_s = 0;
 
-		/* Accept the legacy 4-arg form (no jitter/cooldown), the 5-arg form
-		 * (with jitter, no cooldown) and the new 6-arg form. Missing fields
-		 * default to 0 / keep-previous as appropriate. */
+		/* Accept legacy 4-/5-/6-arg forms and the new 7-arg form. Missing
+		 * fields default to the current value (keep previous) so older GUI
+		 * scripts keep working. */
 		int n = sscanf((const char *)pu8_cmdParamString,
-			"AT+TXCFG=%u,%u,%u,%u,%u,%u",
+			"AT+TXCFG=%u,%u,%u,%u,%u,%u,%u",
 			&interval_s, &growth, &max_interval_s, &max_count, &jitter_pct,
-			&cooldown_s);
+			&cooldown_s, &seq_restart_s);
+		KNS_APP_UwDopplerTxCfg_t cur = KNS_APP_uw_doppler_getTxCfg();
 		if (n == 4) {
-			jitter_pct = 0;
-			cooldown_s = KNS_APP_uw_doppler_getTxCfg().tx_cooldown_s;
+			jitter_pct    = 0;
+			cooldown_s    = cur.tx_cooldown_s;
+			seq_restart_s = cur.tx_seq_restart_s;
 		} else if (n == 5) {
-			cooldown_s = KNS_APP_uw_doppler_getTxCfg().tx_cooldown_s;
-		} else if (n != 6) {
+			cooldown_s    = cur.tx_cooldown_s;
+			seq_restart_s = cur.tx_seq_restart_s;
+		} else if (n == 6) {
+			seq_restart_s = cur.tx_seq_restart_s;
+		} else if (n != 7) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
 		}
 		if (interval_s == 0 || interval_s > 65535 || growth > 255 ||
 		    max_interval_s == 0 || max_interval_s > 65535 || max_count > 255 ||
 		    interval_s > max_interval_s || jitter_pct > 50 ||
-		    cooldown_s > 65535) {
+		    cooldown_s > 65535 || seq_restart_s > 65535) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		}
 
@@ -218,10 +226,13 @@ bool bMGR_AT_CMD_TXCFG_cmd(uint8_t *pu8_cmdParamString,
 		cfg.tx_max_count = (uint8_t)max_count;
 		cfg.tx_jitter_percent = (uint8_t)jitter_pct;
 		cfg.tx_cooldown_s = (uint16_t)cooldown_s;
+		cfg.tx_seq_restart_s = (uint16_t)seq_restart_s;
 		KNS_APP_uw_doppler_setTxCfg(&cfg);
 
-		MGR_LOG_INFO("[AT] TXCFG set: T0=%us growth=%u%% max=%us count=%u jit=%u%% cool=%us\r\n",
-			interval_s, growth, max_interval_s, max_count, jitter_pct, cooldown_s);
+		MGR_LOG_INFO("[AT] TXCFG set: T0=%us growth=%u%% max=%us count=%u "
+			"jit=%u%% cool=%us seqrst=%us\r\n",
+			interval_s, growth, max_interval_s, max_count, jitter_pct,
+			cooldown_s, seq_restart_s);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 

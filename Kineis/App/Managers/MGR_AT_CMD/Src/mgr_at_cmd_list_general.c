@@ -28,6 +28,9 @@
 #include "lpm.h" // used for AT+LPM command all is hardcoded so far
 #include "build_info.h"
 #include "mgr_log.h"
+#if defined(USE_UW_DOPPLER_APP)
+#include "kns_app_uw_doppler.h"  /* KNS_APP_uw_doppler_setSessionMC */
+#endif
 #include "mcu_nvm.h"
 #include "mcu_aes.h"
 #include "mcu_flash.h"
@@ -401,6 +404,13 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 			if (KNS_CFG_setMC(mc) == KNS_STATUS_OK)
 			{
 				MGR_LOG_DEBUG("+MC=%u\r\n", mc);
+#if defined(USE_UW_DOPPLER_APP)
+				/* UW_DOPPLER caches the MC per surface sequence in
+				 * retention NOLOAD. Sync the cache so the next TX uses
+				 * the new value the operator just set rather than the
+				 * pre-existing session value. */
+				KNS_APP_uw_doppler_setSessionMC(mc);
+#endif
 				return bMGR_AT_CMD_logSucceedMsg();
 			} else {
 				MGR_LOG_DEBUG("Failed to update MC=%u\r\n", mc);
