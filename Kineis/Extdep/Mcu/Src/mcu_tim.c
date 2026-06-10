@@ -92,6 +92,25 @@ void MCU_TIM_resetState(void)
 
 /* Functions -------------------------------------------------------------*/
 
+/* Flash range for the application image (cf. STM32WL55XX_FLASH_APP.ld).
+ * Used to validate that a stored isr_cb actually points at a callable
+ * function before we BLX through it.
+ */
+#define MCU_TIM_FLASH_START  0x08000000UL
+#define MCU_TIM_FLASH_END    0x08040000UL
+
+static inline bool mcu_tim_cb_is_valid(timeout_isr_cb_t cb)
+{
+	uintptr_t a = (uintptr_t)cb;
+	/* NULL → skip cleanly (never armed) ; out of flash → stale value left
+	 * by a previous firmware image in the RTC backup register. */
+	if (a == 0u)
+		return false;
+	if (a < MCU_TIM_FLASH_START || a >= MCU_TIM_FLASH_END)
+		return false;
+	return true;
+}
+
 /**
  * @brief  Tx Timeout ISR override
  *
@@ -107,22 +126,38 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if (htim == &htim16) {
 		MGR_LOG_VERBOSE("%d: %s %d\r\n", MCU_TIM_HDLR_TX_TIMEOUT, __FUNCTION__,
 			__LINE__);
-		if (timer[MCU_TIM_HDLR_TX_TIMEOUT].isr_cb != NULL)
-			timer[MCU_TIM_HDLR_TX_TIMEOUT].isr_cb();
+		timeout_isr_cb_t cb = timer[MCU_TIM_HDLR_TX_TIMEOUT].isr_cb;
+		if (mcu_tim_cb_is_valid(cb))
+			cb();
 	}
 }
 
 /**
   * @brief  Wake Up Timer callback.
   * @param[in] hrtc_local: RTC handle
+  *
+  * @note The isr_cb pointer lives in RTC backup (`.lpmSection`) which
+  *       survives flash erase + reflash. If the previous firmware
+  *       left a value pointing at code we have since overwritten, the
+  *       naive `!= NULL` check passes but the dispatch HardFaults.
+  *       mcu_tim_cb_is_valid() also rejects out-of-flash pointers so
+  *       a stale entry just gets skipped.
   */
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc_local)
 {
 	if (hrtc_local == &hrtc) {
 		MGR_LOG_VERBOSE("%d: %s %d\r\n", MCU_TIM_HDLR_TX_PERIOD, __FUNCTION__, __LINE__);
-		if (timer[MCU_TIM_HDLR_TX_PERIOD].isr_cb != NULL)
-			timer[MCU_TIM_HDLR_TX_PERIOD].isr_cb();
-
+		timeout_isr_cb_t cb = timer[MCU_TIM_HDLR_TX_PERIOD].isr_cb;
+		if (mcu_tim_cb_is_valid(cb)) {
+			cb();
+		} else {
+			/* Defensive: if a stale wake-up keeps firing, also
+			 * disarm it so we don't burn cycles on the IRQ
+			 * loop. Cheaper than a HardFault. */
+			(void)HAL_RTCEx_DeactivateWakeUpTimer(hrtc_local);
+			__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc_local, RTC_FLAG_WUTF);
+			timer[MCU_TIM_HDLR_TX_PERIOD].isr_cb = NULL;
+		}
 	}
 }
 
