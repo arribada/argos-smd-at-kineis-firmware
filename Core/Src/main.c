@@ -779,18 +779,24 @@ int main(void)
   MX_TIM16_Init();
   MX_RTC_Init();
 
-  /* Disarm any RTC wake-up timer left armed by a previous firmware image.
-   * mcu_tim.c stores its `timer[]` callback table in `.lpmSection` (RTC
-   * backup register) so it survives STANDBY/SHUTDOWN cold-boot cycles —
-   * but it also survives a flash erase + reflash, leaving the callback
-   * function pointer pointing to code that has been overwritten. If the
-   * old firmware armed a periodic RTC wake (e.g. the lib's L1 timer for
-   * MAC BASIC), the first wake after reflash dispatches to that garbage
-   * pointer and produces an immediate HardFault. Disarm the wake-up
-   * source here, before the lib has a chance to re-init it cleanly. */
+  /* Disarm any RTC wake-up timer left armed by a previous firmware image
+   * AND zero out the stale callback table that lives in the RTC backup
+   * registers. mcu_tim.c stores `timer[].isr_cb` in `.lpmSection` (RTC
+   * backup) so it survives STANDBY/SHUTDOWN — and ALSO survives a flash
+   * erase + reflash, which leaves the old firmware's function pointers
+   * dangling. If a HAL_TIM / HAL_RTCEx callback fires before the lib
+   * gets to re-init those handlers, it dispatches into invalid code
+   * → immediate HardFault (observed on every first boot after flash).
+   *
+   * Two-step recovery:
+   *   1. Stop the HW wake source so no spurious interrupt is queued.
+   *   2. Clear the callback table so even if an IRQ does fire later
+   *      (before lib MCU_TIM_init), the dispatcher sees a NULL cb and
+   *      skips the indirect call. */
   HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
   __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
   __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+  MCU_TIM_resetState();
 #if defined(USE_SPI_DRIVER)
   MX_SPI1_Init();
 #endif

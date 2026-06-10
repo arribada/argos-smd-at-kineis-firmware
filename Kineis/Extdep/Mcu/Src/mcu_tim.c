@@ -65,6 +65,29 @@ static const struct timer_desc_t timerDflt = {
 __attribute__((__section__(".lpmSection")))
 static struct timer_desc_t timer[MCU_TIM_HDLR_MAX] = {timerDflt};
 
+/** @brief Force-reset the timer[] callback table to a known-safe state.
+ *
+ * timer[] lives in `.lpmSection`, which the linker maps to the RTC backup
+ * registers. That section is NOT loaded from flash by the C runtime, so the
+ * static initialiser `= {timerDflt}` is effectively a no-op: the array
+ * survives across resets, including a flash erase + reflash. If the
+ * previous firmware left a valid `isr_cb` value pointing at code that has
+ * since been overwritten, the next HAL_TIM_PeriodElapsedCallback /
+ * HAL_RTCEx_WakeUpTimerEventCallback dispatch lands on a bogus address and
+ * the chip HardFaults.
+ *
+ * Call this once from main.c at boot, BEFORE the lib has a chance to arm
+ * any HW timer or expect a callback. Idempotent and safe — just zeroes the
+ * RAM-equivalent backup cells.
+ */
+void MCU_TIM_resetState(void)
+{
+	for (uint32_t i = 0; i < (uint32_t)MCU_TIM_HDLR_MAX; i++) {
+		timer[i].isr_cb     = NULL;
+		timer[i].timeout_ms = 0;
+	}
+}
+
 /* Static function declaration -------------------------------------------------------------*/
 
 /* Functions -------------------------------------------------------------*/
