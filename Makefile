@@ -104,7 +104,16 @@ MAC_PRFL = BASIC
 
 # LPM: deepest low power mode supported can be:
 # NONE, SLEEP, STOP, STANDBY, SHUTDOWN
-LPM = STOP
+# Default = SHUTDOWN so every build ships with the full LPM ladder compiled
+# in (sleep / stop / standby / shutdown). The runtime can still cap the
+# active level via AT+LPM=<bitmap>; we only pay extra flash for the unused
+# callbacks (about 2-3 KB). Capping at STOP at compile time used to be a
+# common foot-gun: UW_DOPPLER's MGR_LPM_UW_enterShutdownReed silently fell
+# back to NVIC_SystemReset (a soft reset) when LPM_SHUTDOWN_ENABLED was
+# off, defeating the whole point of the sealed end-of-mission path.
+# DOPPLER on SMD_NOPA / SMD_OP also required LPM=SHUTDOWN at build time
+# (MCU_DONE pin missing) — that constraint is now satisfied by default.
+LPM = SHUTDOWN
 
 # * Board type: choose between: SMD_PA, SMD_NOPA, SMD_STDALONE, SMD_OP
 BOARD = SMD_PA

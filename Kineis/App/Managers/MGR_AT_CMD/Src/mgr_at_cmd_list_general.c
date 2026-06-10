@@ -343,6 +343,17 @@ bool bMGR_AT_CMD_LPM_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 		if (scanParamRes == 2) {
 			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
 				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
+#if !defined(LPM_SHUTDOWN_ENABLED)
+			/* Defense in depth: lpm.c registers fp_shutdown_enter=NULL
+			 * when SHUTDOWN isn't compiled in, so a forced SHUTDOWN
+			 * (or a bitmap allowing it) would dispatch to a NULL
+			 * callback and crash. The Makefile default ships SHUTDOWN
+			 * since v3.0.2 — this branch only fires if someone built
+			 * with LPM=STOP or LPM=STANDBY explicitly. */
+			if ((forced & LOW_POWER_MODE_SHUTDOWN) != 0u ||
+			    (lpm & LOW_POWER_MODE_SHUTDOWN) != 0u)
+				return bMGR_AT_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE);
+#endif
 			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
 			LPM_setForcedMode((enum MgrLpm_LPM_t)forced);
 			return bMGR_AT_CMD_logSucceedMsg();
@@ -353,6 +364,10 @@ bool bMGR_AT_CMD_LPM_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 		if (scanParamRes == 1) {
 			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
 				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
+#if !defined(LPM_SHUTDOWN_ENABLED)
+			if ((lpm & LOW_POWER_MODE_SHUTDOWN) != 0u)
+				return bMGR_AT_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE);
+#endif
 			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
 			LPM_setForcedMode(LOW_POWER_MODE_NONE);
 			return bMGR_AT_CMD_logSucceedMsg();
