@@ -63,9 +63,19 @@
 #define LED_BLUE_Pin            GPIO_PIN_5   /* PB5 → LED_B cathode (schematic pin 3) */
 #define LED_BLUE_GPIO_Port      GPIOB
 
-/* ---- Reed switch (active HIGH: HIGH = magnet present) ---- */
+/* ---- Reed switch (active HIGH: HIGH = magnet present) ----
+ * Default wiring: PB6 — EXTI-only, wakes STOP2 but NOT SHUTDOWN (the WL55
+ * only has wake circuitry on the dedicated WKUP pins PA0/PC13/PB3).
+ * Build with BSP_REED_ON_WKUP3 (make REED_WKUP3=1, HW mod: reed wired to
+ * PB3) to move the reed to PB3 = WKUP3: power-off then uses true SHUTDOWN
+ * (sub-µA MCU floor) with magnet wake instead of the STOP2 soft-off. */
+#if defined(BSP_REED_ON_WKUP3)
+#define REED_MCU_Pin            GPIO_PIN_3
+#define REED_MCU_GPIO_Port      GPIOB
+#else
 #define REED_MCU_Pin            GPIO_PIN_6
 #define REED_MCU_GPIO_Port      GPIOB
+#endif
 
 /* ---- Power latch (HIGH = keep board powered) ---- */
 #define PWR_LATCH_Pin           GPIO_PIN_7

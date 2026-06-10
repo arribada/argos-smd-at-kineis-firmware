@@ -832,6 +832,12 @@ bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString,
 	HAL_Delay(100);
 	(void)MGR_NVM_save();
 #if defined(BSP_HAS_REED_SWITCH)
+	if (wake_s == 0u) {
+		/* Magnet-only power-off: latch release + STOP2 fallback so the
+		 * reed can wake even when VDD is bench-maintained (PB6 is not a
+		 * WKUP pin — SHUTDOWN would be unwakeable by the reed). */
+		MGR_LPM_UW_enterShutdownReed();
+	}
 	MGR_REED_releasePower();
 #endif
 	LPM_shutdownWithAutoWake(wake_s);

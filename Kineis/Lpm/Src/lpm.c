@@ -32,6 +32,7 @@
 #endif
 #if defined(USE_UW_DOPPLER_APP)
 #include "adc.h"
+#include "subghz.h"  /* HAL_SUBGHZ_DeInit before SHUTDOWN to drop radio ~500 µA */
 #endif
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"
@@ -485,6 +486,23 @@ static void LPM_shutdown_enter() {
 	/* Same reason as STANDBY entry: leave ADC peripheral in known state
 	 * so the next boot's MX_ADC_Init starts from a clean slate. */
 	MX_ADC_DeInit();
+
+	/* SubGHz peripheral keeps ~500 µA flowing through its bias network
+	 * even when idle. STOP2 path already does this teardown via
+	 * MGR_LPM_UW_enterStop2Timed; the SHUTDOWN path was missing it which
+	 * is why post-gesture power-down stayed at ~135 µA instead of the
+	 * ~5 µA target seen on the older firmware. HAL_SUBGHZ_DeInit gates
+	 * the peripheral clock and puts the radio in reset — equivalent of
+	 * what the chip itself does cold-booting from SHUTDOWN. */
+	extern SUBGHZ_HandleTypeDef hsubghz;
+	(void)HAL_SUBGHZ_DeInit(&hsubghz);
+
+	/* VBAT_EN HIGH leaks ~30 µA through the 120 k + 300 k divider chain.
+	 * Drive it LOW before the GPIO goes analog so the divider is broken
+	 * for the duration of SHUTDOWN. */
+#if defined(BSP_HAS_VBAT_ADC)
+	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
+#endif
 #endif
 
 	GPIO_DisableAllToAnalogInput();
@@ -775,6 +793,49 @@ void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 	/* Run the same teardown that the MGR_LPM aggregator would: ADC deinit,
 	 * GPIO to analog, pull-up/down config, wake-up RTC + pins armed. */
 	LPM_shutdown_enter();
+
+	/* Always disarm any leftover RTC wake-up timer before SHUTDOWN. If the
+	 * lib (or anyone else) armed the WUT during operation — e.g. the MAC
+	 * L1 timer via MCU_TIM_HDLR_TX_PERIOD — and we enter SHUTDOWN without
+	 * stopping it, the WUT fires within seconds and immediately cold-boots
+	 * the chip. That defeats the entire point of the sealed end-of-mission
+	 * path. Observed on the bench: enter_shutdown() → SHUTDOWN entered →
+	 * woke ~0.2 s later with PWR_SR1.WUFI set. */
+	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+
+	/* For the no-auto-wake case (wakeup_seconds == 0, e.g. magnet-only
+	 * end-of-mission), kill EVERY wake source the chip exposes so the
+	 * SHUTDOWN actually sticks. The reed-magnet wake on STDALONE is a
+	 * HW path (regulator latch via PB7) and doesn't go through any
+	 * of these — it brings the board back by re-energising VDD, which
+	 * triggers a cold POR reset, not a wake-from-SHUTDOWN.
+	 *
+	 * Observed pre-fix: with USB power propping VDD up during the
+	 * "shutdown" (debug bench scenario), the chip would enter SHUTDOWN
+	 * then wake within milliseconds via WUFI → SHUTDOWN → wake … in a
+	 * tight loop averaging ~440 µA. */
+	if (wakeup_seconds == 0) {
+		/* RTC alarms + WUT (in case anything other than the WUT we
+		 * just disarmed is sitting armed). */
+		(void)HAL_RTC_DeactivateAlarm(&hrtc, RTC_ALARM_A);
+		(void)HAL_RTC_DeactivateAlarm(&hrtc, RTC_ALARM_B);
+		__HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF | RTC_FLAG_ALRBF);
+
+		/* Internal wake-up line: gate all PWR-side internal sources. */
+		HAL_PWREx_DisableInternalWakeUpLine();
+		__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+
+		/* WKUP pins: even though LPM_configWakeUpPins() arms WKUP3
+		 * for "operator-pressed PB3 wakes the board" semantics on
+		 * SMD_PA/NOPA/OP, the reed-magnet path on STDALONE doesn't
+		 * use it (reed = PB6 ≠ WKUP pin) and a noisy floating PB3
+		 * would burn the SHUTDOWN attempt. Disable all three. */
+		HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN1);
+		HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN2);
+		HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN3);
+		__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+	}
 
 	/* Optional RTC wake-up timer for sealed-deployment auto-recovery.
 	 * Mirrors the pattern in kns_app_doppler.c:enter_shutdown(). */

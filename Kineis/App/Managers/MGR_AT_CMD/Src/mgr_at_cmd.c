@@ -314,6 +314,17 @@ uint8_t *MGR_AT_CMD_popNextAt(void)
 	return pu8_result;
 }
 
+/* Tick of the last decoded AT command. Used by the LPM scheduler as an
+ * "operator is talking to me" signal: while recent, deep sleep is held off
+ * so the console stays responsive (in STOP2 the LPUART is clockless and the
+ * board is deaf ~98% of the time). Zero until the first command. */
+static uint32_t s_last_at_activity_tick;
+
+uint32_t MGR_AT_CMD_getLastActivityTick(void)
+{
+	return s_last_at_activity_tick;
+}
+
 bool MGR_AT_CMD_decodeAt(uint8_t *pu8_atcmd)
 {
 	bool status = false;
@@ -322,6 +333,7 @@ bool MGR_AT_CMD_decodeAt(uint8_t *pu8_atcmd)
 	if (pu8_atcmd != NULL) {
 		/* Debug: log received AT command */
 		MGR_LOG_DEBUG("[AT_CMD] Received: %s\r\n", pu8_atcmd);
+		s_last_at_activity_tick = HAL_GetTick();
 
 		atcmdInfo = MGR_AT_CMD_getAtType(pu8_atcmd);
 		MGR_LOG_DEBUG("[AT_CMD] Index=%d, Type=%d\r\n", atcmdInfo.ATcmdIndex, atcmdInfo.ATcmdExecType);

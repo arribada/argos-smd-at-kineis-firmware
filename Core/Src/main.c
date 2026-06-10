@@ -698,6 +698,13 @@ int main(void)
    * power-cycle the board. */
   PWR->PDCRC &= ~(1UL << 1);  /* clear PC1 pull-down */
 
+  /* Purge any PB7 (PWR_LATCH) PWR pull-down a previous power-off left
+   * armed. PWR_PDCRx survives NRST/SFT resets (VDD-domain): a stale
+   * pull-down fights the external latch pull-up (~25 µA forever) and can
+   * hold the latch node low enough that "power off then on" appears
+   * stuck in shutdown. The pull-up anchor (PUCRB7) is kept. */
+  PWR->PDCRB &= ~(1UL << 7);  /* clear PB7 pull-down */
+
   /* Robustness for the 1V8 STANDBY path: drive PC1 HIGH bare-metal here,
    * BEFORE SystemClock_Config configures PLL and BEFORE any peripheral
    * touches an ADC. That way SystemClock_Config runs at 3V3 instead of

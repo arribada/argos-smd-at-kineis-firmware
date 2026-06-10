@@ -93,17 +93,33 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds);
  */
 void MGR_LPM_UW_enterStop2Timed(uint32_t seconds);
 
-/** @brief Enter SHUTDOWN mode. Board powers off via PWR_LATCH LOW.
+/** @brief Power off the board; only a reed-magnet event brings it back.
  *
- * Only the HW reed-switch circuit can re-energise the regulator on
- * SMD_STDALONE (the magnet re-applies VBAT to the regulator enable
- * via the external reed/PWR_LATCH OR-gate path). RTC wake does NOT
- * work from this mode because the chip itself is power-gated.
+ * Two-stage strategy so the magnet wake works whatever keeps VDD up:
+ *  1. PWR_LATCH (PB7) is driven LOW. On battery the regulator collapses
+ *     within ms → true power-off at the HW quiescent floor; the magnet
+ *     re-applies VBAT via the external reed/PWR_LATCH OR-gate → POR.
+ *  2. If VDD survives (bench USB/JLink backfeed), PB7 is released (no
+ *     pull fight with the external latch pull-up) and the chip loops in
+ *     STOP2 — where the reed EXTI on PB6 is wake-capable, unlike in
+ *     SHUTDOWN/STANDBY where only the dedicated WKUP pins PA0/PC13/PB3
+ *     can wake. A magnet edge then triggers NVIC_SystemReset → boot in
+ *     OPERATIONAL mode.
+ *
+ * All RTC wake sources are disarmed first: this mode ends only on magnet.
  *
  * Does not return.
  */
 __attribute__((noreturn))
 void MGR_LPM_UW_enterShutdownReed(void);
+
+/** @brief True exactly once after a magnet-woken soft-off restart.
+ *
+ * Set by the STOP2 soft-off loop right before its NVIC_SystemReset so
+ * the boot path can replay the wake feedback (green blink) even though
+ * RCC_CSR reports a software reset instead of a POR. Cleared on read.
+ */
+bool MGR_LPM_UW_consumeSoftOffWake(void);
 
 /** @brief Enter SHUTDOWN mode with optional auto-wake. If
  *  `wakeup_seconds > 0` the RTC alarm fires after the interval to

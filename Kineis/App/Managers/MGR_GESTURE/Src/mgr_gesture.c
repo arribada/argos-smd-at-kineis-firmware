@@ -45,6 +45,7 @@
 #include "mgr_reed.h"
 #include "mgr_led.h"
 #include "mgr_log.h"
+#include "mgr_lpm_uw.h"   /* MGR_LPM_UW_consumeSoftOffWake */
 #include "stm32wlxx_hal.h"
 #include "usart.h"
 #include <stdio.h>
@@ -274,7 +275,12 @@ void MGR_GESTURE_init(void)
 		s_first_init = false;
 		const uint32_t cold_mask =
 		    RCC_CSR_BORRSTF | RCC_CSR_PINRSTF | RCC_CSR_OBLRSTF;
-		if (g_boot_rcc_csr_raw & cold_mask) {
+		/* Magnet-woken soft-off ends in NVIC_SystemReset (SFTRST), not a
+		 * POR — the TAMP marker is how that wake claims its blink.
+		 * Consume unconditionally so a stale marker can't replay on a
+		 * later unrelated soft reset (AT+RESET, IWDG). */
+		const bool softoff_wake = MGR_LPM_UW_consumeSoftOffWake();
+		if ((g_boot_rcc_csr_raw & cold_mask) || softoff_wake) {
 			MGR_LED_blinkForced(MGR_LED_GREEN, MGR_GESTURE_WAKE_BLINK_COUNT,
 			                    MGR_GESTURE_BLINK_SLOW_ON_MS,
 			                    MGR_GESTURE_BLINK_SLOW_OFF_MS);

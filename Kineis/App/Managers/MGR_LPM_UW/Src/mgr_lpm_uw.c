@@ -34,11 +34,22 @@
 #include "adc.h"           /* MX_ADC_Init/DeInit — STOP2 entry/exit */
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"       /* MGR_LED_off before STOP2 */
-#include "mgr_reed.h"      /* MGR_REED_isMagnetPresent + REED_MCU_Pin */
 #endif
+#include "mgr_reed.h"      /* MGR_REED_releasePower + REED_MCU_Pin (stubs if no reed) */
+#include "mgr_at_cmd.h"    /* MGR_AT_CMD_getLastActivityTick — console grace window */
+
+/* Deep sleep is held off this long after the last decoded AT command so a
+ * bench/commissioning session stays interactive. */
+#define LPM_UW_AT_GRACE_MS  30000u
 /* GPIO disable to analog for minimum STOP2 leakage. */
 extern void GPIO_DisableAllToAnalogInput(void);
 extern void MX_GPIO_Init(void);
+
+/* Marker telling the next boot it was triggered by a magnet during soft-off,
+ * so the wake feedback (green blink) plays even though RCC_CSR shows SFTRST
+ * instead of a POR. Lives in TAMP backup: cleared on first consume and on
+ * any backup-domain (VBAT) loss. */
+#define SOFTOFF_WAKE_MAGIC  0x534F4657u  /* "SOFW" */
 
 /* SubGHz radio teardown for minimum STOP2 leakage — the peripheral
  * itself draws several hundred µA when left armed. */
@@ -309,6 +320,19 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 	if (MGR_REED_isDebouncing())
 		return;
 
+	/* Console grace window: someone is actively sending AT commands —
+	 * hold off deep sleep so the dialogue stays interactive. In STOP2 the
+	 * LPUART has no kernel clock (115200 needs HSI16) and the board is
+	 * deaf except for a ~50 ms window per wake; measured on the bench at
+	 * ~1 command landed per 40 attempts. Sealed deployments have no AT
+	 * traffic, so this gate never delays sleep in the field. */
+	{
+		const uint32_t last_at = MGR_AT_CMD_getLastActivityTick();
+		if (last_at != 0u &&
+		    (HAL_GetTick() - last_at) < LPM_UW_AT_GRACE_MS)
+			return;
+	}
+
 	/* Stabilization gate. Full 30 s on true cold-boot to give the
 	 * operator a UART window for AT commands. On wake-from-STANDBY
 	 * the previous cycle has proven the device is healthy, the box
@@ -430,16 +454,109 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 	for (;;) { /* unreachable */ }
 }
 
-/* ---- SHUTDOWN with reed-magnet wake ---- */
+/* ---- Power-off with reed-magnet wake ---- */
 
 void MGR_LPM_UW_enterShutdownReed(void)
 {
-	MGR_LOG_INFO("[LPM_UW] SHUTDOWN+reed\r\n");
-	/* Use the existing LPM_shutdownNow path. On SMD_STDALONE it pulls
-	 * PWR_LATCH LOW which lets the regulator collapse — the HW reed
-	 * circuit then re-energises VBUS when the magnet is applied. */
-	LPM_shutdownNow();
-	for (;;) { /* unreachable */ }
+	MGR_LOG_INFO("[LPM_UW] POWER_OFF: latch release, magnet-only wake\r\n");
+	HAL_Delay(20);  /* drain the UART TX FIFO before teardown */
+
+	/* This mode ends ONLY on a magnet event — disarm every scheduled
+	 * wake the RTC could deliver. */
+	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+	(void)HAL_RTC_DeactivateAlarm(&hrtc, RTC_ALARM_A);
+	(void)HAL_RTC_DeactivateAlarm(&hrtc, RTC_ALARM_B);
+	HAL_PWREx_DisableInternalWakeUpLine();
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+
+	/* Same peripheral-teardown floor as enterStop2Timed. */
+#if defined(BSP_HAS_LED_RGB)
+	MGR_LED_off();
+#endif
+	MGR_SWS_enterLowPower();
+	MX_ADC_DeInit();
+#if defined(BSP_HAS_VBAT_ADC)
+	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
+#endif
+	GPIO_DisableAllToAnalogInput();
+	(void)HAL_SUBGHZ_DeInit(&hsubghz);
+
+	/* UART RX must not wake the soft-off: magnet only. */
+	HAL_GPIO_DeInit(GPIOA, GPIO_PIN_3);
+	HAL_NVIC_DisableIRQ(LPUART1_IRQn);
+
+	/* Cut our own power: PB7 LOW, held through phase 1 (STOP2 retains
+	 * GPIO output drive). While the confirm magnet is still on the reed,
+	 * the external reed/PWR_LATCH OR-gate keeps the regulator alive no
+	 * matter what PB7 says — the actual collapse happens at magnet
+	 * removal. PB6 EXTI is wake-capable in STOP2 (the EXTI block stays
+	 * powered), unlike in SHUTDOWN/STANDBY where only the dedicated
+	 * WKUP pins PA0/PC13/PB3 have wake circuitry. */
+	MGR_REED_releasePower();
+	HAL_SuspendTick();
+
+	/* Phase 1 — wait in STOP2 for the confirm magnet to be removed.
+	 * Skipped instantly when no magnet is present (AT+SHUTDOWN path). */
+	while (HAL_GPIO_ReadPin(REED_MCU_GPIO_Port, REED_MCU_Pin)
+	       == GPIO_PIN_SET) {
+		__HAL_GPIO_EXTI_CLEAR_IT(REED_MCU_Pin);
+		HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+	}
+
+	/* Magnet gone + PB7 LOW: on battery the regulator collapses during
+	 * this window → true power-off at the HW quiescent floor; the next
+	 * boot is the reed re-latch POR. */
+	HAL_ResumeTick();
+	HAL_Delay(150);
+
+	/* Still alive → VDD is fed from elsewhere (bench USB/JLink backfeed)
+	 * or the regulator stayed up. Stop fighting the external latch
+	 * pull-up (VDD-through-Rpull into a LOW pin is a permanent ~25 µA
+	 * burn): give PB7 back to analog and purge any PWR-domain pull-down
+	 * a previous firmware left armed across resets. */
+	HAL_GPIO_DeInit(PWR_LATCH_GPIO_Port, PWR_LATCH_Pin);
+	(void)HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
+
+#if defined(BSP_REED_ON_WKUP3)
+	/* Reed wired to PB3 = WKUP3: true SHUTDOWN, wakeable by the magnet
+	 * through the dedicated WKUP circuitry (sub-µA MCU floor — LSE/RTC
+	 * and all clocks die with the core). Wake = cold-boot reset, the
+	 * gesture init forces OPERATIONAL. PWR pull-down keeps PB3 from
+	 * floating once GPIOs power off, so the magnet's rising edge is
+	 * detected cleanly. */
+	HAL_PWREx_EnablePullUpPullDownConfig();
+	(void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);
+	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN1);
+	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN2);
+	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN3);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
+	__HAL_RCC_CLEAR_RESET_FLAGS();
+	/* Marker set BEFORE entry: SHUTDOWN exit does not reliably raise a
+	 * cold-boot RCC flag, and any exit from this state (magnet or NRST)
+	 * legitimately deserves the wake feedback. */
+	TAMP->BKP11R = SOFTOFF_WAKE_MAGIC;
+	HAL_PWREx_EnterSHUTDOWNMode();
+	for (;;) { /* unreachable — SHUTDOWN exit is a reset */ }
+#else
+	/* Soft-off in STOP2, magnet-only wake. */
+	HAL_SuspendTick();
+
+	/* Phase 2 — any NEW magnet application restarts the board. */
+	for (;;) {
+		if (HAL_GPIO_ReadPin(REED_MCU_GPIO_Port, REED_MCU_Pin)
+		    == GPIO_PIN_SET) {
+			/* Magnet present: restart as if power-cycled. Gesture
+			 * boot path always forces OPERATIONAL mode. */
+			TAMP->BKP11R = SOFTOFF_WAKE_MAGIC;
+			NVIC_SystemReset();
+		}
+		__HAL_GPIO_EXTI_CLEAR_IT(REED_MCU_Pin);
+		HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+	}
+#endif
 }
 
 void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
@@ -733,3 +850,11 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t s)
 void MGR_LPM_UW_enterStop2Timed(uint32_t s) { (void)s; }
 
 #endif /* BSP_HAS_PWR_LATCH */
+
+bool MGR_LPM_UW_consumeSoftOffWake(void)
+{
+	if (TAMP->BKP11R != SOFTOFF_WAKE_MAGIC)
+		return false;
+	TAMP->BKP11R = 0u;
+	return true;
+}

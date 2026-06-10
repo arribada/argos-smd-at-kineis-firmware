@@ -87,6 +87,14 @@ static uint8_t  s_debounce_counter = 0;
 static bool     s_confirmed_state  = false;  /**< false = no magnet */
 static bool     s_candidate_state  = false;
 
+/* EXTI vector follows the reed pin: PB3 (WKUP3 bench mod) is on the
+ * dedicated EXTI3 line, default PB6 shares EXTI9_5. */
+#if defined(BSP_REED_ON_WKUP3)
+#define REED_EXTI_IRQn  EXTI3_IRQn
+#else
+#define REED_EXTI_IRQn  EXTI9_5_IRQn
+#endif
+
 /* ---- Public API ---- */
 
 void MGR_REED_init(void)
@@ -133,8 +141,8 @@ void MGR_REED_init(void)
 	rising_tick = 0;
 	last_edge_tick = 0;
 
-	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 2, 0);
-	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+	HAL_NVIC_SetPriority(REED_EXTI_IRQn, 2, 0);
+	HAL_NVIC_EnableIRQ(REED_EXTI_IRQn);
 }
 
 /* Poll the pin and update the debouncer state. Called lazily from
@@ -259,14 +267,23 @@ volatile uint32_t g_reed_isr_last_state  = 0;
 volatile uint32_t g_reed_isr_pin_at_call = 0;
 
 /**
- * @brief EXTI lines 5-9 interrupt handler. Only PB6 is configured for EXTI
- *        in this build, so dispatch is narrowed accordingly.
+ * @brief EXTI interrupt handler for the reed line. Only the reed pin is
+ *        configured for EXTI in this build, so dispatch is narrowed
+ *        accordingly: EXTI3 for the PB3/WKUP3 bench mod, EXTI9_5 for the
+ *        default PB6 wiring.
  * @note  Overrides the weak default from startup_stm32wl55xx_cm4.s.
  */
+#if defined(BSP_REED_ON_WKUP3)
+void EXTI3_IRQHandler(void)
+{
+	HAL_GPIO_EXTI_IRQHandler(REED_MCU_Pin);
+}
+#else
 void EXTI9_5_IRQHandler(void)
 {
 	HAL_GPIO_EXTI_IRQHandler(REED_MCU_Pin);
 }
+#endif
 
 /**
  * @brief HAL GPIO EXTI callback — invoked from HAL_GPIO_EXTI_IRQHandler.

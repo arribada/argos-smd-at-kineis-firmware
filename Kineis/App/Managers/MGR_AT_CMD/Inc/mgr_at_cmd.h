@@ -86,6 +86,14 @@ uint8_t *MGR_AT_CMD_popNextAt(void);
 bool MGR_AT_CMD_decodeAt(uint8_t *pu8_atcmd);
 
 /**
+ * @brief Tick (HAL_GetTick) of the last decoded AT command, 0 if none yet.
+ *
+ * LPM schedulers use this as an "operator is on the console" signal to hold
+ * off deep sleep while AT traffic is recent.
+ */
+uint32_t MGR_AT_CMD_getLastActivityTick(void);
+
+/**
  * @brief Fct used to retrieve and process event coming from kineis stack as answers to AT commands
  *
  * Typically, this is about processing TX events such as TX-done, TX-timeout, RX-timeout in case of

@@ -375,6 +375,12 @@ ifeq ($(BOARD),SMD_STDALONE)
 endif
 endif
 
+# Reed switch rewired to PB3 = WKUP3 (bench HW mod): power-off uses true
+# SHUTDOWN with magnet wake instead of the STOP2 soft-off loop.
+ifeq ($(REED_WKUP3),1)
+	C_DEFS += -DBSP_REED_ON_WKUP3
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC
