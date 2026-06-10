@@ -295,15 +295,15 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
     case (KNS_MAC_TXACK_TIMEOUT):
     case (KNS_MAC_RX_ERROR):
     case (KNS_MAC_RX_TIMEOUT):
-        spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-            srvcEvt.tx_ctxt.data_bitlen);
+        /* v11.1.0: tx_ctxt no longer carries data/data_bitlen. With SPI
+         * command mode the queue depth is 1, so head == the element. */
+        spUserDataMsg = USERDATA_txFifoGetFirst();
         kns_assert(spUserDataMsg != NULL);
         /* macStatus will be set in the processing switch below */
         break;
     case (KNS_MAC_ERROR):
         if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-            spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-                srvcEvt.tx_ctxt.data_bitlen);
+            spUserDataMsg = USERDATA_txFifoGetFirst();
             MCU_MISC_TCXO_Force_State(false);
             MCU_MISC_turn_off_pa();
             kns_assert(spUserDataMsg != NULL);
@@ -413,7 +413,13 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         cbStatus = KNS_STATUS_OK;
         break;
 
-    case (KNS_MAC_DL_BC):
+    /* v11.1.0 split the legacy KNS_MAC_DL_BC into three distinct DL frame
+     * types. We treat all three identically from the MGR_SPI_CMD layer:
+     * downlink received, host notified.
+     */
+    case (KNS_MAC_DL_USERBC):
+    case (KNS_MAC_DL_SYSBC):
+    case (KNS_MAC_DL_ALLCAST):
         MGR_LOG_DEBUG("MGR_SPI_CMD Downlink beacon received\r\n");
         macStatus = MAC_RX_RECEIVED;
         cbStatus = KNS_STATUS_OK;

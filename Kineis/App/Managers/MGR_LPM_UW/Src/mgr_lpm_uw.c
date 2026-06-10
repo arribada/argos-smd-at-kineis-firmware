@@ -48,12 +48,15 @@ extern void MX_SUBGHZ_Init(void);
 /* LPTIM1 is the wake source for the SLEEP tier — autonomous LSI-clocked
  * timer that keeps running through STOP1 and fires an IRQ at the
  * configured timeout, giving us sub-second precision (LSI ≈ 32 kHz ⇒
- * ~31 µs resolution, capped to ~2 s per pass by the 16-bit ARR). */
+ * ~31 µs resolution, capped to ~2 s per pass by the 16-bit ARR). Only
+ * compiled when the board has the PWR latch (real LPM path). */
+#if defined(BSP_HAS_PWR_LATCH)
 static LPTIM_HandleTypeDef s_lptim;
 static volatile bool       s_lptim_fired = false;
 #define LPTIM_LSI_HZ              32000u
 #define LPTIM_MAX_MS_PER_PASS     2000u  /* 16-bit ARR / 32 ticks/ms */
 static void enter_sleep_for_ms(uint32_t ms);
+#endif
 /* MGR_SWS enter/exitLowPower drop the SWS analog rail so it doesn't
  * burn current during STOP2. */
 extern void MGR_SWS_enterLowPower(void);
@@ -704,7 +707,9 @@ void MGR_LPM_UW_setDutyCfg(uint16_t a, uint16_t b, uint8_t c)
     { (void)a; (void)b; (void)c; }
 void MGR_LPM_UW_getDutyCfg(uint16_t *a, uint16_t *b, uint8_t *c)
 {
-	if (a) *a = 0; if (b) *b = 0; if (c) *c = 0;
+	if (a) *a = 0;
+	if (b) *b = 0;
+	if (c) *c = 0;
 }
 void MGR_LPM_UW_setShutdownThreshold(uint16_t s) { (void)s; }
 uint16_t MGR_LPM_UW_getShutdownThreshold(void) { return 0; }

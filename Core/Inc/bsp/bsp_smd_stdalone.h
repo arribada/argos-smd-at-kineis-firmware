@@ -16,6 +16,10 @@
 #define BSP_HAS_REED_SWITCH     1
 #define BSP_HAS_PWR_LATCH       1
 #define BSP_HAS_VBAT_ADC        1
+/* Krd v11.1.0 features — gated by AT handlers, GUI probes at connect */
+#define BSP_HAS_DOWNLINK        0   /* No Argos RX hardware on SMD_STDALONE */
+#define BSP_HAS_GNSS            0   /* No GNSS module */
+#define BSP_HAS_SATDET          0   /* No satellite detection RX path */
 
 /* ---- Debug pins ---- */
 #define JTMS_SWCLK_Pin          GPIO_PIN_14

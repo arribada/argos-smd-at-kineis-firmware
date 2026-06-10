@@ -380,14 +380,19 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	case (KNS_MAC_TXACK_TIMEOUT):
 	case (KNS_MAC_RX_ERROR):
 	case (KNS_MAC_RX_TIMEOUT):
-		spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-			srvcEvt.tx_ctxt.data_bitlen);
+		/* v11.1.0 dropped tx_ctxt.data/.data_bitlen — the only field left is
+		 * tx_ctxt.frm_hdlr (frame handler id). The reference app would look
+		 * the element up by frm_hdlr, but USERDATA_txFifo currently doesn't
+		 * expose such a lookup, so we use the head of the FIFO instead:
+		 * with AT-driven TX the queue depth is 1 (we wait for completion
+		 * before pushing another) so head == element-being-completed.
+		 */
+		spUserDataMsg = USERDATA_txFifoGetFirst();
 		kns_assert(spUserDataMsg != NULL);
 	break;
 	case (KNS_MAC_ERROR):
 		if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-			spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-				srvcEvt.tx_ctxt.data_bitlen);
+			spUserDataMsg = USERDATA_txFifoGetFirst();
 			MCU_MISC_TCXO_Force_State(false);
 			MCU_MISC_turn_off_pa();
 			kns_assert(spUserDataMsg != NULL);
@@ -524,7 +529,10 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 	break;
 #ifdef USE_RX_STACK
 	case (KNS_MAC_DL_ACK):
-	case (KNS_MAC_DL_BC):
+	/* v11.1.0 split KNS_MAC_DL_BC into 3 explicit downlink types. */
+	case (KNS_MAC_DL_USERBC):
+	case (KNS_MAC_DL_SYSBC):
+	case (KNS_MAC_DL_ALLCAST):
 //		MGR_LOG_DEBUG("MGR_AT_CMD DL callback reached\r\n");
 //		MGR_LOG_DEBUG("decoded msg (%d bits = %d bytes + %d bits): 0x",
 //			srvcEvt.rx_ctxt.data_bitlen,

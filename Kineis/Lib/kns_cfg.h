@@ -52,6 +52,18 @@
 #define DEVICE_ADDR_LENGTH         4
 #define DEVICE_SN_LENGTH          14
 
+/* Types --------------------------------------------------------------------------------------- */
+
+/** @brief Bitmap listing stack configuration bits
+ */
+union KNS_CFG_bitmap_t {
+	struct {
+		uint32_t suspend:1; // suspend L1 timer. Note exclusive with resume
+		uint32_t resume:1;  // resume L1 timer. Note, exclusive with suspend
+	};
+	uint32_t raw;
+};
+
 /* Structures ---------------------------------------------------------------------------------- */
 
 /**
@@ -140,6 +152,22 @@ enum KNS_status_t KNS_CFG_getAddr(uint8_t dev_add[]);
  * @return Status @ref KNS_status_t
  */
 enum KNS_status_t KNS_CFG_getSN(uint8_t sn[]);
+
+/**
+ * @brief Set some Kineis stack configuration
+ *
+ * @param[in] cfg : configuration bitmap
+ *
+ * @return Status @ref KNS_status_t
+ */
+enum KNS_status_t KNS_CFG_setCfg(union KNS_CFG_bitmap_t cfg);
+
+/**
+ * @brief Get the stack config
+ *
+ * @return cfg stack configuration bitmap
+ */
+union KNS_CFG_bitmap_t KNS_CFG_getCfg(void);
 
 #pragma GCC visibility pop
 

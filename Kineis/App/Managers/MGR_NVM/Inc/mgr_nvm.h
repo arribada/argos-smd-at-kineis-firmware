@@ -23,8 +23,11 @@
 #include <stdbool.h>
 #include "kns_app_uw_doppler.h"
 #include "mgr_sws.h"
-#include "mgr_led.h"
 #include "mgr_bat.h"
+/* led_mode is stored as a raw uint8_t (the enum value cast) so we don't need to
+ * include mgr_led.h here; the .c file pulls it in conditionally on BSP_HAS_LED_RGB.
+ * Skipping the include unlocks UW_DOPPLER on SMD_PA / SMD_NOPA / SMD_OP boards
+ * where mgr_led is compiled out. */
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
 #define NVM_VERSION 6

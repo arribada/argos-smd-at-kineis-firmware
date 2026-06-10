@@ -74,7 +74,12 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 	uint8_t *prflCfgPtr;
 	uint16_t idx;
 
-	uint8_t prflCtxtData[13]; // 6 bytes doubled due to sscanf ASCII + end \0
+	/* v11.1.0 BLIND_usrCfg_t grew to 7 bytes (added per_offset field), so the
+	 * ASCII buffer is now 14 hex chars + NUL. Memset to 0 so a GUI still
+	 * sending the legacy 12-char payload yields per_offset=0 (compatible
+	 * with v10 behaviour).
+	 */
+	uint8_t prflCtxtData[15] = {0};
 	struct KNS_MAC_appEvt_t appEvt = {
 		.id = KNS_MAC_INIT,
 		.init_prfl_ctxt = {
@@ -98,7 +103,7 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 	{
 		int16_t temp_id = 0;
 		scan_param_res = (int16_t)sscanf((const char *)pu8_cmdParamString,
-				(const char *)"AT+KMAC=%hd,%12[0-9A-Fa-f]",
+				(const char *)"AT+KMAC=%hd,%14[0-9A-Fa-f]",
 				&temp_id,
 				prflCtxtData);
 		appEvt.init_prfl_ctxt.id = (enum KNS_MAC_prflId_t)temp_id;
@@ -132,6 +137,52 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 	return true;
 #endif
+}
+
+#include "kns_cfg.h"
+
+bool bMGR_AT_CMD_KCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		union KNS_CFG_bitmap_t cfg = KNS_CFG_getCfg();
+		MCU_AT_CONSOLE_send("+KCFG=%lu\r\n", (unsigned long)cfg.raw);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	uint32_t raw = 0;
+	if (pu8_cmdParamString == NULL ||
+	    sscanf((const char *)pu8_cmdParamString, "AT+KCFG=%lu",
+	           (unsigned long *)&raw) != 1)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+
+	union KNS_CFG_bitmap_t cfg = { .raw = raw };
+	enum KNS_status_t st = KNS_CFG_setCfg(cfg);
+	if (st != KNS_STATUS_OK)
+		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)st);
+	return bMGR_AT_CMD_logSucceedMsg();
+}
+
+bool bMGR_AT_CMD_KEVT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
+{
+	(void)pu8_cmdParamString;
+	if (e_exec_mode != ATCMD_STATUS_MODE)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+
+	/* Best-effort drain of the MAC-to-APP queue. On UW_DOPPLER builds the
+	 * app's own scheduler is already consuming the queue, so this almost
+	 * always emits zero events — that's fine. The GUI uses this for diag. */
+	struct KNS_MAC_srvcEvt_t evt;
+	unsigned count = 0;
+	while (KNS_Q_pop(KNS_Q_UL_MAC2APP, (void *)&evt) == KNS_STATUS_OK) {
+		MCU_AT_CONSOLE_send("+KEVT=%u,%u,%u\r\n",
+		                    (unsigned)evt.id, (unsigned)evt.status,
+		                    (unsigned)evt.app_evt);
+		count++;
+		if (count >= 32u) /* safety bound */
+			break;
+	}
+	MCU_AT_CONSOLE_send("+KEVT=count,%u\r\n", count);
+	return bMGR_AT_CMD_logSucceedMsg();
 }
 
 /**

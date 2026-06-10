@@ -21,8 +21,10 @@ MCU_NVM_setMC
 MCU_NVM_setRadioConfZone
 MCU_TIM_deinit
 MCU_TIM_init
+MCU_TIM_resume
 MCU_TIM_start
 MCU_TIM_stop
+MCU_TIM_suspend
 __aeabi_uldivmod
 __popcountsi2
 kns_assert_failed

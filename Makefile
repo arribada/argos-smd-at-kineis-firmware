@@ -203,6 +203,7 @@ $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_flash.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_aes.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/aes.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_nvm.c \
+$(KINEIS_DIR)/Extdep/Mcu/Src/mcu_nvm_blind_pos.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_tim.c \
 $(KINEIS_DIR)/App/Mcu/Src/mcu_at_console.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd.c \
@@ -211,6 +212,7 @@ $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_user_data.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_general.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_mac.c \
+$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_v11.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_certif.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_previpass.c \
 $(KINEIS_DIR)/App/Kineis_os/KNS_Q/Src/kns_q.c \
@@ -525,14 +527,17 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
 endif
 endif
 
-# Board-specific drivers
+# Board-specific drivers. Sources are only compiled on boards with the matching
+# hardware (LED RGB + reed switch on SMD_STDALONE), but the public headers are
+# always exposed so dependent modules (MGR_GESTURE / MGR_NVM) can include them
+# and gate the calls with BSP_HAS_LED_RGB / BSP_HAS_REED at the call site.
+C_INCLUDES += \
+-I$(KINEIS_DIR)/App/Managers/MGR_LED/Inc \
+-I$(KINEIS_DIR)/App/Managers/MGR_REED/Inc
 ifeq ($(BOARD),SMD_STDALONE)
 C_SOURCES += \
 $(KINEIS_DIR)/App/Managers/MGR_LED/Src/mgr_led.c \
 $(KINEIS_DIR)/App/Managers/MGR_REED/Src/mgr_reed.c
-C_INCLUDES += \
--I$(KINEIS_DIR)/App/Managers/MGR_LED/Inc \
--I$(KINEIS_DIR)/App/Managers/MGR_REED/Inc
 endif
 
 # Note: COMM UART/SPI defines already set above (line 314)

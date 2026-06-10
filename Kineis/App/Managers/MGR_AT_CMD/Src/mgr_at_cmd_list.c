@@ -17,6 +17,7 @@
 #include "mgr_at_cmd_list_user_data.h"
 #include "mgr_at_cmd_list_previpass.h"
 #include "mgr_at_cmd_list_mac.h"
+#include "mgr_at_cmd_list_v11.h"
 #include "mgr_at_cmd_list_certif.h"
 #ifdef USE_UW_DOPPLER_APP
 #include "mgr_at_cmd_list_uw_doppler.h"
@@ -25,7 +26,7 @@
 #include "mgr_at_cmd_list_doppler.h"
 #endif
 
-const char *atcmd_version = "v0.8";
+const char *atcmd_version = "v0.8.1";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
@@ -58,6 +59,16 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 
 	/**< MAC commands (not functionnal, only to avoid GUI to crash) */
 	{ "AT+KMAC",          7, bMGR_AT_CMD_KMAC_cmd},
+
+	/**< v11.1.0 stack-side additions (KCFG/KEVT) + gated board features (DL/GNSS).
+	 * Longest prefix first; KEVT before KMAC would be wrong here because KMAC is
+	 * still shorter than KEVT/KCFG. The dispatcher does longest-prefix-first so
+	 * relative order among same-length prefixes only matters when one is a
+	 * prefix of another (not the case here). */
+	{ "AT+KCFG",          7, bMGR_AT_CMD_KCFG_cmd},
+	{ "AT+KEVT",          7, bMGR_AT_CMD_KEVT_cmd},
+	{ "AT+GNSS",          7, bMGR_AT_CMD_GNSS_cmd},
+	{ "AT+DL",            5, bMGR_AT_CMD_DL_cmd},
 
 	/**< Prepass command (stub for GUI compatibility) */
 	{ "AT+PREPASS_EN",   13, bMGR_AT_CMD_PREPASS_EN_cmd},

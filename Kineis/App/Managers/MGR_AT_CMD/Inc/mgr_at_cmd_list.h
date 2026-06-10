@@ -52,6 +52,10 @@ enum  atcmd_idx_t {
 
 	// MAC commands
 	AT_KMAC,         /**< Index for change profile */
+	AT_KCFG,         /**< v11.1.0: MAC L1 timer bitmap (suspend/resume) */
+	AT_KEVT,         /**< v11.1.0: dump pending MAC events */
+	AT_DL,           /**< v11.1.0: Argos downlink RX (gated BSP_HAS_DOWNLINK) */
+	AT_GNSS,         /**< v11.1.0: GNSS position (gated BSP_HAS_GNSS) */
 
 	// Prepass command
 	AT_PREPASS_EN,        /**< Enable prepass, not implemented */

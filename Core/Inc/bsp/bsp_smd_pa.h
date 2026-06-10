@@ -9,6 +9,10 @@
 /* ---- Board capabilities ---- */
 #define BSP_BOARD_NAME          "SMD_PA"
 #define BSP_HAS_EXTERNAL_PA     1
+/* Krd v11.1.0 features — gated by AT handlers, GUI probes at connect */
+#define BSP_HAS_DOWNLINK        0   /* Argos RX path (SubGHz RX + cred) */
+#define BSP_HAS_GNSS            0   /* GNSS module */
+#define BSP_HAS_SATDET          0   /* Satellite detection RX path */
 
 /* ---- Debug pins ---- */
 #define JTMS_SWCLK_Pin          GPIO_PIN_14

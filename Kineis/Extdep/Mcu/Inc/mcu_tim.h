@@ -115,6 +115,34 @@ enum mcu_tim_status_t MCU_TIM_getCount(enum mcu_tim_hdlr hdlr, uint32_t *elapsed
  */
 enum mcu_tim_status_t MCU_TIM_stop(enum mcu_tim_hdlr hdlr);
 
+/**
+ * @brief Function used to suspend timer.
+ *
+ * Depending on the application, the suspend/resume mechanism may entirely disable/re-enable the
+ * timer or simply just postpone its internal tick
+ *
+ * @param[in] hdlr timer handler
+ * @param[in] ctxt pointer to some potentiel context or configuration which may impact the behaviour
+ * of suspend resume
+ *
+ * @return  MCU_TIM_STATUS_OK if success. Error status otherwise.
+ */
+enum mcu_tim_status_t MCU_TIM_suspend(enum mcu_tim_hdlr hdlr, void *ctxt);
+
+/**
+ * @brief Function used to restart the timer.
+ *
+ * Depending on the application, the suspend/resume mechanism may entirely disable/re-enable the
+ * timer or simply just postpone its internal tick
+ *
+ * @param[in] hdlr timer handler
+ * @param[in] ctxt pointer to some potentiel context or configuration which may impact the behaviour
+ * of suspend resume
+ *
+ * @return  MCU_TIM_STATUS_OK if success. Error status otherwise.
+ */
+enum mcu_tim_status_t MCU_TIM_resume(enum mcu_tim_hdlr hdlr, void *ctxt);
+
 #endif /* MCU_TIM_H_ */
 
 /**

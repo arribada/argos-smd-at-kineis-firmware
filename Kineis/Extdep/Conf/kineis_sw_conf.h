@@ -53,6 +53,12 @@ enum ERROR_RETURN_T {
 	// General errors
 	ERROR_UNKNOWN = KNS_STATUS_MAX, /**< Start from Max limit of kineis status enum */
 	ERROR_INCOMPATIBLE_VALUE,
+	/* Hardware feature not present on this board (Arribada). The GUI can
+	 * probe AT+DL=? / AT+GNSS=? at connect time and grey-out the relevant
+	 * UI panels when this code comes back. Slotted right after
+	 * ERROR_INCOMPATIBLE_VALUE = 1001 so the value is 1002 — stable for
+	 * the GUI's parsing table. */
+	ERROR_FEATURE_NOT_AVAILABLE,
 
 	// User data errors
 	ERROR_INVALID_USER_DATA_LENGTH  = ERROR_UNKNOWN + 100,

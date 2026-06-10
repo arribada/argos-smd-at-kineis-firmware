@@ -81,6 +81,19 @@
 #include <string.h>
 #include "kns_app_uw_doppler.h"
 #include "main.h"
+
+/* Hardware requirements: UW_DOPPLER drives a reed switch (deploy/recovery
+ * gesture), a tri-colour LED (state indication) and the PWR latch (deep LPM
+ * cycling). These are present on SMD_STDALONE only; on PA / NOPA / OP the
+ * board lacks the corresponding GPIO and there's no meaningful UW_DOPPLER
+ * behaviour to preserve. Refuse the build loudly rather than silently
+ * compile out the load-bearing logic. Checked AFTER main.h so the BSP
+ * macros are available. */
+#if !defined(BSP_HAS_REED_SWITCH) || !defined(BSP_HAS_LED_RGB) || \
+    !defined(BSP_HAS_PWR_LATCH)
+#  error "UW_DOPPLER requires a board with reed + RGB LED + PWR latch " \
+         "(currently only SMD_STDALONE). Pick BOARD=SMD_STDALONE."
+#endif
 #include "mgr_sws.h"
 #include "mgr_nvm.h"
 #include "mgr_wdg.h"
@@ -395,8 +408,12 @@ static KNS_APP_UwDopplerLbCfg_t lb_cfg = {
 };
 static bool lb_active = false; /**< Hysteretic state, updated each TX cycle. */
 /* Forward decl: lb_update is defined alongside the LB getters/setters near the
- * bottom of the file, but referenced from the TX scheduling loop above. */
+ * bottom of the file, but referenced from the TX scheduling loop above. Both
+ * the decl and definition are gated on BSP_HAS_VBAT_ADC since the only call
+ * sites are inside that same guard. */
+#if defined(BSP_HAS_VBAT_ADC)
 static bool lb_update(uint16_t bat_mV);
+#endif
 
 /* Deploy mode: 1 = deployed (TX enabled), 0 = not deployed (SWS runs but no TX) */
 static uint8_t deploy_mode = 1;
@@ -1494,7 +1511,11 @@ void KNS_APP_uw_doppler_loop(void)
 		    MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
 			hb_last_tick = now;
 			static char hb_buf[160];
+#if defined(BSP_HAS_REED_SWITCH)
 			const uint32_t reed_now = (uint32_t)MGR_REED_isMagnetPresent();
+#else
+			const uint32_t reed_now = 0u;  /* no reed on this board */
+#endif
 			const int hb_n = snprintf(hb_buf, sizeof(hb_buf),
 				"%shb t=%lu s=%lu reed=%lu reedISR=%lu pin=%lu | atRX=%lu parse=%lu cbN=%lu\r\n",
 				MGR_LOG_levelTag(MGR_LOG_LVL_TRACE),
@@ -2319,6 +2340,7 @@ uint8_t KNS_APP_uw_doppler_getTestBurstRemaining(void)
 	return test_tx_remaining;
 }
 
+#if defined(BSP_HAS_VBAT_ADC)
 /* Update LB hysteretic state from a fresh battery reading. Returns the new
  * active state for convenience. lb_enter_mV=0 disables LB entirely. */
 static bool lb_update(uint16_t bat_mV)
@@ -2340,6 +2362,7 @@ static bool lb_update(uint16_t bat_mV)
 	}
 	return lb_active;
 }
+#endif /* BSP_HAS_VBAT_ADC */
 
 void KNS_APP_uw_doppler_restoreSwsBaselines(void)
 {
