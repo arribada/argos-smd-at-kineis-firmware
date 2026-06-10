@@ -30,6 +30,22 @@
 
 bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
 {
+#if defined(USE_UW_DOPPLER_APP)
+	/* UW_DOPPLER hardcodes the MAC profile to BASIC at boot and the
+	 * surface-driven TX path is the only one in this build — re-init via
+	 * AT+KMAC is meaningless. The GUI sends it as part of its KIM-device
+	 * discovery probe, so we acknowledge synchronously instead of pushing
+	 * an event the app loop never replies to (legacy behaviour was a
+	 * 1.5 s GUI timeout on every connect). */
+	(void)pu8_cmdParamString;
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		/* Hardcoded BASIC profile = id 1; report a zero-filled context
+		 * so the GUI doesn't choke on a missing comma. */
+		MCU_AT_CONSOLE_send("+KMAC=1,0000000000\r\n");
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+	return bMGR_AT_CMD_logSucceedMsg();
+#else
 	int16_t scan_param_res;
 	uint16_t prflCtxtCharNb;
 	enum KNS_status_t status = KNS_STATUS_OK;
@@ -94,6 +110,7 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 	if (status != KNS_STATUS_OK)
 		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
 	return true;
+#endif
 }
 
 /**
