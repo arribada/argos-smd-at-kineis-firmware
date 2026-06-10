@@ -55,7 +55,9 @@
 #else // else of USE_BAREMETAL
 #define KNS_Q_UL_MAC2APP_LEN           5
 #endif // end of USE_BAREMETAL
+#define KNS_Q_UL_MAC2APP_EVT_LIST_LEN  20
 #define KNS_Q_UL_MAC2APP_ITEM_BYTESIZE sizeof(struct KNS_MAC_srvcEvt_t)
+#define KNS_Q_UL_MAC2APP_EVT_LIST_ITEM_BYTESIZE KNS_Q_UL_MAC2APP_ITEM_BYTESIZE
 
 /**< @attention queue length should be one more than expected in case of baremetal KNS OS */
 #ifdef USE_BAREMETAL
@@ -91,11 +93,12 @@ enum KNS_Q_handle_t {
 	/** @attention keep below queue handlers for proper bahaviour of kineis stack
 	 * @attention align this enum with content of qPool declared in kns_q_conf.c
 	 */
-	KNS_Q_DL_APP2MAC   = 0,  /**< APP to MAC queue */
-	KNS_Q_UL_MAC2APP   = 1,  /**< MAC to APP queue */
-	KNS_Q_UL_INFRA2MAC = 2,  /**< INFRA to MAC queue, used by profile timer */
-	KNS_Q_UL_SRVC2MAC  = 3,  /**< SERVICE to MAC queue */
-	KNS_Q_MAX                /**< number of queues */
+	KNS_Q_UL_MAC2APP_EVT_LIST   = 0,  /**< MAC to APP event list to report (+KEVT) queue */
+	KNS_Q_DL_APP2MAC            = 1,  /**< APP to MAC queue */
+	KNS_Q_UL_MAC2APP            = 2,  /**< MAC to APP queue */
+	KNS_Q_UL_INFRA2MAC          = 3,  /**< INFRA to MAC queue, used by profile timer */
+	KNS_Q_UL_SRVC2MAC           = 4,  /**< SERVICE to MAC queue */
+	KNS_Q_MAX                         /**< number of queues */
 };
 
 
@@ -117,6 +120,7 @@ struct q_desc_t {
 	uint8_t nbElt;
 	uint8_t eltSize;
 	uint8_t *data;
+	bool isLpmBlocker; // Baremetal OS case: avoid entering LPM if some event present in Queue.
 };
 
 /* Extern -------------------------------------------------------------------------------------- */

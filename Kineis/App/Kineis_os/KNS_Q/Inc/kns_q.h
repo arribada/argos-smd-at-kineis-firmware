@@ -26,6 +26,7 @@
  *
  * From global kineis SW architecture, below is some example of queues used between ISR/TASK
  * contexts. It is sorted from lowest to highest priority order:
+ * * 4: KNS_Q_UL_MAC2APP_EVT_LIST used by the Kinéis application to report events to the user (mgr_at_cmd).
  * * 3: KNS_Q_DL_APP2MAC used from application to Kinéis stack (MAC internal component)
  * * 2: KNS_Q_UL_MAC2APP used from Kinéis stack to application (MAC internal component)
  * * 1: KNS_Q_UL_SRVC2MAC internally used internally in Kineis stack, to send end-of-processing

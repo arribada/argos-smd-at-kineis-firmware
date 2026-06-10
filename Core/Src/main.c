@@ -778,6 +778,19 @@ int main(void)
   MX_SUBGHZ_Init();
   MX_TIM16_Init();
   MX_RTC_Init();
+
+  /* Disarm any RTC wake-up timer left armed by a previous firmware image.
+   * mcu_tim.c stores its `timer[]` callback table in `.lpmSection` (RTC
+   * backup register) so it survives STANDBY/SHUTDOWN cold-boot cycles —
+   * but it also survives a flash erase + reflash, leaving the callback
+   * function pointer pointing to code that has been overwritten. If the
+   * old firmware armed a periodic RTC wake (e.g. the lib's L1 timer for
+   * MAC BASIC), the first wake after reflash dispatches to that garbage
+   * pointer and produces an immediate HardFault. Disarm the wake-up
+   * source here, before the lib has a chance to re-init it cleanly. */
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 #if defined(USE_SPI_DRIVER)
   MX_SPI1_Init();
 #endif
