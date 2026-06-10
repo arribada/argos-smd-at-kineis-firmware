@@ -45,14 +45,15 @@ extern void MX_GPIO_Init(void);
 #include "subghz.h"
 extern void MX_SUBGHZ_Init(void);
 
-/* TODO: SLEEP tier needs an LPTIM-based wake source for sub-second
- * STOP1 precision. The STM32WL55 HAL LPTIM driver is not currently
- * imported into Drivers/STM32WLxx_HAL_Driver/ (this project trims the
- * HAL to only the modules it uses). Importing it adds ~2 kLOC of HAL
- * code + LL helpers. Until then the SLEEP tier in idleTick falls back
- * to the STOP2 path with 1 s minimum rounding — the threshold logic
- * and API are already in place so the future enablement is a localised
- * change. */
+/* LPTIM1 is the wake source for the SLEEP tier — autonomous LSI-clocked
+ * timer that keeps running through STOP1 and fires an IRQ at the
+ * configured timeout, giving us sub-second precision (LSI ≈ 32 kHz ⇒
+ * ~31 µs resolution, capped to ~2 s per pass by the 16-bit ARR). */
+static LPTIM_HandleTypeDef s_lptim;
+static volatile bool       s_lptim_fired = false;
+#define LPTIM_LSI_HZ              32000u
+#define LPTIM_MAX_MS_PER_PASS     2000u  /* 16-bit ARR / 32 ticks/ms */
+static void enter_sleep_for_ms(uint32_t ms);
 /* MGR_SWS enter/exitLowPower drop the SWS analog rail so it doesn't
  * burn current during STOP2. */
 extern void MGR_SWS_enterLowPower(void);
@@ -330,10 +331,19 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 		return;
 	}
 
-	/* SLEEP and STOP2 tiers currently share the same STOP2 + RTC path
-	 * (CK_SPRE 1 Hz, rounded up to seconds). The SLEEP threshold is
-	 * honoured by the API and will be split off into a sub-second
-	 * STOP1+LPTIM (or RTC SubSec) wake path in a follow-up commit. */
+	if (delta_ms < s_lpm_thr.sleep_ms) {
+		/* SLEEP tier: STOP1 + LPTIM with sub-second precision. Cap to
+		 * the LPTIM 16-bit ARR limit; longer SLEEP requests downgrade
+		 * automatically to STOP2 below. */
+		if (delta_ms <= LPTIM_MAX_MS_PER_PASS) {
+			enter_sleep_for_ms(delta_ms);
+			return;
+		}
+		/* Fall through to STOP2 for the rare case where sleep_ms is
+		 * configured above the LPTIM range. */
+	}
+
+	/* STOP2 tier: RTC CK_SPRE 1 Hz wake — round up to seconds. */
 	uint32_t sleep_s = (delta_ms + 999u) / 1000u;
 	if (sleep_s < 1u)
 		sleep_s = 1u;
@@ -437,20 +447,95 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
 	for (;;) { /* unreachable */ }
 }
 
-/* TODO: SLEEP tier entry. Currently the idleTick scheduler routes the
- * spin_ms..sleep_ms tier into the STOP2 path with 1 s minimum rounding —
- * so the practical "sleep" duration is at least 1 second. A proper SLEEP
- * tier needs either:
- *   - LPTIM driver imported into Drivers/STM32WLxx_HAL_Driver/ (~2 kLOC)
- *     and configured with LSI to wake from STOP1 with sub-second
- *     precision, OR
- *   - RTC SubSecond alarm (ALRMA_SUBSEC) configured alongside the
- *     existing WakeUpTimer to give sub-second STOP2 wake.
- *
- * Both are deliverable on this hardware but neither fits in the current
- * session window. The thresholds in AT+LPMTHR are already in place and
- * the surrounding scheduler logic is correct, so wiring up the real
- * SLEEP path is a localised change once the HAL or RTC config is ready. */
+/* ---- SLEEP tier: STOP1 + LPTIM sub-second wake ---- */
+
+/* LSI nominal frequency. WL55 datasheet quotes ±50 % tolerance; that
+ * jitter is fine for the 10–500 ms range — the operator's perception
+ * threshold and the SWS state-change cadence are both orders of
+ * magnitude larger than the worst-case error. */
+
+static bool s_lptim_initialised = false;
+
+static void lptim_init_once(void)
+{
+	if (s_lptim_initialised)
+		return;
+
+	/* Route LSI to LPTIM1. LSI is already enabled by the IWDG path and
+	 * stays on across STOP modes, so we only need to select it as the
+	 * peripheral clock source. */
+	RCC_PeriphCLKInitTypeDef clk = {0};
+	clk.PeriphClockSelection = RCC_PERIPHCLK_LPTIM1;
+	clk.Lptim1ClockSelection = RCC_LPTIM1CLKSOURCE_LSI;
+	(void)HAL_RCCEx_PeriphCLKConfig(&clk);
+	__HAL_RCC_LPTIM1_CLK_ENABLE();
+
+	s_lptim.Instance                  = LPTIM1;
+	s_lptim.Init.Clock.Source         = LPTIM_CLOCKSOURCE_APBCLOCK_LPOSC;
+	s_lptim.Init.Clock.Prescaler      = LPTIM_PRESCALER_DIV1;
+	s_lptim.Init.Trigger.Source       = LPTIM_TRIGSOURCE_SOFTWARE;
+	s_lptim.Init.OutputPolarity       = LPTIM_OUTPUTPOLARITY_HIGH;
+	s_lptim.Init.UpdateMode           = LPTIM_UPDATE_IMMEDIATE;
+	s_lptim.Init.CounterSource        = LPTIM_COUNTERSOURCE_INTERNAL;
+	s_lptim.Init.Input1Source         = LPTIM_INPUT1SOURCE_GPIO;
+	s_lptim.Init.Input2Source         = LPTIM_INPUT2SOURCE_GPIO;
+	(void)HAL_LPTIM_Init(&s_lptim);
+
+	HAL_NVIC_SetPriority(LPTIM1_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(LPTIM1_IRQn);
+
+	s_lptim_initialised = true;
+}
+
+/* Match callback — overrides HAL's __weak default. We don't actually
+ * need to do anything except clear the sentinel because the IRQ itself
+ * is what wakes the chip from STOP1. */
+void HAL_LPTIM_AutoReloadMatchCallback(LPTIM_HandleTypeDef *hlptim)
+{
+	(void)hlptim;
+	s_lptim_fired = true;
+}
+
+void LPTIM1_IRQHandler(void)
+{
+	HAL_LPTIM_IRQHandler(&s_lptim);
+}
+
+/* SLEEP tier entry. STOP1 (lighter than STOP2 — peripherals partly
+ * alive, ~5 µs wake) gated by LPTIM IRQ. Returns after the timeout
+ * fires or any other EXTI / NVIC source wakes the chip. Used for the
+ * spin_ms..sleep_ms tier where sub-second precision matters. */
+static void enter_sleep_for_ms(uint32_t ms)
+{
+	if (ms == 0u)
+		return;
+	if (ms > LPTIM_MAX_MS_PER_PASS)
+		ms = LPTIM_MAX_MS_PER_PASS;
+
+	lptim_init_once();
+
+	/* LSI ≈ 32 kHz ⇒ 32 ticks per millisecond. The 16-bit ARR caps the
+	 * pass at ~2 s; any caller asking for more should use STOP2 instead. */
+	uint32_t ticks = ms * (LPTIM_LSI_HZ / 1000u);
+	if (ticks == 0u) ticks = 1u;
+	if (ticks > 0xFFFFu) ticks = 0xFFFFu;
+
+	s_lptim_fired = false;
+	(void)HAL_LPTIM_TimeOut_Start_IT(&s_lptim, 0xFFFFu, (uint32_t)ticks);
+
+#if defined(BSP_HAS_LED_RGB)
+	MGR_LED_off();
+#endif
+	MGR_SWS_enterLowPower();
+
+	HAL_SuspendTick();
+	HAL_PWREx_EnterSTOP1Mode(PWR_STOPENTRY_WFI);
+	HAL_ResumeTick();
+
+	(void)HAL_LPTIM_TimeOut_Stop_IT(&s_lptim);
+	MGR_SWS_exitLowPower();
+	MGR_SWS_forceMeasurement();
+}
 
 /* ---- STOP2 timed wake (production duty-cycle path) ---- */
 

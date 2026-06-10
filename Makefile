@@ -315,13 +315,15 @@ endif
 ifeq ($(APP),UW_DOPPLER)
 	C_DEFS +=  \
 	-DUSE_UW_DOPPLER_APP \
-	-DHAL_ADC_MODULE_ENABLED
+	-DHAL_ADC_MODULE_ENABLED \
+	-DHAL_LPTIM_MODULE_ENABLED
 
 	C_SOURCES += \
 	Core/Src/adc.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc_ex.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_lptim.c \
 	$(KINEIS_DIR)/App/Managers/MGR_SWS/Src/mgr_sws.c \
 	$(KINEIS_DIR)/App/Managers/MGR_NVM/Src/mgr_nvm.c \
 	$(KINEIS_DIR)/App/Managers/MGR_BAT/Src/mgr_bat.c \
