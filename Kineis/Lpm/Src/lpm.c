@@ -872,6 +872,13 @@ void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 
+	/* PWR_C2CR1.LPMS caps the SYSTEM mode (effective = shallowest of
+	 * CR1/C2CR1) and survives every reset except POR. Seen polluted to
+	 * Stop0 on the bench: "SHUTDOWN" degraded to a mode where IWDG kept
+	 * counting (16 s reboot) and WKUP pins never fired. CPU2 never boots
+	 * on this product — force "no floor" before entry. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+
 	HAL_PWREx_EnterSHUTDOWNMode();
 	/* Never returns — chip cold-boots on next wake. */
 #else

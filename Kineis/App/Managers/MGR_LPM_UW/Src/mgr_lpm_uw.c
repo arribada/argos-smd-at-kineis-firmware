@@ -78,6 +78,19 @@ void EXTI3_IRQHandler(void)
  * energy budget without an ammeter. */
 static uint32_t s_stop2_ms_total;
 static uint32_t s_stop2_count;
+
+/* CPU2 (CM0+) never boots, yet its PWR_C2CR1.LPMS still caps the SYSTEM
+ * low-power mode: the effective mode is the SHALLOWEST of CR1/C2CR1, and
+ * the register survives every reset except a true POR. Found on the
+ * bench reading C2CR1.LPMS = Stop0: every "SHUTDOWN" silently degraded
+ * (IWDG kept counting -> reboot at 16 s, WKUP3 never fired) and STOP2
+ * could degrade too. The CM4 HAL never programs C2CR1, so force "no
+ * floor from CPU2" before every deep-sleep entry — self-healing whatever
+ * pollutes the register. */
+static inline void lpm_uncap_cpu2(void)
+{
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+}
 /* GPIO disable to analog for minimum STOP2 leakage. */
 extern void GPIO_DisableAllToAnalogInput(void);
 extern void MX_GPIO_Init(void);
@@ -498,6 +511,7 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 
 	__HAL_RCC_CLEAR_RESET_FLAGS();
 
+	lpm_uncap_cpu2();
 	HAL_PWR_EnterSTANDBYMode();
 	for (;;) { /* unreachable */ }
 }
@@ -549,6 +563,7 @@ void MGR_LPM_UW_enterShutdownReed(void)
 	while (HAL_GPIO_ReadPin(REED_MCU_GPIO_Port, REED_MCU_Pin)
 	       == GPIO_PIN_SET) {
 		__HAL_GPIO_EXTI_CLEAR_IT(REED_MCU_Pin);
+		lpm_uncap_cpu2();
 		HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
 	}
 
@@ -584,10 +599,20 @@ void MGR_LPM_UW_enterShutdownReed(void)
 	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_RCC_CLEAR_RESET_FLAGS();
+	/* [DBG] WKUP3-wake bring-up: dump the arming state right before
+	 * entry (UART TX on PA2 is still alive at this point). Remove once
+	 * the magnet wake is validated on the bench. */
+	MGR_LOG_INFO("[LPM_UW] SHUTDOWN arm: CR3=%08lX CR4=%08lX SR1=%08lX PB3=%u PB6=%u\r\n",
+		(unsigned long)PWR->CR3, (unsigned long)PWR->CR4,
+		(unsigned long)PWR->SR1,
+		(unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3),
+		(unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6));
+	HAL_Delay(30);
 	/* Marker set BEFORE entry: SHUTDOWN exit does not reliably raise a
 	 * cold-boot RCC flag, and any exit from this state (magnet or NRST)
 	 * legitimately deserves the wake feedback. */
 	TAMP->BKP11R = SOFTOFF_WAKE_MAGIC;
+	lpm_uncap_cpu2();
 	HAL_PWREx_EnterSHUTDOWNMode();
 	for (;;) { /* unreachable — SHUTDOWN exit is a reset */ }
 #else
@@ -604,6 +629,7 @@ void MGR_LPM_UW_enterShutdownReed(void)
 			NVIC_SystemReset();
 		}
 		__HAL_GPIO_EXTI_CLEAR_IT(REED_MCU_Pin);
+		lpm_uncap_cpu2();
 		HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
 	}
 #endif
@@ -842,6 +868,7 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
+	lpm_uncap_cpu2();
 	HAL_SuspendTick();
 	LPM_saveRtcTime();
 	const uint32_t sleep_t0 = HAL_GetTick();

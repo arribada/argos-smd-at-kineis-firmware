@@ -1,3 +1,3 @@
 #include "build_info.h"
 
-const char uc_fw_vers_commit_id[] = "d0d72fa*_DVTxShtdwn_uw_doppler_basic_StdAlone_Uart,v11.1.0_e9373c5_0x6Tx,Jun 11 2026_11:41:18";
+const char uc_fw_vers_commit_id[] = "e4c229b*_DVTxShtdwn_uw_doppler_basic_StdAlone_Uart,v11.1.0_e9373c5_0x6Tx,Jun 11 2026_12:03:34";
