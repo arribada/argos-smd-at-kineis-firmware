@@ -267,6 +267,15 @@ static void vMGR_LPM_enterStop(struct MgrLpm_EnvConfig_t env_config)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
 
+#if defined(STM32WL55xx)
+	/* PWR_C2CR1.LPMS caps the SYSTEM low-power mode (effective mode =
+	 * shallowest of CR1/C2CR1, RM0453 6.5.3) and survives every reset
+	 * except POR. Seen polluted to Stop0 on the bench: every deep-sleep
+	 * request silently degraded (WKUP pins dead, IWDG kept counting).
+	 * CPU2 never boots on this product — force "no floor" before entry. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+#endif
+
 #if defined(STM32L476xx) || defined(STM32WLE5xx) || defined(STM32G491xx)
 #ifdef USE_BAREMETAL
 	if (!KNS_Q_isEvtInSomeQ()) // recheck all queues empty before LPM
@@ -305,6 +314,10 @@ static void vMGR_LPM_enterStandBy(struct MgrLpm_EnvConfig_t env_config)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+#if defined(STM32WL55xx)
+	/* See vMGR_LPM_enterStop: CPU2 LPMS floor must be opened. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+#endif
 	HAL_PWR_EnterSTANDBYMode();
 
 	/* We should never reach this point as standby exit performs a reset of the uC */
@@ -326,6 +339,10 @@ static void vMGR_LPM_enterShutdown(struct MgrLpm_EnvConfig_t env_config)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+#if defined(STM32WL55xx)
+	/* See vMGR_LPM_enterStop: CPU2 LPMS floor must be opened. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+#endif
 	HAL_PWREx_EnterSHUTDOWNMode();
 	
 	/* We should never reach this point as standby exit performs a reset of the uC */
