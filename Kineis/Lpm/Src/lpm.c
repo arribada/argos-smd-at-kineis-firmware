@@ -265,11 +265,14 @@ static void LPM_sleep_exit() {
 //	MGR_LOG_DEBUG("==== SLEEP exit ====\r\n");
 }
 
-/* RTC tick compensation: save RTC time before STOP to compensate HAL_GetTick() on exit */
+/* RTC tick compensation: save RTC time before STOP to compensate HAL_GetTick() on exit.
+ * Exported (lpm.h): the MGR_LPM_UW STOP2/STOP1 paths use the same pair so every
+ * software timer (TX schedule, seq-restart, SWS dive watchdog, AT grace) keeps
+ * counting WALL-CLOCK time across sleep instead of CPU-active time. */
 static uint32_t lpm_rtc_subsec_before_stop = 0;
 static uint32_t lpm_rtc_sec_before_stop = 0;
 
-static void LPM_saveRtcTime(void)
+void LPM_saveRtcTime(void)
 {
 	RTC_TimeTypeDef sTime;
 	RTC_DateTypeDef sDate;
@@ -279,7 +282,7 @@ static void LPM_saveRtcTime(void)
 	lpm_rtc_sec_before_stop = sTime.Hours * 3600 + sTime.Minutes * 60 + sTime.Seconds;
 }
 
-static void LPM_compensateTick(void)
+void LPM_compensateTick(void)
 {
 	RTC_TimeTypeDef sTime;
 	RTC_DateTypeDef sDate;

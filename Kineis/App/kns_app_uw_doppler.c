@@ -901,6 +901,47 @@ static void enter_shutdown(void)
 
 /* ---- Helpers ---- */
 
+/**
+ * @brief Milliseconds until the NEXT scheduled action — deadline-based
+ *        sleep source for the LPM scheduler.
+ *
+ * The scheduler sleeps exactly until the nearest pending deadline instead
+ * of a fixed period. Candidates:
+ *  - next SWS sample (dive/surface detection cadence),
+ *  - next TX of the running sequence (last_tx_tick + current_interval_ms),
+ *  - sequence-restart deadline once the TX cap is reached.
+ * Returns 0 when an action is due now (caller skips the sleep and lets the
+ * state machine run). Requires the STOP-mode tick compensation: all these
+ * timers are HAL_GetTick-based and must count wall-clock time.
+ */
+static uint32_t uw_ms_until_next_action(void)
+{
+	uint32_t delta = MGR_SWS_msUntilNextSample();
+	const uint8_t cap = lb_active ? lb_cfg.lb_tx_max_count
+	                              : tx_cfg.tx_max_count;
+	const uint32_t since = HAL_GetTick() - last_tx_tick;
+
+	/* Next TX of an in-flight sequence (cap not reached yet). */
+	if (tx_count > 0 && current_interval_ms > 0 &&
+	    (cap == 0u || tx_count < cap)) {
+		uint32_t r = (since >= current_interval_ms)
+			? 0u : (current_interval_ms - since);
+		if (r < delta)
+			delta = r;
+	}
+
+	/* Sequence-restart deadline (cap reached, timer armed). */
+	if (tx_cfg.tx_seq_restart_s > 0u && cap > 0u && tx_count >= cap &&
+	    last_tx_tick > 0u) {
+		const uint32_t rst_ms = (uint32_t)tx_cfg.tx_seq_restart_s * 1000u;
+		uint32_t r = (since >= rst_ms) ? 0u : (rst_ms - since);
+		if (r < delta)
+			delta = r;
+	}
+
+	return delta;
+}
+
 static uint32_t compute_next_interval_ms(uint32_t n)
 {
 	/* T_n = T_initial * (1 + growth/100)^n
@@ -2161,21 +2202,24 @@ void KNS_APP_uw_doppler_loop(void)
 #else
 					const bool g_busy = false, g_config = false;
 #endif
-					/* Event-driven LPM: ask the scheduler to drop into
-					 * whatever depth is right for the next scheduled
-					 * task (next SWS sample). spin / SLEEP / STOP2 is
-					 * picked from AT+LPMTHR thresholds. */
-					const uint32_t delta_ms =
-					    (sws_state == MGR_SWS_STATE_SURFACE)
-					    ? MGR_SWS_getSurfIntervalMs()
-					    : MGR_SWS_getUWIntervalMs();
-					MGR_LPM_UW_idleTick((int)sws_state, delta_ms,
-					                    g_busy, g_config);
+					/* Event-driven LPM: sleep exactly until the next
+					 * scheduled action (next SWS sample, next TX of
+					 * the sequence, or the seq-restart deadline —
+					 * whichever comes first). spin / SLEEP / STOP2 is
+					 * picked from AT+LPMTHR thresholds. delta==0 means
+					 * an action is due now: skip the sleep, the state
+					 * machine handles it on the next pass. */
+					const uint32_t delta_ms = uw_ms_until_next_action();
+					if (delta_ms > 0u)
+						MGR_LPM_UW_idleTick((int)sws_state, delta_ms,
+						                    g_busy, g_config);
 				}
 				return;
 			}
 		} else {
-			/* Underwater or deploy_mode=0 idle — deepest sleep path. */
+			/* Underwater or deploy_mode=0 idle — deepest sleep path.
+			 * No TX can be scheduled here; the only deadline is the
+			 * next SWS sample (fast cadence = fast surface detection). */
 			if (test_tx_remaining == 0u && !surface_tx_pending) {
 #if defined(UW_DOPPLER_HAS_GESTURE)
 				const bool g_busy   = MGR_GESTURE_isInteracting();
@@ -2184,8 +2228,10 @@ void KNS_APP_uw_doppler_loop(void)
 #else
 				const bool g_busy = false, g_config = false;
 #endif
-				MGR_LPM_UW_tryAutoCycle((int)sws_state,
-				                       g_busy, g_config);
+				const uint32_t delta_ms = MGR_SWS_msUntilNextSample();
+				if (delta_ms > 0u)
+					MGR_LPM_UW_idleTick((int)sws_state, delta_ms,
+					                    g_busy, g_config);
 			}
 			return;
 		}

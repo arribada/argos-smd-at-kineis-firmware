@@ -179,6 +179,19 @@ void LPM_shutdownNow(void);
  */
 void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds);
 
+/**
+ * @brief Snapshot the RTC time right before a STOP/STOP2 entry.
+ *
+ * Pair with LPM_compensateTick() on wake: together they add the real
+ * (RTC-measured) sleep duration to HAL_GetTick, so software timers keep
+ * counting wall-clock time across sleep. SysTick is dead in STOP modes;
+ * without the pair every tick-based timer counts CPU-active time only.
+ */
+void LPM_saveRtcTime(void);
+
+/** @brief Add the RTC-measured time slept since LPM_saveRtcTime() to uwTick. */
+void LPM_compensateTick(void);
+
 #endif /* LPM_KSTK_H */
 
 /**

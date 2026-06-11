@@ -370,12 +370,11 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 		 * configured above the LPTIM range. */
 	}
 
-	/* STOP2 tier: RTC CK_SPRE 1 Hz wake — round up to seconds. */
-	uint32_t sleep_s = (delta_ms + 999u) / 1000u;
-	if (sleep_s < 1u)
-		sleep_s = 1u;
-
-	MGR_LPM_UW_enterStop2Timed(sleep_s);
+	/* STOP2 tier: deadline-exact wake (RTCCLK/16 below 29 s, floored
+	 * CK_SPRE seconds above). The chip sleeps until the next scheduled
+	 * action — never past it; a sub-tier remainder is handled by the
+	 * next idleTick pass after the wake. */
+	MGR_LPM_UW_enterStop2TimedMs(delta_ms);
 	/* Returns here on wake. State machine continues normally. */
 }
 
@@ -649,8 +648,11 @@ static void enter_sleep_for_ms(uint32_t ms)
 	MGR_SWS_enterLowPower();
 
 	HAL_SuspendTick();
+	LPM_saveRtcTime();
 	HAL_PWREx_EnterSTOP1Mode(PWR_STOPENTRY_WFI);
 	HAL_ResumeTick();
+	/* Credit the real time slept to HAL_GetTick (SysTick was dead). */
+	LPM_compensateTick();
 
 	(void)HAL_LPTIM_TimeOut_Stop_IT(&s_lptim);
 	MGR_SWS_exitLowPower();
@@ -684,20 +686,37 @@ static void uw_restore_clock_from_stop(void)
 	(void)HAL_RCC_ClockConfig(&clk, flat);
 }
 
-void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
+void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 {
-	MGR_LOG_INFO("[LPM_UW] STOP2 %lus\r\n", (unsigned long)seconds);
+	MGR_LOG_INFO("[LPM_UW] STOP2 %lums\r\n", (unsigned long)ms);
 
-	if (seconds > 0xFFFFu) seconds = 0xFFFFu;
+	if (ms > 65535000u) ms = 65535000u;
 
 	/* Arm RTC wake-up timer if a non-zero interval was requested. With
-	 * seconds=0 only EXTI sources (reed, gesture) can wake. */
-	if (seconds > 0u) {
+	 * ms=0 only EXTI sources (reed, gesture) can wake.
+	 *
+	 * Two clockings — both chosen so the scheduler NEVER oversleeps a
+	 * deadline (any remainder is handled by the next idleTick pass):
+	 *  - < 29 s: RTCCLK/16 = 2048 Hz, ~0.49 ms steps. Exact-ms wake so a
+	 *    TX slot mid-sequence fires on time instead of "next multiple of
+	 *    the SWS period" (the old fixed-period behaviour).
+	 *  - >= 29 s: CK_SPRE 1 Hz, duration FLOORED to whole seconds. */
+	if (ms > 0u) {
 		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 		__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
-		(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
-		    (uint16_t)(seconds - 1u),
-		    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+		if (ms < 29000u) {
+			uint32_t ticks = (ms * 2048u) / 1000u;
+			if (ticks == 0u)
+				ticks = 1u;
+			(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+			    (uint16_t)(ticks - 1u),
+			    RTC_WAKEUPCLOCK_RTCCLK_DIV16, 0);
+		} else {
+			uint32_t seconds = ms / 1000u;
+			(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+			    (uint16_t)(seconds - 1u),
+			    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+		}
 	}
 
 	/* Internal wake-up line routes RTC events to the PWR wake-up logic.
@@ -754,6 +773,7 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
 	HAL_SuspendTick();
+	LPM_saveRtcTime();
 
 	/* Enter STOP2. WFI returns here once a configured wake source fires
 	 * (RTC alarm, or any pending EXTI — including reed PB6 which the
@@ -771,6 +791,13 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 *
 	 * Resume tick FIRST so the rest of the restore can use timed HAL. */
 	HAL_ResumeTick();
+
+	/* Add the RTC-measured sleep duration to HAL_GetTick. Without this
+	 * every tick-based timer (TX schedule, seq-restart, SWS dive
+	 * watchdog, AT grace) counts CPU-active time only and stretches by
+	 * the total time slept — a 10 s TX interval interleaved with STOP2
+	 * would take hundreds of wall-clock seconds to "elapse". */
+	LPM_compensateTick();
 
 	/* Clear the PB6 EXTI pending flag so a stale magnet edge captured
 	 * while we were still in the wake-up critical path doesn't fire a
@@ -812,6 +839,13 @@ void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
 	 * partially initialized UART hardware can stall the print. */
 }
 
+void MGR_LPM_UW_enterStop2Timed(uint32_t seconds)
+{
+	if (seconds > 65535u)
+		seconds = 65535u;
+	MGR_LPM_UW_enterStop2TimedMs(seconds * 1000u);
+}
+
 #else /* !BSP_HAS_PWR_LATCH */
 
 /* Without PWR_LATCH we can't keep the regulator alive through STANDBY,
@@ -848,6 +882,7 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t s)
     { LPM_shutdownWithAutoWake(s); for (;;) {} }
 
 void MGR_LPM_UW_enterStop2Timed(uint32_t s) { (void)s; }
+void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms) { (void)ms; }
 
 #endif /* BSP_HAS_PWR_LATCH */
 

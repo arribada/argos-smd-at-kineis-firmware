@@ -93,6 +93,17 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds);
  */
 void MGR_LPM_UW_enterStop2Timed(uint32_t seconds);
 
+/** @brief Millisecond-precision STOP2 (deadline-based scheduler entry).
+ *
+ * Below 29 s the RTC wake-up timer runs on RTCCLK/16 (2048 Hz, ~0.49 ms
+ * steps) so the wake lands on the requested deadline; above, CK_SPRE
+ * whole seconds FLOORED — the scheduler never sleeps past a deadline,
+ * any remainder is re-evaluated on the next idle pass. HAL_GetTick is
+ * compensated with the RTC-measured sleep so software timers count
+ * wall-clock time. Same teardown/restore as MGR_LPM_UW_enterStop2Timed.
+ */
+void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms);
+
 /** @brief Power off the board; only a reed-magnet event brings it back.
  *
  * Two-stage strategy so the magnet wake works whatever keeps VDD up:

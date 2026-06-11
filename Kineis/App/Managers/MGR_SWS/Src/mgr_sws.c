@@ -255,6 +255,20 @@ uint32_t MGR_SWS_getUWIntervalMs(void)
 	return sws_config.test_interval_underwater_ms;
 }
 
+uint32_t MGR_SWS_msUntilNextSample(void)
+{
+	/* SWS disabled: no sampling deadline — return "infinite" so it never
+	 * dominates the scheduler's min(); other deadlines (or the STOP2
+	 * clamp) bound the sleep. */
+	if (!sws_config.enabled)
+		return 0xFFFFFFFFu;
+	if (last_measurement_tick == 0)
+		return 0;
+	uint32_t interval = current_test_interval_ms();
+	uint32_t elapsed = HAL_GetTick() - last_measurement_tick;
+	return (elapsed >= interval) ? 0u : (interval - elapsed);
+}
+
 static void update_dynamic_threshold(void)
 {
 	if (water_baseline <= air_baseline) {

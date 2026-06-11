@@ -83,6 +83,11 @@ uint32_t MGR_SWS_getSurfIntervalMs(void);
 /** @brief Get the configured sampling interval (ms) for UNDERWATER state. */
 uint32_t MGR_SWS_getUWIntervalMs(void);
 
+/** @brief Milliseconds until the next SWS sample is due (0 = due now,
+ *  UINT32_MAX = SWS disabled, no deadline). Deadline source for the
+ *  event-driven LPM scheduler. */
+uint32_t MGR_SWS_msUntilNextSample(void);
+
 /** @brief Force immediate measurement (bypass interval timer) */
 void MGR_SWS_forceMeasurement(void);
 
