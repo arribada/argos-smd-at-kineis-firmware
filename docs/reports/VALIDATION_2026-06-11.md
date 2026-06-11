@@ -141,9 +141,14 @@ arme le WUT en RTCCLK/16 (pas de 0.49 ms) sous 29 s et en secondes
 PLANCHER au-dessus — ne dort jamais au-delà d'une échéance.
 
 Unitaire : `test_lpm_deadline.c` (13 checks) — agrégation, math DIV16/SPRE,
-clamps. **Validation bench restante** (batterie morte avant le flash) :
-vérifier les intervalles TX en temps réel avec LPM ON (séquence 2 du
-seq-restart, hors stabilisation) et les logs `STOP2 <N>ms` variables.
+clamps. **Validé au bench** (carte réalimentée, TXCFG=10,50,180,3,0,10,45,
+LPM ON, 2 cycles seq-restart complets observés hors stabilisation) :
+- Intervalles TX wall-clock EXACTS avec STOP2 entrecalé : TX à +10.0 s et
+  +15.0 s pile malgré 2-3 cycles STOP2 entre chaque TX (compensation tick).
+- Sommeils tronqués à l'échéance : `STOP2 4971ms / 4162ms / 3330ms /
+  4793ms` — réveil sur la prochaine action, plus de grille périodique.
+- Seq-restart à 45 s pile du dernier TX, MC +1 par séquence (139→140),
+  pattern reproductible.
 
 ## 11. Incident fin de session : carte hors tension
 
@@ -155,13 +160,10 @@ deadline-scheduler est compilé/testé mais PAS flashé. À la réalimentation :
 
 ## Restant / recommandations
 
-1. **Réalimenter la carte** (batterie), flasher le build courant
-   (`recover_nrst.jlink`), valider au bench le scheduler deadline-based :
-   intervalles TX wall-clock corrects avec LPM ON + logs `STOP2 <N>ms`.
-2. Mesure courant power-off avec le fil PB3 + build REED_WKUP3 (attendu
+1. Mesure courant power-off avec le fil PB3 + build REED_WKUP3 (attendu
    sub-5 µA) — matériel requis, utilisateur.
-3. Mesure courant STOP2 surface/UW pour chiffrer le budget énergie réel.
-4. Test en eau réelle (calibration SWS adaptative non testable à sec).
-5. SPI Option 3 (frm_hdlr matching) — différé, bench SPI requis.
-6. La config NVM surf_interval=5000 ms est conservée (cohérente énergie) ;
+2. Mesure courant STOP2 surface/UW pour chiffrer le budget énergie réel.
+3. Test en eau réelle (calibration SWS adaptative non testable à sec).
+4. SPI Option 3 (frm_hdlr matching) — différé, bench SPI requis.
+5. La config NVM surf_interval=5000 ms est conservée (cohérente énergie) ;
    descendre à 1000 ms si la réactivité AT à la surface prime.
