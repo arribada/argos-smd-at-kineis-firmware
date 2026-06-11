@@ -581,22 +581,32 @@ void MGR_LPM_UW_enterShutdownReed(void)
 	HAL_GPIO_DeInit(PWR_LATCH_GPIO_Port, PWR_LATCH_Pin);
 	(void)HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
 
-#if defined(BSP_REED_ON_WKUP3) || defined(BSP_REED_WKUP3_PARALLEL)
-	/* Reed reaches PB3 = WKUP3 (either moved there, or via the parallel
-	 * wire shared with PB6): true SHUTDOWN, wakeable by the magnet
-	 * through the dedicated WKUP circuitry (sub-µA MCU floor — LSE/RTC
-	 * and all clocks die with the core). Wake = cold-boot reset, the
-	 * gesture init forces OPERATIONAL. PWR pull-down keeps PB3 from
-	 * floating once GPIOs power off, so the magnet's rising edge is
-	 * detected cleanly. In PARALLEL mode the phase-1 magnet-removal wait
-	 * above ran on PB6 as usual — both pins see the same wire. */
+#if defined(BSP_REED_ON_WKUP3) || defined(BSP_REED_WKUP3_PARALLEL) || \
+    defined(BSP_REED_WKUP1_PARALLEL)
+	/* Reed reaches a dedicated WKUP pin (PB3=WKUP3 or PA0=WKUP1, moved
+	 * or via the parallel wire shared with PB6): true SHUTDOWN, wakeable
+	 * by the magnet through the WKUP circuitry (sub-µA MCU floor —
+	 * LSE/RTC and all clocks die with the core). Wake = cold-boot reset,
+	 * the gesture init forces OPERATIONAL. PWR pull-down keeps the WKUP
+	 * pin from floating once GPIOs power off, so the magnet's rising
+	 * edge is detected cleanly. In PARALLEL modes the phase-1
+	 * magnet-removal wait above ran on PB6 as usual — both pins see the
+	 * same wire. */
 	HAL_PWREx_EnablePullUpPullDownConfig();
+#if defined(BSP_REED_WKUP1_PARALLEL)
+	(void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_0);
+#else
 	(void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);
+#endif
 	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN1);
 	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN2);
 	HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN3);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+#if defined(BSP_REED_WKUP1_PARALLEL)
+	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN1_HIGH);
+#else
 	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
+#endif
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_RCC_CLEAR_RESET_FLAGS();
 	/* [DBG] WKUP3-wake bring-up: dump the arming state right before

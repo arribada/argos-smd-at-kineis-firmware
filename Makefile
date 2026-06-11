@@ -387,6 +387,13 @@ ifeq ($(REED_WKUP3_WIRE),1)
 	C_DEFS += -DBSP_REED_WKUP3_PARALLEL
 endif
 
+# Reed wired to BOTH PB6 and PA0 (WKUP1) — preferred: PA0 is unused and
+# carries no debug function (PB3/SWO has a header pull-up that poisons
+# the reed node).
+ifeq ($(REED_WKUP1_WIRE),1)
+	C_DEFS += -DBSP_REED_WKUP1_PARALLEL
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC

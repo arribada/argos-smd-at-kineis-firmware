@@ -84,8 +84,16 @@
 #define REED_MCU_GPIO_Port      GPIOB
 #endif
 
-#if defined(BSP_REED_ON_WKUP3) && defined(BSP_REED_WKUP3_PARALLEL)
-#error "BSP_REED_ON_WKUP3 and BSP_REED_WKUP3_PARALLEL are mutually exclusive"
+/* Third option — BSP_REED_WKUP1_PARALLEL (make REED_WKUP1_WIRE=1): the
+ * parallel wire goes to PA0 = WKUP1 instead of PB3. PREFERRED bench mod:
+ * PA0 is unused on SMD_STDALONE (analog) and has NO debug function — the
+ * PB3/SWO route turned out to be held high by the debug-header pull-up,
+ * which poisoned the whole reed node (no edges, +82 µA through the
+ * shutdown pull-down). */
+#if (defined(BSP_REED_ON_WKUP3) && defined(BSP_REED_WKUP3_PARALLEL)) || \
+    (defined(BSP_REED_ON_WKUP3) && defined(BSP_REED_WKUP1_PARALLEL)) || \
+    (defined(BSP_REED_WKUP3_PARALLEL) && defined(BSP_REED_WKUP1_PARALLEL))
+#error "BSP_REED_ON_WKUP3 / BSP_REED_WKUP3_PARALLEL / BSP_REED_WKUP1_PARALLEL are mutually exclusive"
 #endif
 
 /* ---- Power latch (HIGH = keep board powered) ---- */
