@@ -371,6 +371,15 @@ static void apply_config(const NVM_Config_t *cfg)
 	MGR_SWS_Config_t sws_cfg;
 	sws_cfg.threshold_min                 = cfg->sws_threshold_min;
 	sws_cfg.threshold_max                 = cfg->sws_threshold_max;
+	/* Heal the stale linkit-v4-ported default. 2000 (= linkit's 8000 on
+	 * their 14-bit scale) silently REJECTS real seawater on this board's
+	 * analog frontend (measured ~4000 on 12 bits) — every sample above
+	 * the cap is dropped and immersion is never detected. Boards that
+	 * ever saved with the old default carry it through every migration;
+	 * 2000 has no legitimate use on this hardware, so map it to full
+	 * scale. Other operator-set values are respected. */
+	if (sws_cfg.threshold_max == 2000u)
+		sws_cfg.threshold_max = 4095u;
 	sws_cfg.initial_air_baseline          = cfg->sws_initial_air_baseline;
 	sws_cfg.initial_water_baseline        = cfg->sws_initial_water_baseline;
 	sws_cfg.test_interval_surface_ms      = cfg->sws_test_interval_surface_ms;
