@@ -41,6 +41,10 @@
 /* Deep sleep is held off this long after the last decoded AT command so a
  * bench/commissioning session stays interactive. */
 #define LPM_UW_AT_GRACE_MS  30000u
+
+/* Below this wait, STOP2 entry+exit (clock restore + GPIO/SubGHz/ADC
+ * reinit, ~25 ms) costs more than it saves — spin instead. */
+#define STOP2_MIN_WORTH_MS  40u
 /* GPIO disable to analog for minimum STOP2 leakage. */
 extern void GPIO_DisableAllToAnalogInput(void);
 extern void MX_GPIO_Init(void);
@@ -353,27 +357,31 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 
 	(void)s_duty.shutdown_threshold_s;  /* unused by event-driven path */
 
-	if (delta_ms < s_lpm_thr.spin_ms) {
-		/* Too short for LPM entry overhead. Spin. */
-		return;
-	}
-
-	if (delta_ms < s_lpm_thr.sleep_ms) {
-		/* SLEEP tier: STOP1 + LPTIM with sub-second precision. Cap to
-		 * the LPTIM 16-bit ARR limit; longer SLEEP requests downgrade
-		 * automatically to STOP2 below. */
-		if (delta_ms <= LPTIM_MAX_MS_PER_PASS) {
-			enter_sleep_for_ms(delta_ms);
+	/* Spin tier: below the configured threshold (and never below the
+	 * STOP2 entry+exit overhead, ~25 ms of reinit) sleeping costs more
+	 * than it saves. */
+	{
+		uint32_t spin_floor = s_lpm_thr.spin_ms;
+		if (spin_floor < STOP2_MIN_WORTH_MS)
+			spin_floor = STOP2_MIN_WORTH_MS;
+		if (delta_ms < spin_floor)
 			return;
-		}
-		/* Fall through to STOP2 for the rare case where sleep_ms is
-		 * configured above the LPTIM range. */
 	}
 
-	/* STOP2 tier: deadline-exact wake (RTCCLK/16 below 29 s, floored
-	 * CK_SPRE seconds above). The chip sleeps until the next scheduled
-	 * action — never past it; a sub-tier remainder is handled by the
-	 * next idleTick pass after the wake. */
+	/* Everything else: STOP2 with deadline-exact RTC wake (RTCCLK/16
+	 * below 29 s, floored CK_SPRE seconds above). The chip sleeps until
+	 * the next scheduled action — never past it; remainders are handled
+	 * by the next idleTick pass.
+	 *
+	 * The legacy STOP1+LPTIM "SLEEP" tier is retired from this path: it
+	 * skipped the radio teardown (~500 µA with the SubGHz armed) and was
+	 * reproduced on the bench never waking from its WFI — with IWDG
+	 * frozen in STOP modes that wedges the chip until magnet/NRST
+	 * (silent, AT-deaf, ~700 µA). STOP2-DIV16 gives the same sub-second
+	 * precision with the full teardown and a proven wake path. The
+	 * sleep_ms threshold from AT+LPMTHR is accepted for compatibility
+	 * but both bands now map to STOP2. */
+	(void)s_lpm_thr.sleep_ms;
 	MGR_LPM_UW_enterStop2TimedMs(delta_ms);
 	/* Returns here on wake. State machine continues normally. */
 }
@@ -621,10 +629,14 @@ void LPTIM1_IRQHandler(void)
 }
 
 /* SLEEP tier entry. STOP1 (lighter than STOP2 — peripherals partly
- * alive, ~5 µs wake) gated by LPTIM IRQ. Returns after the timeout
- * fires or any other EXTI / NVIC source wakes the chip. Used for the
- * spin_ms..sleep_ms tier where sub-second precision matters. */
-static void enter_sleep_for_ms(uint32_t ms)
+ * alive, ~5 µs wake) gated by LPTIM IRQ.
+ *
+ * RETIRED from the production idle path (kept for future diagnostics):
+ * reproduced on the bench never waking from its WFI — with IWDG frozen
+ * in STOP modes the chip wedges silent/deaf at ~700 µA until magnet or
+ * NRST. It also skips the SubGHz teardown, so even when it worked the
+ * tier cost ~500 µA. idleTick routes its band to STOP2-DIV16 instead. */
+static void __attribute__((unused)) enter_sleep_for_ms(uint32_t ms)
 {
 	if (ms == 0u)
 		return;
