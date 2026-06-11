@@ -396,11 +396,17 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 		MCU_AT_CONSOLE_send("+MC=%d\r\n", mc);
 		return bMGR_AT_CMD_logSucceedMsg();
 	} else if(e_exec_mode == ATCMD_ACTION_MODE) {
-		if (sscanf((char*)pu8_cmdParamString, "%*[^=]= %hu", &mc) != 1)
+		/* Parse into a signed long so "-1" is rejected instead of being
+		 * wrapped by %hu into 65535 (caught by fuzzing). */
+		long mc_in;
+		if (sscanf((char*)pu8_cmdParamString, "%*[^=]= %ld", &mc_in) != 1)
 		{
 			MGR_LOG_DEBUG("Missing parameter: AT+MC=VALUE\r\n");
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		} else if (mc_in < 0 || mc_in > 0xFFFF) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		} else {
+			mc = (uint16_t)mc_in;
 			if (KNS_CFG_setMC(mc) == KNS_STATUS_OK)
 			{
 				MGR_LOG_DEBUG("+MC=%u\r\n", mc);

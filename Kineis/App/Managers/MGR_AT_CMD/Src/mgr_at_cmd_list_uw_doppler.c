@@ -733,6 +733,25 @@ bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString,
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
+bool bMGR_AT_CMD_LPMSTAT_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint32_t up = 0u, slept = 0u, cnt = 0u;
+		MGR_LPM_UW_getLpmStats(&up, &slept, &cnt);
+		/* duty_awake in 0.1 % units, computed on the host-friendly side:
+		 * awake = up - slept. */
+		uint32_t awake = up - slept;
+		uint32_t duty_x1000 = (up > 0u)
+			? (uint32_t)(((uint64_t)awake * 1000u) / up) : 0u;
+		MCU_AT_CONSOLE_send("+LPMSTAT=%lu,%lu,%lu,%lu\r\n",
+			(unsigned long)up, (unsigned long)slept,
+			(unsigned long)cnt, (unsigned long)duty_x1000);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
 bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString,
 	enum atcmd_type_t e_exec_mode)
 {
@@ -817,11 +836,23 @@ bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString,
 	/* Optional parameter: AT+SHUTDOWN=<wake_seconds>
 	 *   0   (or omitted)  → no RTC auto-wake; wake only on reed magnet.
 	 *   N   (1..131072)   → RTC fires after N seconds, chip cold-boots.
-	 * Useful to validate the wake path without needing 24 h of patience. */
+	 * Useful to validate the wake path without needing 24 h of patience.
+	 *
+	 * A '=' followed by garbage must REJECT, not power the board off:
+	 * fuzzing landed "AT+SHUTDOWN=zz" and the unchecked sscanf left
+	 * wake_s at 0 → magnet-only power-off executed. Powering off a
+	 * deployed tag is the most destructive command we have — parse
+	 * strictly. */
 	uint32_t wake_s = 0;
-	if (pu8_cmdParamString != NULL) {
-		(void)sscanf((const char *)pu8_cmdParamString,
-			"AT+SHUTDOWN=%lu", &wake_s);
+	if (pu8_cmdParamString != NULL &&
+	    strchr((const char *)pu8_cmdParamString, '=') != NULL) {
+		if (sscanf((const char *)pu8_cmdParamString,
+			   "AT+SHUTDOWN=%lu", &wake_s) != 1) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		}
+		if (wake_s > 131072u) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		}
 	}
 
 	MGR_LOG_INFO("[AT] SHUTDOWN requested (wake=%lus)\r\n",

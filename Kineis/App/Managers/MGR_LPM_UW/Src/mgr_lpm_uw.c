@@ -45,6 +45,39 @@
 /* Below this wait, STOP2 entry+exit (clock restore + GPIO/SubGHz/ADC
  * reinit, ~25 ms) costs more than it saves — spin instead. */
 #define STOP2_MIN_WORTH_MS  40u
+
+/* Console wake-on-RX: during STOP2 the LPUART has no kernel clock and the
+ * board is deaf. PA3 (RX) is re-purposed as an EXTI falling-edge wake for
+ * the sleep window: the first UART byte (start bit) wakes the chip — that
+ * byte is lost — then sleep is held off for this long so the host's next
+ * command lands on a live console (which then opens the 30 s AT grace).
+ * Internal pull-up keeps the line idle-high when no cable is attached, so
+ * sealed deployments never see a phantom edge. Disabled in REED_WKUP3
+ * builds: the reed on PB3 owns EXTI line 3. */
+#define CONSOLE_WAKE_HOLDOFF_MS  2500u
+#if !defined(BSP_REED_ON_WKUP3) && defined(BSP_HAS_PWR_LATCH)
+#define CONSOLE_WAKE_ON_RX 1
+#endif
+
+#if defined(CONSOLE_WAKE_ON_RX)
+static volatile bool s_console_rx_edge = false;
+static uint32_t      s_console_holdoff_until;
+
+/* PA3 EXTI — armed only for the duration of a STOP2 window. Overrides the
+ * weak default from startup_stm32wl55xx_cm4.s. */
+void EXTI3_IRQHandler(void)
+{
+	__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
+	s_console_rx_edge = true;
+}
+#endif
+
+/* LPM duty-cycle telemetry (AT+LPMSTAT): cumulative time spent in STOP2
+ * and entry count, measured with the RTC-compensated tick. Awake time =
+ * uptime - sleep total. Gives an on-target duty-cycle measurement for the
+ * energy budget without an ammeter. */
+static uint32_t s_stop2_ms_total;
+static uint32_t s_stop2_count;
 /* GPIO disable to analog for minimum STOP2 leakage. */
 extern void GPIO_DisableAllToAnalogInput(void);
 extern void MX_GPIO_Init(void);
@@ -336,6 +369,14 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 		    (HAL_GetTick() - last_at) < LPM_UW_AT_GRACE_MS)
 			return;
 	}
+
+#if defined(CONSOLE_WAKE_ON_RX)
+	/* A UART edge woke the last STOP2: hold the console open briefly so
+	 * the host's retry lands (it then opens the full AT grace). */
+	if (s_console_holdoff_until != 0u &&
+	    (HAL_GetTick() - s_console_holdoff_until) > 0x80000000u)
+		return;
+#endif
 
 	/* Stabilization gate. Full 30 s on true cold-boot to give the
 	 * operator a UART window for AT commands. On wake-from-STANDBY
@@ -782,10 +823,26 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	 * scenario only. In deployment there is no magnet → no ISR storm →
 	 * STOP2 reaches its µA-floor normally. */
 
+#if defined(CONSOLE_WAKE_ON_RX)
+	/* Re-purpose PA3 (LPUART RX) as a falling-edge wake for the sleep
+	 * window — see CONSOLE_WAKE_HOLDOFF_MS rationale above. */
+	{
+		GPIO_InitTypeDef rx_wake = {0};
+		rx_wake.Pin = GPIO_PIN_3;
+		rx_wake.Mode = GPIO_MODE_IT_FALLING;
+		rx_wake.Pull = GPIO_PULLUP;
+		HAL_GPIO_Init(GPIOA, &rx_wake);
+		__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
+		HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
+		HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+	}
+#endif
+
 	/* SysTick gets disabled during STOP (no HCLK), then re-enabled on
 	 * wake. HAL_SuspendTick avoids spurious tick interrupts wedging WFI. */
 	HAL_SuspendTick();
 	LPM_saveRtcTime();
+	const uint32_t sleep_t0 = HAL_GetTick();
 
 	/* Enter STOP2. WFI returns here once a configured wake source fires
 	 * (RTC alarm, or any pending EXTI — including reed PB6 which the
@@ -810,6 +867,30 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	 * the total time slept — a 10 s TX interval interleaved with STOP2
 	 * would take hundreds of wall-clock seconds to "elapse". */
 	LPM_compensateTick();
+	s_stop2_ms_total += HAL_GetTick() - sleep_t0;
+	s_stop2_count++;
+
+#if defined(CONSOLE_WAKE_ON_RX)
+	/* Give PA3 back to the LPUART (MX_GPIO_Init below doesn't own the
+	 * UART pins — they live in HAL_UART_MspInit). */
+	HAL_NVIC_DisableIRQ(EXTI3_IRQn);
+	__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
+	{
+		GPIO_InitTypeDef rx_af = {0};
+		rx_af.Pin = GPIO_PIN_3;
+		rx_af.Mode = GPIO_MODE_AF_PP;
+		rx_af.Pull = GPIO_NOPULL;
+		rx_af.Speed = GPIO_SPEED_FREQ_LOW;
+		rx_af.Alternate = GPIO_AF8_LPUART1;
+		HAL_GPIO_Init(GPIOA, &rx_af);
+	}
+	if (s_console_rx_edge) {
+		s_console_rx_edge = false;
+		/* Someone is knocking: stay awake so their next command lands
+		 * on a live console. */
+		s_console_holdoff_until = HAL_GetTick() + CONSOLE_WAKE_HOLDOFF_MS;
+	}
+#endif
 
 	/* Clear the PB6 EXTI pending flag so a stale magnet edge captured
 	 * while we were still in the wake-up critical path doesn't fire a
@@ -904,4 +985,15 @@ bool MGR_LPM_UW_consumeSoftOffWake(void)
 		return false;
 	TAMP->BKP11R = 0u;
 	return true;
+}
+
+void MGR_LPM_UW_getLpmStats(uint32_t *uptime_ms, uint32_t *stop2_ms,
+                            uint32_t *stop2_count)
+{
+	if (uptime_ms)
+		*uptime_ms = HAL_GetTick();
+	if (stop2_ms)
+		*stop2_ms = s_stop2_ms_total;
+	if (stop2_count)
+		*stop2_count = s_stop2_count;
 }

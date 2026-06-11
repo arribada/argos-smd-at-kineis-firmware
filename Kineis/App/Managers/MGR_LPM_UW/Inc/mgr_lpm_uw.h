@@ -132,6 +132,16 @@ void MGR_LPM_UW_enterShutdownReed(void);
  */
 bool MGR_LPM_UW_consumeSoftOffWake(void);
 
+/** @brief LPM duty-cycle telemetry (AT+LPMSTAT).
+ *
+ * uptime_ms is the RTC-compensated HAL tick (wall-clock since boot),
+ * stop2_ms the cumulative time spent in STOP2, stop2_count the number of
+ * STOP2 entries. Awake time = uptime - stop2. Gives an on-target measured
+ * duty cycle for the energy budget without an ammeter.
+ */
+void MGR_LPM_UW_getLpmStats(uint32_t *uptime_ms, uint32_t *stop2_ms,
+                            uint32_t *stop2_count);
+
 /** @brief Enter SHUTDOWN mode with optional auto-wake. If
  *  `wakeup_seconds > 0` the RTC alarm fires after the interval to
  *  cold-boot the chip even without a magnet event (intended for the

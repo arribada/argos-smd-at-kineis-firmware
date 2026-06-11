@@ -278,6 +278,13 @@ bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exe
  * AT+SAVE for cold-boot persistence too. Default: 10,500,1. */
 bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+LPMSTAT=? — LPM duty-cycle telemetry.
+ *
+ * `+LPMSTAT=<uptime_ms>,<stop2_ms>,<stop2_count>,<awake_duty_x1000>`
+ * uptime is the RTC-compensated wall-clock tick; awake = uptime - stop2.
+ * On-target measured duty cycle for the energy budget (no ammeter needed). */
+bool bMGR_AT_CMD_LPMSTAT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
  *
  * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`

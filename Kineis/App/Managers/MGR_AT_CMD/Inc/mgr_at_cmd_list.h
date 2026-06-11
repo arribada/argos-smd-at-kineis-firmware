@@ -87,6 +87,7 @@ enum  atcmd_idx_t {
 	AT_UARTLOG,      /**< Toggle spontaneous UART log stream (AT responses always emit) */
 	AT_MODE,         /**< Query/change OPERATIONAL/CONFIG/POWER_OFF mode via UART */
 	AT_LOGLVL,       /**< Query/set runtime log severity threshold (TRACE..NONE) */
+	AT_LPMSTAT,      /**< LPM duty-cycle telemetry (uptime/stop2/count/duty) */
 	AT_LPMTHR,       /**< Configure event-driven LPM thresholds (spin/sleep/enable) */
 	AT_LBCFG,        /**< Sprint 2: low-battery mode config */
 	AT_LB,           /**< Sprint 2: live LB mode state */
