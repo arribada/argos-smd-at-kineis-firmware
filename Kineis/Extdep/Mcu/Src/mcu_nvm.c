@@ -125,21 +125,85 @@ static const uint8_t device_sn[DEVICE_SN_LENGTH] = { 'S', 'M', 'D', '_', '1', '1
 //	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
 //
 //}
+/* ---- Message Counter: RAM cache + flash high-water mark ----------------
+ *
+ * The closed lib persists the MC with getMC + setMC(mc+1) after EVERY TX,
+ * and the per-sequence MC logic in the app rolls it back with setMC before
+ * every push. MCU_FLASH_set_msg_counter is destructive: it rewrites the
+ * overflow word through MCU_FLASH_write (FULL page erase + reprogram) and
+ * erases the whole wear-leveling area before re-programming every used
+ * slot — 5 page erases per call. At deployment TX rates that consumes the
+ * 10k-cycle flash endurance within weeks.
+ *
+ * Strategy: serve getMC from a RAM cache; treat the flash value as a
+ * HIGH-WATER MARK that only moves forward:
+ *  - small forward move (lib's post-TX +1): one wear-leveling slot program
+ *    via MCU_FLASH_increment_msg_counter — no erase (erase only when the
+ *    8 KB WL area wraps, every 1024 counts).
+ *  - small backward move (per-sequence rollback): RAM only. Flash stays
+ *    ahead by +1, so a reboot mid-sequence starts the next sequence at
+ *    last_used+1 — an MC can never repeat on air after a crash.
+ *  - large jump either way (operator AT+MC=<val>): genuine full rewrite,
+ *    rare by nature.
+ */
+#define MC_SMALL_STEP  64u  /**< |delta| treated as normal TX-flow movement */
+
+static bool     mc_cache_valid = false;
+static uint64_t mc_flash_shadow;  /**< full 64-bit counter known to be in flash */
+
+static void mc_seed_cache(void)
+{
+	if (!mc_cache_valid) {
+		mc_flash_shadow = MCU_FLASH_read_msg_counter();
+		message_counter = (uint16_t)(mc_flash_shadow & 0xFFFF);
+		mc_cache_valid = true;
+	}
+}
+
 enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
 {
 	if (!mc_ptr)
 		return KNS_STATUS_ERROR;
 
-	uint64_t full_counter = MCU_FLASH_read_msg_counter();
-	*mc_ptr = (uint16_t)(full_counter & 0xFFFF);
-	message_counter = *mc_ptr;
+	mc_seed_cache();
+	*mc_ptr = message_counter;
 	return KNS_STATUS_OK;
 }
 
 enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
 {
+	mc_seed_cache();
 	message_counter = mcTmp;
 
+	/* Distance from the persisted low-16 value, in uint16 arithmetic so
+	 * the 0xFFFF -> 0x0000 wrap reads as a normal +1 forward step. */
+	const uint16_t flash_lo = (uint16_t)(mc_flash_shadow & 0xFFFF);
+	const uint16_t fwd = (uint16_t)(mcTmp - flash_lo);
+
+	if (fwd == 0u)
+		return KNS_STATUS_OK;            /* already persisted */
+
+	if (fwd <= MC_SMALL_STEP) {
+		/* Normal TX flow: advance the wear-leveled counter slot by
+		 * slot (one 8-byte program each, no erase). */
+		for (uint16_t i = 0; i < fwd; i++) {
+			enum KNS_status_t st = MCU_FLASH_increment_msg_counter();
+			if (st != KNS_STATUS_OK)
+				return st;
+			mc_flash_shadow++;
+		}
+		return KNS_STATUS_OK;
+	}
+
+	if ((uint16_t)(flash_lo - mcTmp) <= MC_SMALL_STEP) {
+		/* Small rollback (per-sequence MC reuse): RAM only — the flash
+		 * high-water mark stays ahead so a reboot can never replay an
+		 * already-used MC. */
+		return KNS_STATUS_OK;
+	}
+
+	/* Operator-style jump: genuine destructive rewrite. */
+	mc_flash_shadow = (uint64_t)mcTmp;
 	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
 }
 
