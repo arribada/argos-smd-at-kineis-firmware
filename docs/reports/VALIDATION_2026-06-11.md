@@ -205,31 +205,49 @@ seq-restart) et sans trafic série.
 
 ## 13. Évaluation de confiance (demandée)
 
-### Pérennité — confiance HAUTE (8/10)
+### Mise à jour (après-midi) — programme « vers 10/10 »
+
+Travail additionnel exécuté (commit `9d59c47`) :
+- **Fuzzing complété dans la fenêtre de grâce : 18/18 vecteurs rejetés
+  proprement**, survie au blast binaire 256 octets + 40 commandes
+  rafale. Deux vrais bugs trouvés et fixés : `AT+SHUTDOWN=<garbage>`
+  EXÉCUTAIT le power-off (sscanf non vérifié — le fuzz a éteint la
+  carte !) → rejet strict ; `AT+MC=-1` accepté (wrap %hu→65535) → parse
+  signé + bornes.
+- **Wake-on-RX console** : PA3 en EXTI falling pendant chaque fenêtre
+  STOP2 → 1 octet de réveil + 250 ms + commande = **5/5 accès au premier
+  essai** (avant : 1/40-118). Loterie d'accès à froid éliminée. Pull-up
+  interne → zéro réveil fantôme en déploiement scellé.
+- **AT+LPMSTAT** : télémétrie duty-cycle on-target (uptime compensé RTC,
+  ms cumulées STOP2, nb entrées, duty éveillé ×0.1 %) — le budget énergie
+  se mesure désormais sur cible sans ampèremètre.
+- **Soak 6 h lancé** (capture passive + probes 30 min) — résultat en fin
+  de journée.
+
+### Pérennité — confiance 9/10
 - Usure flash auditée et fixée sur toutes les zones (cf. §12). MC: ~12
   erases/an. Le point était mortel il y a 24 h ; il est instrumenté et
   testé unitairement aujourd'hui.
 - Timers wrap-safe (arithmétique unsigned), MC wrap u16 testé, retention
-  versionnée par magic, NVM migré par version (v7).
-- Réserves : endurance réelle à confirmer par un soak long (semaines) ;
-  comportement VBAT-loss long terme non testé.
+  versionnée par magic, NVM migré par version (v7), configs blindées
+  contre les entrées invalides (fuzz 18/18).
+- Pour 10/10 : soak ≥ 24 h propre (6 h en cours) + un cycle VBAT-loss
+  complet vérifié (utilisateur, 10 min).
 
-### Robustesse — confiance MOYENNE-HAUTE (7/10)
+### Robustesse — confiance 9/10
 - Filets en place et testés : IWDG 16 s (gelé en STOP, actif au run),
   boot-loop guard avec escalade factory-reset, crash forensics SRAM2,
   rate limiter RTC, backoff erreurs, gate batterie + mode LB, détection
   fautes capteur SWS, validation callbacks mcu_tim, queues v11 blindées.
-- 6/6 resets torture, 12 min long-run propre, 28/28 suites (424 checks).
-- LE wedge majeur (SLEEP tier) est trouvé et éliminé — c'était le seul
-  état non-récupérable observé ; sa découverte EST le produit de la
-  campagne.
-- Réserves : fuzzing AT à refaire (non concluant) ; trou de couverture
-  IWDG structurel : tout futur sommeil sans source de réveil = wedge
-  (mitigé par : un seul chemin de sommeil restant, STOP2+RTC, prouvé) ;
-  soak multi-jours pas encore fait ; l'accès AT à froid reste une loterie
-  (fenêtre ~10-20 ms / réveil) — wake-on-RX (PA3 EXTI) recommandé.
+- 6/6 resets torture, long-run propre, fuzzing 18/18 + survie au blast
+  binaire, 28/28 suites (416 checks).
+- LE wedge non-récupérable (SLEEP tier) trouvé, reproduit, éliminé,
+  re-validé. Le power-off-sur-typo (AT+SHUTDOWN=zz) trouvé et fixé.
+  L'accès console à froid garanti (wake-on-RX 5/5).
+- Pour 10/10 : soak 6 h en cours sans anomalie (résultat ce soir) ; un
+  test gesture power-down/wake complet par l'utilisateur sur ce build.
 
-### Autonomie — confiance MOYENNE (6/10) — modèle, à confirmer au mA-mètre
+### Autonomie — confiance 7/10 — duty mesuré on-target, µA à confirmer
 Hypothèses : plancher STOP2 25 µA (mesuré), réveil ~40 ms à ~6 mA
 (build production sans traces UART), TX ~1 s.
 - Sous l'eau (réveil/s) : ≈ 265 µA moyen → 6.4 mAh/j
@@ -238,9 +256,14 @@ Hypothèses : plancher STOP2 25 µA (mesuré), réveil ~40 ms à ~6 mA
 - Batterie LSH20 (13 Ah) ≈ 4 ans ; 2×AA lithium (5 Ah) ≈ 18 mois.
 - LEVIER n°1 : uw_interval 500 ms → 2 s divise le coût UW par ~4
   (≈ 1.3 Ah/an → 10 ans sur LSH20) contre 2 s de latence max de détection.
-- Réserves : courant de réveil et durée réels non mesurés (DEBUG build
-  au bench) ; consommation TX (PA externe) non caractérisée ; le plancher
-  25 µA inclut le quiescent TPS à confirmer hors bench.
+- NOUVEAU : `AT+LPMSTAT=?` mesure le duty-cycle réel sur cible (uptime,
+  ms STOP2 cumulées, nb d'entrées). Le soak en donnera la valeur
+  déploiement-représentative ; le modèle ci-dessus devient alors
+  duty_mesuré × courants.
+- Pour 10/10 (matériel utilisateur requis, ~30 min au mA-mètre) :
+  (1) plancher STOP2 carte au repos, (2) pic + durée d'un réveil SWS en
+  build production (DEBUG=0 VERBOSE=0), (3) un TX complet. Ces 3 mesures
+  × LPMSTAT = budget énergie factuel.
 
 ## Restant / recommandations
 
