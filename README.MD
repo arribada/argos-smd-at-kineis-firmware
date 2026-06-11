@@ -10,6 +10,7 @@ In GUI mode, the module responds to AT commands and interacts with the KimGUI fr
 To start, look at the [Arduino sample](https://github.com/arribada/argos-smd-test-arduino) code used for certification or the [Zephyr UART driver](https://github.com/arribada/argos-smd-driver-zephyr) tested with Feather nRF52840.
 
 ⚠️ Warning : Since version v8.5.1, the MAC profile is not loaded at startup reload it thanks to KMAC commands (AT+KMAC=0 and AT+KMAC=1).
+
 ⚠️ Warning : on v1.3 the Message Counter (MC) is stored in RAM retention. Powerdown the module will reset the message counter. If you send message always with the same message counter, CLS dashboard will not process all the messages as new message but as a repeated one. Fixed on version 2.
 ## Features
 
