@@ -541,6 +541,21 @@ void MGR_LPM_UW_enterShutdownReed(void)
 #if defined(BSP_HAS_VBAT_ADC)
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
 #endif
+
+	/* A power-off request can land MID-TX (gesture confirmed while the
+	 * MAC is transmitting): the external PA PSU may be ON and
+	 * GPIO_DisableAllToAnalogInput PRESERVES the PA control pins (PC0/1)
+	 * — the soft-off STOP2 loop would retain the PA-ON drive (tens of
+	 * mA forever) and true SHUTDOWN would leave PC0 floating. Kill the
+	 * amplifier explicitly and anchor its enable low through the deep
+	 * phase. The in-flight Argos frame is lost — acceptable, the
+	 * operator asked for power-off. */
+	MCU_MISC_turn_off_pa();
+	HAL_PWREx_EnablePullUpPullDownConfig();
+	(void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);
+	/* VSEL anchored HIGH so the TPS63901 wakes up in 3V3 mode. */
+	(void)HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
+
 	GPIO_DisableAllToAnalogInput();
 	(void)HAL_SUBGHZ_DeInit(&hsubghz);
 

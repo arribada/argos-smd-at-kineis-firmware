@@ -417,8 +417,22 @@ void MGR_GESTURE_task(void)
 	const uint32_t now = HAL_GetTick();
 	const bool magnet_present = MGR_REED_isMagnetPresent();
 
-	/* ----- WAKE_BLINK: just wait for the LED sequence to finish ----- */
+	/* ----- WAKE_BLINK: wait for the LED sequence to finish — but never
+	 * at the operator's expense. With the duty-cycle STOP2 sleeping the
+	 * LED task only steps during the short awake windows, so the 5-blink
+	 * sequence may take a long time (or, killed by the STOP2 entry's
+	 * MGR_LED_off, never report done until the 60 s watchdog). A magnet
+	 * press must NOT be swallowed meanwhile — it aborts the eye-candy
+	 * and starts the normal hold tracking immediately. ----- */
 	if (s_fsm == GFSM_WAKE_BLINK) {
+		if (reed_evt == MGR_REED_EVT_MAGNET_ON) {
+			s_fsm = GFSM_HOLDING;
+			s_press_tick = now;
+			s_max_phase = HOLD_PHASE_NONE;
+			led_show_phase(HOLD_PHASE_NONE);
+			gst_trace("[GST] ON during WAKE_BLINK t=%lu\r\n", now);
+			return;
+		}
 		if (MGR_LED_isBlinkDone()) {
 			s_fsm = GFSM_IDLE;
 			/* Re-emit the persisted mode so the app's gesture-event
