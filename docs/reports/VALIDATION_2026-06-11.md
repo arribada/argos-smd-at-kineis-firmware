@@ -117,12 +117,51 @@ Flash interrompu (script JLink manquant après `make clean`) → chip effacé
 (`r0`/`sleep`/`r1` puis connect, script `c:/tmp/recover_nrst.jlink`).
 La ligne NRST est câblée sur le header JLink — plus besoin du bouton.
 
+## 10. Scheduler deadline-based (suite à revue utilisateur, nuit 2)
+
+Demande : « STOP2/SLEEP en fonction du temps jusqu'à la prochaine action,
+pas de façon périodique ». L'analyse a révélé 3 défauts structurels :
+
+1. **Périodique au lieu d'événementiel** : delta = intervalle SWS fixe,
+   ignorait l'échéance du prochain TX et du seq-restart.
+2. **Tick non compensé** : HAL_GetTick gelé en STOP1/STOP2 → tous les
+   timers logiciels comptaient en temps CPU-actif. Un interval TX de 10 s
+   entrecoupé de STOP2 mettait des centaines de secondes réelles à
+   « s'écouler ». Le watchdog max_dive_time (7200 s, remontée forcée) ne
+   pouvait quasiment jamais tirer. Latent, jamais vu au bench car les
+   séquences testées tombaient dans la fenêtre de stabilisation (30 s sans
+   sleep) ou tournaient LPM OFF.
+3. **Arrondi plafond** : réveil STOP2 jusqu'à 1 s APRÈS l'échéance.
+
+Fix (commit `38be6a0`) : `uw_ms_until_next_action()` agrège min(prochain
+sample SWS, prochain TX de séquence, échéance seq-restart) ;
+`LPM_saveRtcTime/LPM_compensateTick` exportés de lpm.c et appliqués aux
+réveils STOP1/STOP2 (tick = temps réel) ; `MGR_LPM_UW_enterStop2TimedMs`
+arme le WUT en RTCCLK/16 (pas de 0.49 ms) sous 29 s et en secondes
+PLANCHER au-dessus — ne dort jamais au-delà d'une échéance.
+
+Unitaire : `test_lpm_deadline.c` (13 checks) — agrégation, math DIV16/SPRE,
+clamps. **Validation bench restante** (batterie morte avant le flash) :
+vérifier les intervalles TX en temps réel avec LPM ON (séquence 2 du
+seq-restart, hors stabilisation) et les logs `STOP2 <N>ms` variables.
+
+## 11. Incident fin de session : carte hors tension
+
+Vers la fin de la nuit, VTref = 0.000 V, COM3 muet — la carte n'est plus
+alimentée. Cause la plus probable : batterie vidée par la session (longues
+phases LPM désactivé à plusieurs mA + TX + spam AT). Le firmware
+deadline-scheduler est compilé/testé mais PAS flashé. À la réalimentation :
+`JLink -CommanderScript c:/tmp/recover_nrst.jlink` flashe le hex courant.
+
 ## Restant / recommandations
 
-1. Mesure courant power-off avec le fil PB3 + build REED_WKUP3 (attendu
+1. **Réalimenter la carte** (batterie), flasher le build courant
+   (`recover_nrst.jlink`), valider au bench le scheduler deadline-based :
+   intervalles TX wall-clock corrects avec LPM ON + logs `STOP2 <N>ms`.
+2. Mesure courant power-off avec le fil PB3 + build REED_WKUP3 (attendu
    sub-5 µA) — matériel requis, utilisateur.
-2. Mesure courant STOP2 surface/UW pour chiffrer le budget énergie réel.
-3. Test en eau réelle (calibration SWS adaptative non testable à sec).
-4. SPI Option 3 (frm_hdlr matching) — différé, bench SPI requis.
-5. La config NVM surf_interval=5000 ms est conservée (cohérente énergie) ;
+3. Mesure courant STOP2 surface/UW pour chiffrer le budget énergie réel.
+4. Test en eau réelle (calibration SWS adaptative non testable à sec).
+5. SPI Option 3 (frm_hdlr matching) — différé, bench SPI requis.
+6. La config NVM surf_interval=5000 ms est conservée (cohérente énergie) ;
    descendre à 1000 ms si la réactivité AT à la surface prime.
