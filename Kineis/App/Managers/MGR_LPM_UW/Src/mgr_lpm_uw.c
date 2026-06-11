@@ -624,15 +624,6 @@ void MGR_LPM_UW_enterShutdownReed(void)
 #endif
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_RCC_CLEAR_RESET_FLAGS();
-	/* [DBG] WKUP3-wake bring-up: dump the arming state right before
-	 * entry (UART TX on PA2 is still alive at this point). Remove once
-	 * the magnet wake is validated on the bench. */
-	MGR_LOG_INFO("[LPM_UW] SHUTDOWN arm: CR3=%08lX CR4=%08lX SR1=%08lX PB3=%u PB6=%u\r\n",
-		(unsigned long)PWR->CR3, (unsigned long)PWR->CR4,
-		(unsigned long)PWR->SR1,
-		(unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3),
-		(unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6));
-	HAL_Delay(30);
 	/* Marker set BEFORE entry: SHUTDOWN exit does not reliably raise a
 	 * cold-boot RCC flag, and any exit from this state (magnet or NRST)
 	 * legitimately deserves the wake feedback. */
