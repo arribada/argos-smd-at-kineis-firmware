@@ -51,7 +51,7 @@ typedef struct {
 	uint32_t max_dive_time_s;            /**< Max dive time before forced surface (default 7200) */
 	uint32_t min_surface_time_s;         /**< Min surface time before re-submersion (default 10) */
 	uint16_t sample_delay_min_us;        /**< Adaptive RC charge delay floor (default 200) */
-	uint16_t sample_delay_max_us;        /**< Adaptive RC charge delay ceiling (default 5000) */
+	uint16_t sample_delay_max_us;        /**< Adaptive RC charge delay ceiling (default 10000, linkit-v4 ref) */
 	uint16_t sample_delay_default_us;    /**< Starting RC charge delay (default 1000) */
 	bool     enabled;                    /**< SWS detection enabled */
 } MGR_SWS_Config_t;

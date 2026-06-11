@@ -380,6 +380,13 @@ static void apply_config(const NVM_Config_t *cfg)
 	 * scale. Other operator-set values are respected. */
 	if (sws_cfg.threshold_max == 2000u)
 		sws_cfg.threshold_max = 4095u;
+	/* Same class of heal for the adaptive RC-charge ceiling: old builds
+	 * defaulted to 1000 us (or 5000 us for a while) where the linkit-v4
+	 * reference uses 10000 us — biofouled electrodes (tau > 10 ms) stay
+	 * undercharged below that and dives go undetected. */
+	if (sws_cfg.sample_delay_max_us == 1000u ||
+	    sws_cfg.sample_delay_max_us == 5000u)
+		sws_cfg.sample_delay_max_us = 10000u;
 	sws_cfg.initial_air_baseline          = cfg->sws_initial_air_baseline;
 	sws_cfg.initial_water_baseline        = cfg->sws_initial_water_baseline;
 	sws_cfg.test_interval_surface_ms      = cfg->sws_test_interval_surface_ms;

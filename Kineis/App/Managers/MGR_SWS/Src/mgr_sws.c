@@ -144,8 +144,12 @@ static MGR_SWS_Config_t sws_config = {
 	.max_dive_time_s              = 7200,
 	.min_surface_time_s           = 10,
 	.sample_delay_min_us          = 200,   /**< RC charge floor (pulse-ON before ADC read) */
-	.sample_delay_max_us          = 1000,  /**< RC charge ceiling */
-	.sample_delay_default_us      = 500,   /**< RC charge starting point */
+	/* 10 ms ceiling per the linkit-v4 reference (SAMPLE_DELAY_MAX_US 10000):
+	 * biofouled electrodes have tau > 10 ms — the old 1 ms cap kept the RC
+	 * undercharged, water read as air, and dives went undetected late in a
+	 * deployment. Salt water still converges to the 200 us floor. */
+	.sample_delay_max_us          = 10000, /**< RC charge ceiling */
+	.sample_delay_default_us      = 1000,  /**< RC charge starting point (linkit default) */
 	.enabled                      = true,
 };
 
