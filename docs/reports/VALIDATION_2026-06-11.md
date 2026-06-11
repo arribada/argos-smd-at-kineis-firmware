@@ -158,6 +158,90 @@ phases LPM désactivé à plusieurs mA + TX + spam AT). Le firmware
 deadline-scheduler est compilé/testé mais PAS flashé. À la réalimentation :
 `JLink -CommanderScript c:/tmp/recover_nrst.jlink` flashe le hex courant.
 
+## 12. Campagne robustesse (nuit 2 / matin) + 2 bugs P0 trouvés et fixés
+
+### Bug P0 pérennité : usure flash MC (commit `ce218d0`)
+La lib persiste le MC par `getMC + setMC(mc+1)` à CHAQUE TX, et
+`MCU_NVM_setMC` traversait vers `set_wear_counter` = 5 erases de pages par
+appel (page 0 via MCU_FLASH_write + 4 pages WL). À 100 TX/jour : endurance
+flash (10k cycles) consommée en 3-9 semaines. Bug PRÉEXISTANT à cette
+session (la lib le déclenchait seule) ; le per-sequence MC le doublait.
+Fix : cache RAM + high-water mark dans le wrapper (1 slot programmé par
+séquence, ~12 erases/an, jamais de répétition MC après crash). Validé
+bench (0 écriture destructrice par séquence) + test_mc_wear.c (8 checks,
+budget 1 an). Audit usure des autres zones : EVTLOG=SRAM2 (zéro flash),
+PMLOG=erreurs seulement, NVM config=AT+SAVE seulement. SAIN.
+
+### Bug P0 robustesse : wedge du tier SLEEP STOP1+LPTIM (commit `d72ddfb`)
+Pendant la campagne, la carte s'est retrouvée muette + sourde à ~700 µA,
+récupérable uniquement par NRST. Reproduit DÉTERMINISTIQUEMENT : première
+entrée dans le tier SLEEP (STOP1+LPTIM) → le WFI ne se réveille jamais ;
+IWDG gelé en STOP (option byte) → aucun sauvetage. Piège latent depuis
+AT+LPMTHR (mémoire projet : une régression SLEEP similaire avait déjà été
+roulée back) ; le scheduler deadline rendait la bande atteignable (restes
+< 500 ms). Fix : tier retiré du chemin de production, bande routée vers
+STOP2-DIV16 (précision ms + teardown complet + chemin de réveil prouvé).
+Re-validé avec le même scénario : cycles `STOP2 499ms` sous l'eau (cadence
+SWS 500 ms désormais tenue à la ms — avant arrondie à 1 s), AT réactif.
+Bonus : le plancher de courant du band sub-seconde passe de ~700 µA
+(STOP1, radio armée) à ~25 µA (STOP2).
+
+### Résultats campagne
+| Phase | Résultat |
+|---|---|
+| R2 — Torture resets (6× NRST, timings variés) | 6/6 boots OK, AT répond, NVM/MC cohérents |
+| R3 — Cyclage dive/surface ×6 | 6/6, SWS sain, zéro crash |
+| R4 — Long-run 12 min LPM ON | 0 HardFault, 0 CRASH-REPLAY, 0 boot-loop ; séquences + seq-restart nominaux |
+| R1 — Fuzzing AT | Non concluant (commandes non parvenues : carte en STOP2, surdité d'accès à froid) — À REFAIRE dans la fenêtre de grâce |
+| Wedge SLEEP tier | Trouvé pendant la campagne, root-causé, fixé, re-validé |
+
+### Explication du « 700 µA entre les TX » observé
+Trois couches : (1) trafic série de la campagne → grâce 30 s renouvelée →
+sommeil bloqué par design (idle WFI Kineis ≈ 700 µA) ; (2) tier SLEEP
+wedgé (cf. bug P0 ci-dessus) ; (3) DEPLOY=1 + seq_restart=120 s = séquence
+de 3 TX toutes les 2 min en continu à la surface (~25 % duty actif). Le
+« 50 µA d'avant » correspondait à un tag silencieux après cap (sans
+seq-restart) et sans trafic série.
+
+## 13. Évaluation de confiance (demandée)
+
+### Pérennité — confiance HAUTE (8/10)
+- Usure flash auditée et fixée sur toutes les zones (cf. §12). MC: ~12
+  erases/an. Le point était mortel il y a 24 h ; il est instrumenté et
+  testé unitairement aujourd'hui.
+- Timers wrap-safe (arithmétique unsigned), MC wrap u16 testé, retention
+  versionnée par magic, NVM migré par version (v7).
+- Réserves : endurance réelle à confirmer par un soak long (semaines) ;
+  comportement VBAT-loss long terme non testé.
+
+### Robustesse — confiance MOYENNE-HAUTE (7/10)
+- Filets en place et testés : IWDG 16 s (gelé en STOP, actif au run),
+  boot-loop guard avec escalade factory-reset, crash forensics SRAM2,
+  rate limiter RTC, backoff erreurs, gate batterie + mode LB, détection
+  fautes capteur SWS, validation callbacks mcu_tim, queues v11 blindées.
+- 6/6 resets torture, 12 min long-run propre, 28/28 suites (424 checks).
+- LE wedge majeur (SLEEP tier) est trouvé et éliminé — c'était le seul
+  état non-récupérable observé ; sa découverte EST le produit de la
+  campagne.
+- Réserves : fuzzing AT à refaire (non concluant) ; trou de couverture
+  IWDG structurel : tout futur sommeil sans source de réveil = wedge
+  (mitigé par : un seul chemin de sommeil restant, STOP2+RTC, prouvé) ;
+  soak multi-jours pas encore fait ; l'accès AT à froid reste une loterie
+  (fenêtre ~10-20 ms / réveil) — wake-on-RX (PA3 EXTI) recommandé.
+
+### Autonomie — confiance MOYENNE (6/10) — modèle, à confirmer au mA-mètre
+Hypothèses : plancher STOP2 25 µA (mesuré), réveil ~40 ms à ~6 mA
+(build production sans traces UART), TX ~1 s.
+- Sous l'eau (réveil/s) : ≈ 265 µA moyen → 6.4 mAh/j
+- Surface idle (réveil/5 s) : ≈ 73 µA moyen
+- Profil 90 % UW / 10 % surface + 60 TX/j : ≈ 8-9 mAh/j ≈ **3.2 Ah/an**
+- Batterie LSH20 (13 Ah) ≈ 4 ans ; 2×AA lithium (5 Ah) ≈ 18 mois.
+- LEVIER n°1 : uw_interval 500 ms → 2 s divise le coût UW par ~4
+  (≈ 1.3 Ah/an → 10 ans sur LSH20) contre 2 s de latence max de détection.
+- Réserves : courant de réveil et durée réels non mesurés (DEBUG build
+  au bench) ; consommation TX (PA externe) non caractérisée ; le plancher
+  25 µA inclut le quiescent TPS à confirmer hors bench.
+
 ## Restant / recommandations
 
 1. Mesure courant power-off avec le fil PB3 + build REED_WKUP3 (attendu
