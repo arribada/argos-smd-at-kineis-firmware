@@ -265,6 +265,36 @@ Hypothèses : plancher STOP2 25 µA (mesuré), réveil ~40 ms à ~6 mA
   build production (DEBUG=0 VERBOSE=0), (3) un TX complet. Ces 3 mesures
   × LPMSTAT = budget énergie factuel.
 
+## 14. Power-off final : cycle complet validé (v3.5.0)
+
+Après le fix C2CR1 (§12-13) et le câblage du fil reed parallèle sur PB3
+(`make REED_WKUP3_WIRE=1`), le cycle complet demandé est **validé deux
+fois de suite au bench** :
+
+```
+gesture 6 s (blanc→bleu→rouge) → retrait → re-pose < 2 s
+  → vrai SHUTDOWN à 24 µA mesurés
+  → aimant → WKUP3 (PB3) → cold boot cause=[BP] → OPERATIONAL
+```
+
+Bugs additionnels trouvés/corrigés pendant la traque :
+- **PA externe laissé allumé** si le power-off tombait en pleine émission
+  (PC0 préservé par le teardown GPIO) → `turn_off_pa()` + ancrage PWR.
+- **WAKE_BLINK avalait l'aimant** (séquence LED jamais terminée sous
+  duty-cycle STOP2, watchdog 60 s seul recours) → l'aimant aborte le
+  blink et démarre le hold immédiatement.
+- Faux symptômes de bench : fil soudé sur une mauvaise pin (nœud reed
+  bloqué haut, +82 µA de diviseur), puis fusible µA du multimètre sauté
+  (lectures "très basses" = circuit ouvert, carte non alimentable).
+
+**Analyse du plancher 24 µA** : le MCU en Shutdown ≈ 0.1 µA — le plancher
+est board-level (capteur Hall alimenté en continu ~10-20 µA suspect n°1,
+quiescent TPS63901, LSE/RTC ~0.5 µA). C'est pourquoi Shutdown ≈ STOP2 au
+multimètre. Descendre exige du HW (Hall micropower type DRV5032 0.5 µA,
+ou coupure latch totale si la pull-up externe est ≥ 1 MΩ — valeur à lire
+sur le schéma). À 24 µA le power-off coûte 0.58 mAh/j (≈ 61 ans de
+plancher sur LSH20) : ce n'est plus un poste de budget.
+
 ## Restant / recommandations
 
 1. Mesure courant power-off avec le fil PB3 + build REED_WKUP3 (attendu
