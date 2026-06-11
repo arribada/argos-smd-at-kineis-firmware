@@ -381,6 +381,12 @@ ifeq ($(REED_WKUP3),1)
 	C_DEFS += -DBSP_REED_ON_WKUP3
 endif
 
+# Reed wired to BOTH PB6 and PB3 with one wire: reed logic stays on PB6,
+# PB3 used only as the WKUP3 wake source for true SHUTDOWN.
+ifeq ($(REED_WKUP3_WIRE),1)
+	C_DEFS += -DBSP_REED_WKUP3_PARALLEL
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC

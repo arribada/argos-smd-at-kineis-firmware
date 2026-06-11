@@ -119,6 +119,17 @@ void MGR_REED_init(void)
 	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
 	HAL_GPIO_Init(REED_MCU_GPIO_Port, &GPIO_InitStruct);
 
+#if defined(BSP_REED_WKUP3_PARALLEL)
+	/* The reed wire also reaches PB3 (WKUP3, used only for SHUTDOWN
+	 * wake). PB3 defaults to its SWO debug alternate function — force it
+	 * to plain input so the trace AF can't fight or load the reed line.
+	 * No pull: the node level is owned by REED_MCU's pull-down above. */
+	GPIO_InitStruct.Pin = GPIO_PIN_3;
+	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#endif
+
 	/* Drop any pending edge that fired while the GPIO was being configured.
 	 * Without this, the very first re-init after a wake can deliver a phantom
 	 * event for an edge the application never saw. */

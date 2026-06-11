@@ -66,15 +66,26 @@
 /* ---- Reed switch (active HIGH: HIGH = magnet present) ----
  * Default wiring: PB6 — EXTI-only, wakes STOP2 but NOT SHUTDOWN (the WL55
  * only has wake circuitry on the dedicated WKUP pins PA0/PC13/PB3).
- * Build with BSP_REED_ON_WKUP3 (make REED_WKUP3=1, HW mod: reed wired to
- * PB3) to move the reed to PB3 = WKUP3: power-off then uses true SHUTDOWN
- * (sub-µA MCU floor) with magnet wake instead of the STOP2 soft-off. */
+ *
+ * Two HW-mod options for true-SHUTDOWN magnet wake:
+ *  - BSP_REED_ON_WKUP3 (make REED_WKUP3=1): reed MOVED to PB3 — PB3
+ *    becomes REED_MCU (EXTI3 + WKUP3), PB6 abandoned.
+ *  - BSP_REED_WKUP3_PARALLEL (make REED_WKUP3_WIRE=1): ONE wire drives
+ *    BOTH pins — reed stays on PB6 for everything (EXTI, debounce,
+ *    gesture), PB3 is used ONLY as the WKUP3 wake source for SHUTDOWN.
+ *    PB3 is also the SWO debug line on this board: the firmware forces it
+ *    to plain INPUT (no SWO) and the node level is owned by PB6's
+ *    pull-down. */
 #if defined(BSP_REED_ON_WKUP3)
 #define REED_MCU_Pin            GPIO_PIN_3
 #define REED_MCU_GPIO_Port      GPIOB
 #else
 #define REED_MCU_Pin            GPIO_PIN_6
 #define REED_MCU_GPIO_Port      GPIOB
+#endif
+
+#if defined(BSP_REED_ON_WKUP3) && defined(BSP_REED_WKUP3_PARALLEL)
+#error "BSP_REED_ON_WKUP3 and BSP_REED_WKUP3_PARALLEL are mutually exclusive"
 #endif
 
 /* ---- Power latch (HIGH = keep board powered) ---- */
