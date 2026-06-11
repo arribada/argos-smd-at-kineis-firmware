@@ -521,8 +521,14 @@ static void state_trace(const char *msg)
 #define STATE_TRACE(msg) state_trace(msg)
 /* Sprint 3: anti-collision random offset added to effective_min_ms for the
  * very first TX of each surface event. Drawn fresh from the (UID-seeded)
- * PRNG at surface detection. Up to FIRST_TX_RANDOM_WINDOW_MS. */
-#define FIRST_TX_RANDOM_WINDOW_MS  5000u
+ * PRNG at surface detection. Up to FIRST_TX_RANDOM_WINDOW_MS.
+ *
+ * 500 ms (was 5000): the operator requirement is "first frame on the air
+ * as fast as possible after surfacing" — a turtle breath window is short.
+ * Fleet anti-collision is still covered by (a) this residual 0-500 ms
+ * spread, (b) the per-TX jitter on the 2nd/3rd repetitions of the
+ * sequence, and (c) Argos ALOHA multi-access itself. */
+#define FIRST_TX_RANDOM_WINDOW_MS  500u
 static uint32_t first_tx_random_offset_ms = 0;
 
 /* Sprint 4: forced-TX counter set by KNS_APP_uw_doppler_startTestBurst().
@@ -2241,6 +2247,9 @@ void KNS_APP_uw_doppler_loop(void)
 	case UW_DOPPLER_SURFACE_TX:
 	{
 		UWDPL_TRACE("SURF_TX enter");
+		/* Lazy radio: underwater STOP2 cycles leave the SubGHz down —
+		 * re-arm it before the MAC gets the TX request. No-op when up. */
+		MGR_LPM_UW_ensureRadioReady();
 #if defined(BSP_HAS_LED_RGB)
 		/* VIOLET (R+B soft-PWM) for TX-in-flight. The common-anode RGB with a
 		 * single anode resistor can't drive R+B simultaneously, so a solid

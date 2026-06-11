@@ -138,14 +138,16 @@ typedef enum {
 } MGR_LOG_Level_t;
 
 /** @brief Compile-time default level. Overridable from the Makefile via
- *  `make ... LOG_LEVEL=<n>` which sets `-DLOG_DEFAULT_LEVEL=<n>`. If unset:
- *  TRACE in DEBUG=1, INFO in DEBUG=0 (production keeps state-level traces). */
+ *  `make ... LOG_LEVEL=<n>` which sets `-DLOG_DEFAULT_LEVEL=<n>`.
+ *
+ *  INFO by default in ALL builds: the TRACE firehose (hb heartbeat, one
+ *  [SWS] line per sample, KNS_Q push/pop dumps...) saturates the 115200
+ *  console; under STOP2 duty-cycling (~50 ms TX windows) every line then
+ *  arrives seconds late and the whole bench FEELS laggy — reed, SWS and
+ *  AT all appear delayed when only the console is. Opt back into the
+ *  firehose at runtime with AT+LOGLVL=0 when chasing a specific bug. */
 #ifndef LOG_DEFAULT_LEVEL
-#  ifdef DEBUG
-#    define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_TRACE
-#  else
-#    define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_INFO
-#  endif
+#  define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_INFO
 #endif
 
 /** @brief Get / set the current runtime threshold. Persisted in retention

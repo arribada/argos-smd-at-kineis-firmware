@@ -79,6 +79,10 @@ void EXTI3_IRQHandler(void)
 static uint32_t s_stop2_ms_total;
 static uint32_t s_stop2_count;
 
+/* Lazy-radio state: true while the SubGHz peripheral is left deinit'd
+ * across underwater STOP2 cycles (see the wake path). */
+static bool s_subghz_down;
+
 /* CPU2 (CM0+) never boots, yet its PWR_C2CR1.LPMS still caps the SYSTEM
  * low-power mode: the effective mode is the SHALLOWEST of CR1/C2CR1, and
  * the register survives every reset except a true POR. Found on the
@@ -390,6 +394,14 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 	    (HAL_GetTick() - s_console_holdoff_until) > 0x80000000u)
 		return;
 #endif
+
+	/* Debugger attached: STOP2 under an active SWD session degenerates
+	 * into a wake storm (debug logic re-wakes the WFI immediately —
+	 * observed at ~33 entries/s) and every loop service (reed, SWS, AT,
+	 * LED) crawls through endless sleep/wake churn. Spin instead while
+	 * the probe is connected; deployed tags never have one. */
+	if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0u)
+		return;
 
 	/* Stabilization gate. Full 30 s on true cold-boot to give the
 	 * operator a UART window for AT commands. On wake-from-STANDBY
@@ -785,7 +797,9 @@ static void uw_restore_clock_from_stop(void)
 
 void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 {
-	MGR_LOG_INFO("[LPM_UW] STOP2 %lums\r\n", (unsigned long)ms);
+	/* TRACE, not INFO: one line per sleep entry (every 0.5-5 s) floods
+	 * the console for zero signal — AT+LPMSTAT carries the statistics. */
+	MGR_LOG_DEBUG("[LPM_UW] STOP2 %lums\r\n", (unsigned long)ms);
 
 	if (ms > 65535000u) ms = 65535000u;
 
@@ -954,8 +968,19 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	/* Re-init GPIOs (we set most to analog before STOP2 entry). */
 	MX_GPIO_Init();
 
-	/* Re-init SubGHz radio so the MAC can use it again. */
-	MX_SUBGHZ_Init();
+	/* Lazy radio: underwater there is nothing to transmit, and the
+	 * deinit/init pair on EVERY 0.5-1 s wake dominated the wake window
+	 * (time AND energy). Leave the radio down while the last known SWS
+	 * state is UNDERWATER; the TX path re-arms it on demand through
+	 * MGR_LPM_UW_ensureRadioReady() (~10 ms, inside the surface-detect
+	 * latency budget). At the surface keep the eager init so the MAC
+	 * always finds the radio ready. */
+	if (MGR_SWS_getState() == MGR_SWS_STATE_UNDERWATER) {
+		s_subghz_down = true;
+	} else {
+		MX_SUBGHZ_Init();
+		s_subghz_down = false;
+	}
 
 	/* Re-init ADC: STOP2 deinitialises the peripheral, and without this
 	 * SWS reads return 0 for the whole post-wake cycle (observed). */
@@ -1041,4 +1066,12 @@ void MGR_LPM_UW_getLpmStats(uint32_t *uptime_ms, uint32_t *stop2_ms,
 		*stop2_ms = s_stop2_ms_total;
 	if (stop2_count)
 		*stop2_count = s_stop2_count;
+}
+
+void MGR_LPM_UW_ensureRadioReady(void)
+{
+	if (s_subghz_down) {
+		MX_SUBGHZ_Init();
+		s_subghz_down = false;
+	}
 }

@@ -142,6 +142,14 @@ bool MGR_LPM_UW_consumeSoftOffWake(void);
 void MGR_LPM_UW_getLpmStats(uint32_t *uptime_ms, uint32_t *stop2_ms,
                             uint32_t *stop2_count);
 
+/** @brief Re-arm the SubGHz radio if the lazy-radio path left it down.
+ *
+ * Underwater STOP2 cycles skip the radio re-init (nothing to transmit);
+ * call this before any path that needs the radio (TX, CW). No-op when
+ * the radio is already up. ~10 ms when it does re-init.
+ */
+void MGR_LPM_UW_ensureRadioReady(void);
+
 /** @brief Enter SHUTDOWN mode with optional auto-wake. If
  *  `wakeup_seconds > 0` the RTC alarm fires after the interval to
  *  cold-boot the chip even without a magnet event (intended for the
