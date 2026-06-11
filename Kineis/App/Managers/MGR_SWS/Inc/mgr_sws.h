@@ -6,7 +6,7 @@
  * - L1: Instant drop from previous raw (4%, 1 sample)
  * - L2: Consecutive 2-sample raw drops (3% cumulative, each step >=2%)
  * - L3: MA3 trend (3+ decreases, 4% total)
- * - L4: Absolute water baseline drop (8%)
+ * - L4: Absolute water baseline drop (15%)
  * - L5: Dive peak safety net (10%, >10s gate)
  * - Proximity guard adaptive (95% normal / 99% biofouling)
  * - Dynamic threshold ratio, 4% hysteresis, AIR_BASELINE_FLOOR
@@ -43,7 +43,7 @@ typedef enum {
 
 typedef struct {
 	uint16_t threshold_min;              /**< Min valid ADC value (default 0) */
-	uint16_t threshold_max;              /**< Max valid ADC value (default 2000 = 8000/4) */
+	uint16_t threshold_max;              /**< Max valid ADC value (default 4095 = full scale, linkit-v4 ref) */
 	uint16_t initial_air_baseline;       /**< Initial air baseline (default 50 = 200/4) */
 	uint16_t initial_water_baseline;     /**< Initial water baseline (default 750 = 3000/4) */
 	uint32_t test_interval_surface_ms;   /**< Measurement interval at SURFACE (default 5000) */
