@@ -73,6 +73,16 @@ void KNS_APP_uw_doppler_init(void);
  * When the operator sets MC explicitly via AT+MC, we must update the
  * retention-NOLOAD session_mc snapshot too, otherwise our setMC stomp
  * before the next TX would revert to the previous session value. */
+/** @brief Minimal-payload config (NVM v8): format 0=legacy 128b frame,
+ *  1=minimal 24b (battery + sliding-window average UW/surface durations).
+ *  window_h = stats sliding window in hours (1..48). */
+void KNS_APP_uw_doppler_setPayCfg(uint8_t format, uint8_t window_h);
+void KNS_APP_uw_doppler_getPayCfg(uint8_t *format, uint8_t *window_h);
+
+/** @brief Sliding-window episode statistics (minutes + episode counts). */
+void KNS_APP_uw_doppler_getEpisodeStats(uint16_t *avg_uw_min,
+	uint16_t *avg_surf_min, uint16_t *n_uw, uint16_t *n_surf);
+
 void KNS_APP_uw_doppler_setSessionMC(uint16_t mc);
 
 /** @brief Main UW_DOPPLER loop - register with KNS_OS as APP task */

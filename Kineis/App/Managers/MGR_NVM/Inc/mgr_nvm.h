@@ -30,7 +30,7 @@
  * where mgr_led is compiled out. */
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 7
+#define NVM_VERSION 8
 
 /**
  * @brief NVM config structure stored in flash (v3)
@@ -101,6 +101,13 @@ typedef struct {
 	 * starts a new sequence). */
 	uint16_t tx_seq_restart_s;
 	uint8_t  _pad8[2];
+	/* v8: minimal-payload config (4 bytes incl. pad).
+	 * payload_format: 0 = legacy 128-bit UW frame, 1 = minimal 24-bit
+	 * frame (battery + sliding-window average UW/surface durations).
+	 * stat_window_h: sliding stats window in hours (1..48, 0 = default 24). */
+	uint8_t  payload_format;
+	uint8_t  stat_window_h;
+	uint8_t  _pad9[2];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 

@@ -463,6 +463,109 @@ static bool     surface_tx_pending = false; /**< Immediate TX needed on surface 
  * dive/resurface transition. */
 static bool     boot_first_seq_pending = true;
 
+/* ---- Surface/dive episode statistics — sliding window (NVM v8) -------
+ * Hourly buckets: each completed SURFACE or UNDERWATER episode adds its
+ * duration to the current bucket; the averages are computed over the
+ * last stat_window_h buckets. Plain .bss (flushed by reboot — the tick
+ * base restarts anyway, so retaining stale buckets would corrupt the
+ * window). Feeds the minimal 24-bit TX payload (payload_format 1) and
+ * AT+STATS. */
+#define STAT_BUCKET_MS  3600000u
+#define STAT_BUCKETS    48u
+typedef struct {
+	uint32_t uw_s;
+	uint32_t surf_s;
+	uint16_t uw_n;
+	uint16_t surf_n;
+} StatBucket_t;
+static struct {
+	uint32_t bucket_start_tick;
+	uint32_t cur;
+	StatBucket_t b[STAT_BUCKETS];
+} stat_ring;
+static uint8_t  payload_format = 0;   /**< 0=legacy 128b, 1=minimal 24b (NVM) */
+static uint8_t  stat_window_h  = 24;  /**< sliding window, hours (NVM) */
+static MGR_SWS_State_t stat_prev_state = MGR_SWS_STATE_UNKNOWN;
+static uint32_t stat_episode_start_tick;
+
+static void stat_observe(MGR_SWS_State_t st)
+{
+	const uint32_t now = HAL_GetTick();
+
+	if (stat_ring.bucket_start_tick == 0u)
+		stat_ring.bucket_start_tick = (now == 0u) ? 1u : now;
+	while ((now - stat_ring.bucket_start_tick) >= STAT_BUCKET_MS) {
+		stat_ring.cur = (stat_ring.cur + 1u) % STAT_BUCKETS;
+		memset(&stat_ring.b[stat_ring.cur], 0, sizeof(StatBucket_t));
+		stat_ring.bucket_start_tick += STAT_BUCKET_MS;
+	}
+
+	if (st == stat_prev_state)
+		return;
+
+	/* Close the episode that just ended (known states only). */
+	if (stat_episode_start_tick != 0u) {
+		const uint32_t dur_s = (now - stat_episode_start_tick) / 1000u;
+		StatBucket_t *bk = &stat_ring.b[stat_ring.cur];
+		if (stat_prev_state == MGR_SWS_STATE_UNDERWATER) {
+			bk->uw_s += dur_s;
+			if (bk->uw_n < 0xFFFFu)
+				bk->uw_n++;
+		} else if (stat_prev_state == MGR_SWS_STATE_SURFACE) {
+			bk->surf_s += dur_s;
+			if (bk->surf_n < 0xFFFFu)
+				bk->surf_n++;
+		}
+	}
+	stat_prev_state = st;
+	stat_episode_start_tick =
+	    (st == MGR_SWS_STATE_UNKNOWN) ? 0u : ((now == 0u) ? 1u : now);
+}
+
+void KNS_APP_uw_doppler_getEpisodeStats(uint16_t *avg_uw_min,
+	uint16_t *avg_surf_min, uint16_t *n_uw, uint16_t *n_surf)
+{
+	uint32_t uw_s = 0, surf_s = 0, un = 0, sn = 0;
+	uint32_t nbk = stat_window_h;     /* 1 bucket = 1 hour */
+
+	if (nbk > STAT_BUCKETS)
+		nbk = STAT_BUCKETS;
+	for (uint32_t i = 0; i < nbk; i++) {
+		const StatBucket_t *bk =
+		    &stat_ring.b[(stat_ring.cur + STAT_BUCKETS - i) % STAT_BUCKETS];
+		uw_s   += bk->uw_s;
+		surf_s += bk->surf_s;
+		un     += bk->uw_n;
+		sn     += bk->surf_n;
+	}
+	if (avg_uw_min)
+		*avg_uw_min = un ? (uint16_t)((uw_s / un) / 60u) : 0u;
+	if (avg_surf_min)
+		*avg_surf_min = sn ? (uint16_t)((surf_s / sn) / 60u) : 0u;
+	if (n_uw)
+		*n_uw = (uint16_t)((un > 0xFFFFu) ? 0xFFFFu : un);
+	if (n_surf)
+		*n_surf = (uint16_t)((sn > 0xFFFFu) ? 0xFFFFu : sn);
+}
+
+void KNS_APP_uw_doppler_setPayCfg(uint8_t format, uint8_t window_h)
+{
+	payload_format = (format > 1u) ? 1u : format;
+	if (window_h < 1u)
+		window_h = 24u;
+	if (window_h > STAT_BUCKETS)
+		window_h = STAT_BUCKETS;
+	stat_window_h = window_h;
+}
+
+void KNS_APP_uw_doppler_getPayCfg(uint8_t *format, uint8_t *window_h)
+{
+	if (format)
+		*format = payload_format;
+	if (window_h)
+		*window_h = stat_window_h;
+}
+
 /* Surface→TX latency instrumentation. Direct-UART trace at four
  * checkpoints — greppable on `[LAT]` for the capture campaign. Disable
  * by undefining UW_DOPPLER_LAT_TRACE in the final firmware. */
@@ -1110,6 +1213,8 @@ static uint8_t argos_crc8(const uint8_t *data, uint32_t nbits)
 
 /* Build the UW Doppler payload — battery telemetry only, with explicit
  * 3-bit type header so receivers can identify it on any modulation.
+ * payload_format 1 packs the linkit-v4 F.6 Doppler frame instead (see the
+ * dedicated block below); the layout here is the legacy format 0.
  *
  * Bit layout (MSB-first):
  *   [0..2]    header = 0b011  (UW Doppler type)
@@ -1150,6 +1255,67 @@ static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 #endif
 
 	uint8_t batt_encoded = argos_convert_battery_voltage(batt_mV);
+
+	if (payload_format == 1u) {
+		/* linkit-v4 F.6 Doppler packet, 24 bits MSB-first:
+		 *   hdr(3)=0b011 | avg_surf(5, minutes, sat 31) |
+		 *   batt(7, (mV-2700)/20) | low_batt(1) | CRC8(8)
+		 * batt/low sit at the stock F.6 offsets (bits 8..15); the
+		 * last-position field (no GPS here) carries the surface-episode
+		 * average and the reserved byte carries the Argos CRC8 over
+		 * bits 0..15. Average underwater time is omitted (no room with
+		 * CRC) — deducible platform-side from the surface average.
+		 * Sized to each modulation's MINIMUM: VLDA4 24, LDA2 32
+		 * (24-bit packet + envelope CRC8 at byte 3), LDK 128 (zero
+		 * pad), LDA2L 196 (legacy CRC at byte 23). */
+		uint16_t uwm = 0, sfm = 0;
+		KNS_APP_uw_doppler_getEpisodeStats(&uwm, &sfm, NULL, NULL);
+		uint32_t sf = (uint32_t)sfm;
+
+		if (sf > 31u)
+			sf = 31u;
+
+		uint32_t pos = 0;
+		argos_pack_bits(appEvt->data_ctxt.usrdata, &pos,
+		                UW_DOPPLER_PACKET_HEADER, 3);
+		argos_pack_bits(appEvt->data_ctxt.usrdata, &pos, sf, 5);
+		argos_pack_bits(appEvt->data_ctxt.usrdata, &pos, batt_encoded, 7);
+		argos_pack_bits(appEvt->data_ctxt.usrdata, &pos,
+		                is_low_battery ? 1u : 0u, 1);
+		appEvt->data_ctxt.usrdata[2] =
+		    argos_crc8(appEvt->data_ctxt.usrdata, 16);
+
+		switch (device_radio_cfg.modulation) {
+		case KNS_TX_MOD_VLDA4:
+			appEvt->data_ctxt.usrdata_bitlen = 24;
+			break;
+		case KNS_TX_MOD_LDA2:
+			/* Full 24-bit F.6 packet + envelope CRC8 over it in
+			 * byte 3 = 32-bit frame, the LDA2 minimum (ladder
+			 * 32/64/.../192). */
+			appEvt->data_ctxt.usrdata_bitlen = 32;
+			appEvt->data_ctxt.usrdata[3] =
+			    argos_crc8(appEvt->data_ctxt.usrdata, 24);
+			break;
+		case KNS_TX_MOD_LDA2L:
+			appEvt->data_ctxt.usrdata_bitlen = 196;
+			appEvt->data_ctxt.usrdata[LDA2_FRAME_BYTES - 1] =
+			    argos_crc8(appEvt->data_ctxt.usrdata, LDA2_DATA_BITS);
+			break;
+		case KNS_TX_MOD_LDK:
+		default:
+			appEvt->data_ctxt.usrdata_bitlen = 128;
+			break;
+		}
+
+		MGR_LOG_INFO("[UW_DPL] TX mini: batt=%u low=%u surf=%umin "
+			"crc=%02X mod=%d bits=%u\r\n",
+			batt_encoded, is_low_battery ? 1 : 0, (unsigned)sf,
+			appEvt->data_ctxt.usrdata[2],
+			device_radio_cfg.modulation,
+			appEvt->data_ctxt.usrdata_bitlen);
+		return true;
+	}
 
 	/* Pack UW Doppler layout (19 useful bits, MSB-first):
 	 *   header(3) + last_known_pos(8) + batt(7) + low_batt(1) = 19 bits
@@ -1891,6 +2057,9 @@ void KNS_APP_uw_doppler_loop(void)
 		process_mac_events();
 
 		MGR_SWS_State_t sws_state = MGR_SWS_getState();
+
+		/* Feed the sliding-window episode statistics (minimal payload). */
+		stat_observe(sws_state);
 
 		/* Cold-boot UW→SURFACE detection: compares the freshly-sampled
 		 * SWS state against the one persisted by the previous duty cycle

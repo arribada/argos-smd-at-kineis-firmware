@@ -733,6 +733,49 @@ bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString,
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 }
 
+bool bMGR_AT_CMD_PAYCFG_cmd(uint8_t *pu8_cmdParamString,
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint8_t fmt = 0u, win = 0u;
+		KNS_APP_uw_doppler_getPayCfg(&fmt, &win);
+		MCU_AT_CONSOLE_send("+PAYCFG=%u,%u\r\n", (unsigned)fmt,
+			(unsigned)win);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	if (e_exec_mode == ATCMD_ACTION_MODE) {
+		unsigned int fmt = 0u, win = 0u;
+		if (sscanf((const char *)pu8_cmdParamString,
+		           "AT+PAYCFG=%u,%u", &fmt, &win) != 2)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		if (fmt > 1u || win < 1u || win > 48u)
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+		KNS_APP_uw_doppler_setPayCfg((uint8_t)fmt, (uint8_t)win);
+		MGR_LOG_INFO("[AT] PAYCFG fmt=%u window=%uh\r\n", fmt, win);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
+bool bMGR_AT_CMD_STATS_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
+	enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		uint16_t uwm = 0u, sfm = 0u, un = 0u, sn = 0u;
+		uint8_t fmt = 0u, win = 0u;
+		KNS_APP_uw_doppler_getEpisodeStats(&uwm, &sfm, &un, &sn);
+		KNS_APP_uw_doppler_getPayCfg(&fmt, &win);
+		/* +STATS=<avg_uw_min>,<avg_surf_min>,<n_uw>,<n_surf>,<window_h> */
+		MCU_AT_CONSOLE_send("+STATS=%u,%u,%u,%u,%u\r\n",
+			(unsigned)uwm, (unsigned)sfm, (unsigned)un,
+			(unsigned)sn, (unsigned)win);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+}
+
 bool bMGR_AT_CMD_LPMSTAT_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	enum atcmd_type_t e_exec_mode)
 {

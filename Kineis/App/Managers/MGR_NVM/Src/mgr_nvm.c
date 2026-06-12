@@ -271,6 +271,59 @@ typedef struct {
 	uint32_t crc32;
 } NVM_Config_v6_t;
 
+/* v7 layout frozen before the v8 fields were appended (v7 = v6 +
+ * tx_seq_restart_s). Strict prefix of the current NVM_Config_t. */
+typedef struct {
+	uint32_t magic;
+	uint8_t  version;
+	uint8_t  deploy_mode;
+	uint8_t  led_mode;
+	uint8_t  _pad0;
+	uint16_t tx_initial_interval_s;
+	uint8_t  tx_growth_percent;
+	uint8_t  tx_max_count;
+	uint16_t tx_max_interval_s;
+	uint8_t  tx_jitter_percent;
+	uint8_t  _pad1;
+	uint16_t tx_cooldown_s;
+	uint8_t  _pad1b[2];
+	uint16_t sws_threshold_min;
+	uint16_t sws_threshold_max;
+	uint16_t sws_initial_air_baseline;
+	uint16_t sws_initial_water_baseline;
+	uint32_t sws_test_interval_surface_ms;
+	uint32_t sws_test_interval_underwater_ms;
+	uint32_t sws_max_dive_time_s;
+	uint32_t sws_min_surface_time_s;
+	uint16_t sws_sample_delay_min_us;
+	uint16_t sws_sample_delay_max_us;
+	uint16_t sws_sample_delay_default_us;
+	uint8_t  sws_enabled;
+	uint8_t  _pad2;
+	uint16_t sws_run_air_baseline;
+	uint16_t sws_run_water_baseline;
+	uint16_t sws_run_observed_peak;
+	uint8_t  _pad3[2];
+	uint16_t bat_min_tx_mV;
+	uint8_t  _pad4[2];
+	uint32_t rate_window_s;
+	uint16_t rate_max_tx;
+	uint8_t  _pad5[2];
+	uint16_t lb_enter_mV;
+	uint16_t lb_exit_mV;
+	uint16_t lb_tx_interval_s;
+	uint16_t lb_tx_max_s;
+	uint8_t  lb_tx_max_count;
+	uint8_t  _pad6[3];
+	uint16_t lpm_spin_ms;
+	uint16_t lpm_sleep_ms;
+	uint8_t  lpm_enabled;
+	uint8_t  _pad7[3];
+	uint16_t tx_seq_restart_s;
+	uint8_t  _pad8[2];
+	uint32_t crc32;
+} NVM_Config_v7_t;
+
 /* ---- Last save timestamp (for debouncing) ---- */
 
 static uint32_t last_save_tick = 0;
@@ -279,6 +332,12 @@ static uint32_t last_save_tick = 0;
 
 static bool validate_config(const NVM_Config_t *cfg)
 {
+	/* v8 payload config */
+	if (cfg->payload_format > 1)
+		return false;
+	if (cfg->stat_window_h > 48)
+		return false;
+
 	/* TX scheduling */
 	if (cfg->tx_initial_interval_s == 0 || cfg->tx_max_interval_s == 0)
 		return false;
@@ -366,6 +425,10 @@ static void apply_config(const NVM_Config_t *cfg)
 	tx_cfg.tx_cooldown_s         = cfg->tx_cooldown_s;
 	tx_cfg.tx_seq_restart_s      = cfg->tx_seq_restart_s;  /* v7, 0=disabled */
 	KNS_APP_uw_doppler_setTxCfg(&tx_cfg);
+
+	/* v8 minimal-payload config (0 window = default 24 h) */
+	KNS_APP_uw_doppler_setPayCfg(cfg->payload_format,
+		(cfg->stat_window_h == 0u) ? 24u : cfg->stat_window_h);
 
 	/* SWS config */
 	MGR_SWS_Config_t sws_cfg;
@@ -456,6 +519,12 @@ static void gather_config(NVM_Config_t *cfg)
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->magic   = NVM_MAGIC;
 	cfg->version = NVM_VERSION;
+	{
+		uint8_t pay_fmt = 0u, pay_win = 24u;
+		KNS_APP_uw_doppler_getPayCfg(&pay_fmt, &pay_win);
+		cfg->payload_format = pay_fmt;
+		cfg->stat_window_h  = pay_win;
+	}
 
 	/* TX */
 	KNS_APP_UwDopplerTxCfg_t tx_cfg = KNS_APP_uw_doppler_getTxCfg();
@@ -577,6 +646,16 @@ static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
 	out->sws_sample_delay_default_us = 500;
 	out->sws_enabled             = v2->sws_enabled;
 	out->bat_min_tx_mV           = v2->bat_min_tx_mV;
+}
+
+static void migrate_v7_to_v8(const NVM_Config_v7_t *v7, NVM_Config_t *out)
+{
+	/* v7 is a strict prefix of v8: the new fields sit between
+	 * tx_seq_restart_s and crc32. payload_format/stat_window_h stay 0
+	 * from the memset = legacy frame + default 24 h window. */
+	memset(out, 0, sizeof(*out));
+	memcpy(out, v7, offsetof(NVM_Config_v7_t, crc32));
+	out->version = NVM_VERSION;
 }
 
 static void migrate_v6_to_v7(const NVM_Config_v6_t *v6, NVM_Config_t *out)
@@ -848,15 +927,31 @@ bool MGR_NVM_load(void)
 		return true;
 	}
 
+	if (cfg.version == 7) {
+		NVM_Config_v7_t v7;
+		if (MCU_FLASH_read(FLASH_NVM_CONFIG_ADDR, &v7, sizeof(v7)) != KNS_STATUS_OK)
+			return false;
+		uint32_t computed = nvm_crc32(&v7, offsetof(NVM_Config_v7_t, crc32));
+		if (computed != v7.crc32) {
+			MGR_LOG_WARN("[NVM] v7 CRC mismatch\r\n");
+			return false;
+		}
+		migrate_v7_to_v8(&v7, &cfg);
+		MGR_LOG_INFO("[NVM] Migrated v7 -> v8 (legacy payload, 24 h window)\r\n");
+		if (!validate_config(&cfg)) return false;
+		apply_config(&cfg);
+		return true;
+	}
+
 	if (cfg.version != NVM_VERSION) {
 		MGR_LOG_WARN("[NVM] Unknown version %u, using defaults\r\n", cfg.version);
 		return false;
 	}
 
-	/* v7: verify CRC32 */
+	/* Current version: verify CRC32 */
 	uint32_t computed_crc = nvm_crc32(&cfg, offsetof(NVM_Config_t, crc32));
 	if (computed_crc != cfg.crc32) {
-		MGR_LOG_ERR("[NVM] v7 CRC mismatch (stored=0x%08lx computed=0x%08lx)\r\n",
+		MGR_LOG_ERR("[NVM] CRC mismatch (stored=0x%08lx computed=0x%08lx)\r\n",
 			cfg.crc32, computed_crc);
 		return false;
 	}
@@ -868,8 +963,9 @@ bool MGR_NVM_load(void)
 
 	apply_config(&cfg);
 
-	MGR_LOG_INFO("[NVM] v7 loaded: deploy=%u tx=%us jit=%u%% seqrst=%us "
+	MGR_LOG_INFO("[NVM] v%u loaded: deploy=%u tx=%us jit=%u%% seqrst=%us "
 		"sws_surf=%lums sws_uw=%lums rate=%u/%lus lb=%u/%u\r\n",
+		cfg.version,
 		cfg.deploy_mode, cfg.tx_initial_interval_s, cfg.tx_jitter_percent,
 		cfg.tx_seq_restart_s,
 		(unsigned long)cfg.sws_test_interval_surface_ms,

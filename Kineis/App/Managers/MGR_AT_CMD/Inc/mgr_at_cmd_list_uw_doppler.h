@@ -283,6 +283,17 @@ bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exe
  * `+LPMSTAT=<uptime_ms>,<stop2_ms>,<stop2_count>,<awake_duty_x1000>`
  * uptime is the RTC-compensated wall-clock tick; awake = uptime - stop2.
  * On-target measured duty cycle for the energy budget (no ammeter needed). */
+/** AT+PAYCFG: TX payload format + stats window.
+ *  Status: +PAYCFG=<format>,<window_h>
+ *  Action: AT+PAYCFG=<format 0|1>,<window_h 1..48>
+ *  format 0 = legacy 128-bit frame, 1 = minimal 24-bit frame (battery +
+ *  sliding-window average UW/surface durations, 2-minute resolution). */
+bool bMGR_AT_CMD_PAYCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** AT+STATS=? — sliding-window episode statistics:
+ *  +STATS=<avg_uw_min>,<avg_surf_min>,<n_uw>,<n_surf>,<window_h> */
+bool bMGR_AT_CMD_STATS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 bool bMGR_AT_CMD_LPMSTAT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
 /** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.

@@ -104,6 +104,10 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+LOGLVL",        9, bMGR_AT_CMD_LOGLVL_cmd},
 	/* LPMSTAT before LPMTHR: longest shared prefix first */
 	{ "AT+LPMSTAT",      10, bMGR_AT_CMD_LPMSTAT_cmd},
+	{ "AT+PAYCFG",        9, bMGR_AT_CMD_PAYCFG_cmd},
+	/* STATS after STATUS in the table; prefixes differ at char 8 so no
+	 * shadowing either way. */
+	{ "AT+STATS",         8, bMGR_AT_CMD_STATS_cmd},
 	{ "AT+LPMTHR",        9, bMGR_AT_CMD_LPMTHR_cmd},
 	/* LB mode — LBCFG before LB to win prefix match */
 	{ "AT+LBCFG",         8, bMGR_AT_CMD_LBCFG_cmd},
