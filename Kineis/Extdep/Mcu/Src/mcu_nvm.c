@@ -27,6 +27,7 @@
 #include "stm32wlxx_hal.h"
 #include "mgr_log.h"
 #include <string.h>
+#include <stdio.h>
 /* Variables ---------------------------------------------------------*/
 
 /** @note The message counter be stored in a non volatile memory (flash, RTC backup reg, etc.).
@@ -101,9 +102,11 @@ static uint8_t radioConfZone[16] = {
 
 };
 
-/* Device serial number */
-static const uint8_t device_sn[DEVICE_SN_LENGTH] = { 'S', 'M', 'D', '_', '1', '1', '_', \
-					      '_', '0', '0', '0', '0', '0', '1' };
+/* Device serial number — derived from the factory-programmed 96-bit die ID
+ * (RM0453, UID_BASE 0x1FFF7590): unique per chip, read-only silicon,
+ * survives any flash erase, cannot be reprogrammed.
+ * Layout (14 chars): "SMD" + 3 hex (lot+wafer words folded to 12 bits so no
+ * UID word is ignored) + 8 hex (die X/Y coordinates, kept verbatim). */
 /* Functions -------------------------------------------------------------*/
 
 //enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
@@ -346,12 +349,24 @@ enum KNS_status_t MCU_NVM_setAddr(uint8_t addr[])
 }
 enum KNS_status_t MCU_NVM_getSN(uint8_t sn[])
 {
-    uint16_t i;
+	const uint32_t xy    = *(const volatile uint32_t *)(UID_BASE + 0x00U);
+	const uint32_t wafer = *(const volatile uint32_t *)(UID_BASE + 0x04U);
+	const uint32_t lot   = *(const volatile uint32_t *)(UID_BASE + 0x08U);
 
-    for (i = 0 ; i < DEVICE_SN_LENGTH ; i++)
-        sn[i] = device_sn[i];
+	/* Fold the two lot/wafer words into 12 bits (XOR of all nibbles by
+	 * groups) so every UID bit contributes to the serial. */
+	const uint32_t mix = wafer ^ lot;
+	const uint32_t fold12 = (mix ^ (mix >> 12) ^ (mix >> 24)) & 0xFFFu;
 
-    return KNS_STATUS_OK;
+	char buf[DEVICE_SN_LENGTH + 2];
+	const int n = snprintf(buf, sizeof(buf), "SMD%03lX%08lX",
+			       (unsigned long)fold12, (unsigned long)xy);
+	if (n != DEVICE_SN_LENGTH)
+		return KNS_STATUS_ERROR;
+
+	/* Contract: exactly DEVICE_SN_LENGTH bytes, no NUL (callers append it). */
+	memcpy(sn, buf, DEVICE_SN_LENGTH);
+	return KNS_STATUS_OK;
 }
 
 /**
