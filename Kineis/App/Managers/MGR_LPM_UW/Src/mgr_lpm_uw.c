@@ -42,6 +42,10 @@
  * bench/commissioning session stays interactive. */
 #define LPM_UW_AT_GRACE_MS  30000u
 
+/* Max continuous awake time granted to a non-converging reed debounce
+ * episode. Real transitions confirm in 50 ms (ON) / 200 ms (OFF). */
+#define REED_DEBOUNCE_AWAKE_BUDGET_MS  500u
+
 /* Below this wait, STOP2 entry+exit (clock restore + GPIO/SubGHz/ADC
  * reinit, ~25 ms) costs more than it saves — spin instead. */
 #define STOP2_MIN_WORTH_MS  40u
@@ -371,8 +375,33 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 		return;
 	if (!s_monitoring_ever_entered)
 		return;
-	if (MGR_REED_isDebouncing())
-		return;
+
+	/* Reed debouncer convergence window — BOUNDED. The unbounded form held
+	 * the chip awake as long as candidate != confirmed; with a floating
+	 * reed node (debug header stub + PB3 parallel wire, no probe) every TX
+	 * transient set the node oscillating without ever confirming → ~5 mA
+	 * between the TXs of a sequence, measured on the bench. A REAL magnet
+	 * press confirms in 50 ms (5 x 10 ms samples), far inside the budget;
+	 * only pathological chatter loses its right to keep the chip awake.
+	 * The reed EXTI stays armed in STOP2, so a genuine edge still wakes
+	 * the chip instantly. Budget re-arms only after the debouncer settles. */
+	{
+		static uint32_t s_debounce_awake_since;
+		static bool     s_debounce_awake_armed;
+
+		if (MGR_REED_isDebouncing()) {
+			if (!s_debounce_awake_armed) {
+				s_debounce_awake_armed = true;
+				s_debounce_awake_since = HAL_GetTick();
+			}
+			if ((HAL_GetTick() - s_debounce_awake_since) <
+			    REED_DEBOUNCE_AWAKE_BUDGET_MS)
+				return;
+			/* Budget burnt: chatter, not a press — sleep anyway. */
+		} else {
+			s_debounce_awake_armed = false;
+		}
+	}
 
 	/* Console grace window: someone is actively sending AT commands —
 	 * hold off deep sleep so the dialogue stays interactive. In STOP2 the

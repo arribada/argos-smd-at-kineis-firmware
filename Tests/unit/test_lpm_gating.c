@@ -168,6 +168,75 @@ void test_notif_enter_standby_runs(void)
 	TEST_PASS();
 }
 
+
+/* ---- Reed-debounce awake budget (mirror of mgr_lpm_uw.c idleTick) ----
+ * Unbounded "stay awake while debouncing" held the chip at ~5 mA whenever
+ * a floating reed node chattered after TX transients. The budget grants
+ * 500 ms per episode: real presses confirm in 50/200 ms, chatter loses
+ * its grant until the debouncer settles once. */
+
+#define BUDGET_MS 500u
+static uint32_t fk_tick;
+static int      fk_debouncing;
+static uint32_t dbg_awake_since;
+
+static int dbg_awake_armed;
+
+static int budget_allows_sleep(void)
+{
+	if (fk_debouncing) {
+		if (!dbg_awake_armed) {
+			dbg_awake_armed = 1;
+			dbg_awake_since = fk_tick;
+		}
+		if ((fk_tick - dbg_awake_since) < BUDGET_MS)
+			return 0;          /* stay awake: converging */
+		return 1;                  /* budget burnt: sleep anyway */
+	}
+	dbg_awake_armed = 0;
+	return 1;
+}
+
+static void test_debounce_budget_real_press_keeps_awake(void)
+{
+	fk_tick = 10000u; fk_debouncing = 1; dbg_awake_armed = 0;
+	ASSERT_EQ(0, budget_allows_sleep());       /* t0: awake granted */
+	fk_tick += 60;                             /* real ON confirms in 50ms */
+	ASSERT_EQ(0, budget_allows_sleep());       /* still within budget */
+	fk_debouncing = 0;                         /* confirmed -> settled */
+	ASSERT_EQ(1, budget_allows_sleep());
+	ASSERT_EQ(0, dbg_awake_armed);             /* budget re-armed */
+	TEST_PASS();
+}
+
+static void test_debounce_budget_chatter_sleeps_after_500ms(void)
+{
+	fk_tick = 20000u; fk_debouncing = 1; dbg_awake_armed = 0;
+	ASSERT_EQ(0, budget_allows_sleep());
+	fk_tick += 499;
+	ASSERT_EQ(0, budget_allows_sleep());
+	fk_tick += 2;                              /* 501 ms of churn */
+	ASSERT_EQ(1, budget_allows_sleep());       /* sleep despite chatter */
+	fk_tick += 5000;
+	ASSERT_EQ(1, budget_allows_sleep());       /* no new grant while chattering */
+	fk_debouncing = 0;
+	ASSERT_EQ(1, budget_allows_sleep());       /* settled */
+	fk_debouncing = 1;
+	ASSERT_EQ(0, budget_allows_sleep());       /* fresh episode -> fresh budget */
+	TEST_PASS();
+}
+
+static void test_debounce_budget_tick_wrap_safe(void)
+{
+	fk_tick = 0xFFFFFFFFu - 100u; fk_debouncing = 1; dbg_awake_armed = 0;
+	ASSERT_EQ(0, budget_allows_sleep());
+	fk_tick += 200u;                           /* wraps past 0 */
+	ASSERT_EQ(0, budget_allows_sleep());       /* 200ms < 500ms despite wrap */
+	fk_tick += 400u;
+	ASSERT_EQ(1, budget_allows_sleep());       /* 600ms: budget burnt */
+	TEST_PASS();
+}
+
 int main(void)
 {
 	TEST_SUITE_START("UW_DOPPLER LPM client gating");
@@ -180,6 +249,9 @@ int main(void)
 	test_notif_enter_stop_runs_side_effects();
 	test_notif_enter_repeated_none_stays_silent();
 	test_notif_enter_standby_runs();
+	RUN_TEST(test_debounce_budget_real_press_keeps_awake);
+	RUN_TEST(test_debounce_budget_chatter_sleeps_after_500ms);
+	RUN_TEST(test_debounce_budget_tick_wrap_safe);
 	TEST_SUITE_END();
 	return tests_failed ? 1 : 0;
 }

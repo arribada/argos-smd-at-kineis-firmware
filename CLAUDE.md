@@ -137,10 +137,14 @@ audit where the agent gave wrong pin mapping for PB13).
 - **PDF reading**: PDFs in `.claude/stm/` and `.claude/kineis/` have been
   converted to `.txt` via `pdftotext -layout` (from MSYS2). Read the `.txt`
   versions; recreate them with the same command if the PDFs are updated.
-- **Build**: `make` at the repo root (Windows via MSYS2 + STM32CubeCLT).
-- **Tests**: `cd Tests && make` (uses WSL gcc).
-- **Flash**: JLink commands documented in the Makefile (`make flash`,
-  `make erase`, `make unlock`).
+- **Build**: `make help` lists the canonical bench/release command lines.
+  ALWAYS `make clean` when changing any flag (DEBUG/BOARD/APP/REED_*) —
+  make does not track flag changes and silently reuses stale objects.
+- **Tests**: `cd Tests && ./scripts/run_tests.sh` (WSL gcc; NOT make).
+- **Flash**: `make flash` (full image), `make flash-app`, `make
+  flash-recover` (NRST-pulse attach for a deaf/STOP2-stuck board),
+  `make reset`, `make erase` (FLASH_USER preserved), `make erase-all`
+  (wipes credentials — dangerous).
 
 ---
 

@@ -892,6 +892,87 @@ flash-full: $(COMBINED_BIN)
 	@echo "exit" >> $(JLINK_SCRIPT)
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
+# Default flash intent = full image
+flash: flash-full
+
+# Flash via hardware NRST pulse (r0/r1) — the ONLY reliable path when the
+# chip sits in STOP2/soft-off and a plain SWD attach fails ("Failed to
+# initialize DAP" / hang). Loads the APP hex only; bootloader region kept.
+flash-recover: $(BUILD_DIR)/$(TARGET).hex
+	@echo "NRST-pulse recovery flash (app only, bootloader preserved)..."
+	@echo "si SWD" > $(JLINK_SCRIPT)
+	@echo "speed 1000" >> $(JLINK_SCRIPT)
+	@echo "r0" >> $(JLINK_SCRIPT)
+	@echo "sleep 400" >> $(JLINK_SCRIPT)
+	@echo "r1" >> $(JLINK_SCRIPT)
+	@echo "sleep 20" >> $(JLINK_SCRIPT)
+	@echo "connect" >> $(JLINK_SCRIPT)
+	@echo "h" >> $(JLINK_SCRIPT)
+	@echo "erase 0x08000000 0x08033000" >> $(JLINK_SCRIPT)
+	@echo "loadfile $(BUILD_DIR)/$(TARGET).hex" >> $(JLINK_SCRIPT)
+	@echo "r" >> $(JLINK_SCRIPT)
+	@echo "g" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed 1000 -autoconnect 1 -nogui 1 -CommanderScript $(JLINK_SCRIPT)
+
+# Hardware reset only (NRST pulse) — wakes a deaf board without reflashing
+reset:
+	@echo "si SWD" > $(JLINK_SCRIPT)
+	@echo "speed 1000" >> $(JLINK_SCRIPT)
+	@echo "r0" >> $(JLINK_SCRIPT)
+	@echo "sleep 300" >> $(JLINK_SCRIPT)
+	@echo "r1" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed 1000 -autoconnect 1 -nogui 1 -CommanderScript $(JLINK_SCRIPT)
+
+# Erase app + bootloader, PRESERVES FLASH_USER (credentials, radio conf, NVM)
+erase:
+	@echo "Erasing app+bootloader (FLASH_USER preserved)..."
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase 0x08000000 0x0803B000" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
+
+# Full chip erase INCLUDING FLASH_USER — wipes ID/ADDR/SECKEY/RCONF/NVM/MC!
+erase-all:
+	@echo "WARNING: erasing the WHOLE flash incl. credentials and NVM config"
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
+
+#######################################
+# help
+#######################################
+help:
+	@echo "Canonical builds (ALWAYS 'make clean' first when changing any flag below):"
+	@echo "  Bench   : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART DEBUG=1 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20"
+	@echo "  Release : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART DEBUG=0 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20"
+	@echo ""
+	@echo "DEBUG=1: console always on, logs INFO  | DEBUG=0: UART torn down ~2s after"
+	@echo "boot (sealed tag), logs ERROR-only; console re-entry = 3s magnet -> CONFIG."
+	@echo ""
+	@echo "Flags: BOARD=SMD_PA|SMD_NOPA|SMD_STDALONE|SMD_OP  APP=GUI|STDLN|DOPPLER|UW_DOPPLER"
+	@echo "       REED_WKUP3=1 (reed moved to PB3) | REED_WKUP3_WIRE=1 (PB6+PB3 parallel,"
+	@echo "       the SMD_STDALONE wiring) | REED_WKUP1_WIRE=1 (PA0 - NOT wired on this HW)"
+	@echo "       LOG_LEVEL=0..4  JLINK_SPEED=<kHz>  JLINK_SERIAL=<sn>"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all (default)   build app -> build/$(TARGET).{elf,hex,bin}"
+	@echo "  full            merge app + bootloader -> $(TARGET)_full.{bin,hex}"
+	@echo "  bootloader      build the DFU bootloader"
+	@echo "  dfu             package a DFU update image"
+	@echo "  flash           = flash-full (app + bootloader)"
+	@echo "  flash-app       app only (bootloader preserved)"
+	@echo "  flash-bl        bootloader only"
+	@echo "  flash-recover   NRST-pulse attach + app flash (deaf/STOP2-stuck board)"
+	@echo "  reset           NRST pulse only (wake a deaf board)"
+	@echo "  erase           wipe app+bootloader, FLASH_USER preserved"
+	@echo "  erase-all       wipe EVERYTHING incl. credentials/NVM (dangerous)"
+	@echo "  clean           remove build artifacts (mandatory on flag change)"
+	@echo ""
+	@echo "Tests: cd Tests && ./scripts/run_tests.sh   (31 suites)"
+
 #######################################
 # clean up
 #######################################
@@ -911,7 +992,7 @@ doc_clean:
 #######################################
 -include $(wildcard $(BUILD_DIR)/*.d)
 
-.PHONY: all clean doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash-app flash-bl flash-full clean-all check-app check-bootloader
+.PHONY: all clean doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash flash-app flash-bl flash-full flash-recover reset erase erase-all help clean-all check-app check-bootloader
 
 #######################################
 # force empty target
