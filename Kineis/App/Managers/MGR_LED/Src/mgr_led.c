@@ -28,7 +28,7 @@
 
 /* ---- Private state ---- */
 
-static MGR_LED_Mode_t led_mode = MGR_LED_MODE_ON;
+static MGR_LED_Mode_t led_mode = MGR_LED_MODE_24H; /* visible for commissioning day, then dark */
 static uint32_t mode_start_tick = 0;
 
 /* Blink state */

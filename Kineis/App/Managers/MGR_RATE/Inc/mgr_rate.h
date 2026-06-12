@@ -28,9 +28,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/** Sane defaults — 100 TX per 24h. Configurable at runtime via AT+RATECFG. */
-#define MGR_RATE_DEFAULT_WINDOW_S   86400u
-#define MGR_RATE_DEFAULT_MAX_TX     100u
+/** Sane defaults — 20 TX per rolling hour (AT+RATECFG to change). The
+ *  hourly window degrades gracefully: a saturated hour only blocks TX
+ *  until it rolls, instead of the old 24h window's day-long blackout. */
+#define MGR_RATE_DEFAULT_WINDOW_S   3600u
+#define MGR_RATE_DEFAULT_MAX_TX     20u
 
 /** Max ring capacity (compile-time). Window may be configured larger than
  *  this many TX, but past MAX_CAP we just block. Sized to ~1 KB at 4B each. */

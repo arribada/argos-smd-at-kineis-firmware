@@ -147,7 +147,13 @@ typedef enum {
  *  AT all appear delayed when only the console is. Opt back into the
  *  firehose at runtime with AT+LOGLVL=0 when chasing a specific bug. */
 #ifndef LOG_DEFAULT_LEVEL
+#ifdef DEBUG
 #  define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_INFO
+#else
+   /* Production: failures only — pairs with the quiet UARTLOG default so a
+    * parser GUI sees a clean stream. AT+LOGLVL overrides at runtime. */
+#  define LOG_DEFAULT_LEVEL  MGR_LOG_LVL_ERROR
+#endif
 #endif
 
 /** @brief Get / set the current runtime threshold. Persisted in retention

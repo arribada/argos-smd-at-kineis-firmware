@@ -414,20 +414,22 @@ volatile uint32_t g_uw_doppler_state_for_err = 0;
 
 static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 	.tx_initial_interval_s = 10,
-	.tx_growth_percent     = 10,
+	.tx_growth_percent     = 50,   /**< 10s -> 15s -> 22s ramp within a sequence */
 	.tx_max_interval_s     = 180,  /**< 3min cap: better Argos pass coverage for Doppler */
-	.tx_max_count          = 0,    /**< unlimited */
+	.tx_max_count          = 3,    /**< 3 TX per surface sequence (battery budget) */
 	.tx_jitter_percent     = 10,   /**< +/-10% randomization to avoid TX collisions */
-	.tx_cooldown_s         = 60,   /**< 60s quiet time between TX, survives dive/surface */
-	.tx_seq_restart_s      = 0,    /**< 0 = disabled (legacy behaviour); restart sequence
-	                                  *  N seconds after last TX of a capped sequence */
+	.tx_cooldown_s         = 10,   /**< quiet floor; never delays a re-surface first TX */
+	.tx_seq_restart_s      = 1200, /**< floating animal: new sequence (new MC) every 20min */
 };
 
 /* LB mode (low-battery) config. Defaults engage LB at 2.9V (just above the
  * existing min_tx_mV=2.8V hard floor) with 200 mV hysteresis. In LB mode TX
  * timing is slower and capped at 3 TX per surface event. */
 static KNS_APP_UwDopplerLbCfg_t lb_cfg = {
-	.lb_enter_mV       = 2900,
+	.lb_enter_mV       = 0,    /**< 0 = LB mode disabled by default (BATCFG hard
+	                            *   floor still inhibits TX below min_tx_mV);
+	                            *   the values below are seeds for when the
+	                            *   operator enables it via AT+LBCFG. */
 	.lb_exit_mV        = 3100,
 	.lb_tx_interval_s  = 60,   /**< 6x slower than normal 10s */
 	.lb_tx_max_s       = 600,  /**< 10 min cap vs normal 3 min */
@@ -483,8 +485,8 @@ static struct {
 	uint32_t cur;
 	StatBucket_t b[STAT_BUCKETS];
 } stat_ring;
-static uint8_t  payload_format = 0;   /**< 0=legacy 128b, 1=minimal 24b (NVM) */
-static uint8_t  stat_window_h  = 24;  /**< sliding window, hours (NVM) */
+static uint8_t  payload_format = 1;   /**< 0=legacy 128b, 1=minimal F.6 24b (NVM) */
+static uint8_t  stat_window_h  = 12;  /**< sliding window, hours (NVM) */
 static MGR_SWS_State_t stat_prev_state = MGR_SWS_STATE_UNKNOWN;
 static uint32_t stat_episode_start_tick;
 
@@ -552,7 +554,7 @@ void KNS_APP_uw_doppler_setPayCfg(uint8_t format, uint8_t window_h)
 {
 	payload_format = (format > 1u) ? 1u : format;
 	if (window_h < 1u)
-		window_h = 24u;
+		window_h = 12u;
 	if (window_h > STAT_BUCKETS)
 		window_h = STAT_BUCKETS;
 	stat_window_h = window_h;
