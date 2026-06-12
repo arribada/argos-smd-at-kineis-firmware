@@ -824,7 +824,10 @@ $(BOOTLOADER_BIN): bootloader
 #                 under Git Bash / MSYS. Probes stable install dir first, then
 #                 falls back to the newest versioned dir (JLink_V*).
 # Override on cmdline: `make JLINK_EXE=/path/to/JLink.exe ...`
-ifeq ($(HOST_OS),Windows)
+# NOTE: under MSYS2/Git-Bash make, $(OS) is often EMPTY so HOST_OS holds
+# `uname -s` (MINGW64_NT-...) — match those as Windows too, otherwise the
+# detection silently falls through to the Linux `JLinkExe` default.
+ifneq (,$(filter Windows MINGW% MSYS% CYGWIN%,$(HOST_OS)))
     # Stable install path (preferred — survives JLink updates)
     ifneq ($(wildcard C:/PROGRA~1/SEGGER/JLink/JLink.exe),)
         JLINK_EXE ?= C:/PROGRA~1/SEGGER/JLink/JLink.exe
@@ -858,8 +861,17 @@ else
 JLINK_SERIAL_OPT =
 endif
 
+# Flash targets deliberately do NOT depend on build artifacts: a bare
+# `make flash-*` would otherwise rebuild/relink with the DEFAULT flags
+# (APP=GUI BOARD=SMD_PA) and silently flash the wrong image. Build first
+# with the canonical command line (see `make help`), then flash.
+define REQUIRE_FILE
+	@test -f $(1) || { echo "ERROR: $(1) missing - build it first (see 'make help')"; exit 1; }
+endef
+
 # Flash app only (assumes bootloader already present)
-flash-app: $(BUILD_DIR)/$(TARGET).hex
+flash-app:
+	$(call REQUIRE_FILE,$(BUILD_DIR)/$(TARGET).hex)
 	@echo "Flashing application to 0x08000000..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08000000 0x08033000" >> $(JLINK_SCRIPT)
@@ -870,7 +882,8 @@ flash-app: $(BUILD_DIR)/$(TARGET).hex
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
 # Flash bootloader only
-flash-bl: $(BOOTLOADER_HEX)
+flash-bl:
+	$(call REQUIRE_FILE,$(BOOTLOADER_HEX))
 	@echo "Flashing bootloader to 0x08033000..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08033000 0x0803B000" >> $(JLINK_SCRIPT)
@@ -880,9 +893,10 @@ flash-bl: $(BOOTLOADER_HEX)
 	@echo "exit" >> $(JLINK_SCRIPT)
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
-# Flash combined firmware (app + bootloader)
-# Depends on COMBINED_BIN which triggers the merge script that creates both BIN and HEX
-flash-full: $(COMBINED_BIN)
+# Flash combined firmware (app + bootloader). Build the image first:
+#   make <canonical flags> && make <canonical flags> full
+flash-full:
+	$(call REQUIRE_FILE,$(COMBINED_HEX))
 	@echo "Flashing full firmware (App + Bootloader)..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08000000 0x0803B000" >> $(JLINK_SCRIPT)
@@ -898,7 +912,8 @@ flash: flash-full
 # Flash via hardware NRST pulse (r0/r1) — the ONLY reliable path when the
 # chip sits in STOP2/soft-off and a plain SWD attach fails ("Failed to
 # initialize DAP" / hang). Loads the APP hex only; bootloader region kept.
-flash-recover: $(BUILD_DIR)/$(TARGET).hex
+flash-recover:
+	$(call REQUIRE_FILE,$(BUILD_DIR)/$(TARGET).hex)
 	@echo "NRST-pulse recovery flash (app only, bootloader preserved)..."
 	@echo "si SWD" > $(JLINK_SCRIPT)
 	@echo "speed 1000" >> $(JLINK_SCRIPT)
@@ -963,6 +978,8 @@ help:
 	@echo "  bootloader      build the DFU bootloader"
 	@echo "  dfu             package a DFU update image"
 	@echo "  flash           = flash-full (app + bootloader)"
+	@echo "  NOTE: flash-* targets never rebuild - they flash the EXISTING build/"
+	@echo "        artifacts. Build first with the canonical flags, then flash."
 	@echo "  flash-app       app only (bootloader preserved)"
 	@echo "  flash-bl        bootloader only"
 	@echo "  flash-recover   NRST-pulse attach + app flash (deaf/STOP2-stuck board)"
