@@ -204,9 +204,25 @@ static uint16_t peak_adc_since_underwater = 0;
 static uint16_t recent_peak = 0;
 static uint16_t min_adc_during_dive = 0xFFFF;
 
-/* Safety / lockout */
-static uint32_t surface_lockout_until = 0;
+/* Safety / lockout. Stored as start + duration and compared with wrap-safe
+ * tick deltas: the old absolute-deadline form misfired at the 49.7-day tick
+ * wrap (a lockout armed just before the wrap read as ~49 days remaining,
+ * blocking dive detection). */
+static uint32_t surface_lockout_start_tick = 0;
+static uint32_t surface_lockout_ms = 0;       /**< 0 = no lockout armed */
 static uint8_t  consecutive_dive_timeouts = 0;
+
+static bool surface_lockout_active(void)
+{
+	if (surface_lockout_ms == 0u)
+		return false;
+	if ((uint32_t)(HAL_GetTick() - surface_lockout_start_tick) >=
+	    surface_lockout_ms) {
+		surface_lockout_ms = 0u;
+		return false;
+	}
+	return true;
+}
 
 /* Periodic recalibration timer */
 static uint32_t last_calib_tick = 0;
@@ -754,7 +770,7 @@ static bool detector_state(void)
 
 	/* 4. SURFACE BASELINE TRACKING (blocked during lockout) */
 	if (!is_underwater && time_in_state > MIN_SURFACE_TIME_FOR_ADAPT_S &&
-	    (surface_lockout_until == 0 || HAL_GetTick() >= surface_lockout_until)) {
+	    !surface_lockout_active()) {
 		/* Reject sub-floor readings (likely uncharged RC / disconnected electrode) */
 		if (filtered < threshold_current && filtered >= AIR_BASELINE_FLOOR) {
 			surface_readings[surface_readings_idx] = filtered;
@@ -861,7 +877,7 @@ static bool detector_state(void)
 	}
 
 	/* 5. WATER BASELINE EMA (when underwater, not during lockout) */
-	if (is_underwater && (surface_lockout_until == 0 || HAL_GetTick() >= surface_lockout_until))
+	if (is_underwater && !surface_lockout_active())
 		calibrate_water_baseline(filtered);
 
 	/* 6. STATE DETERMINATION */
@@ -955,8 +971,10 @@ static bool detector_state(void)
 		}
 
 		/* Enforce surface lockout */
-		if (sws_config.min_surface_time_s > 0)
-			surface_lockout_until = HAL_GetTick() + sws_config.min_surface_time_s * 1000;
+		if (sws_config.min_surface_time_s > 0) {
+			surface_lockout_start_tick = HAL_GetTick();
+			surface_lockout_ms = sws_config.min_surface_time_s * 1000;
+		}
 
 		MGR_LOG_INFO("[SWS] SURFACE L%u raw=%u filt=%u air=%u->%u water=%u\r\n",
 			surface_level, raw_value, filtered, old_air, air_baseline, water_baseline);
@@ -977,7 +995,8 @@ static bool detector_state(void)
 
 		if (consecutive_dive_timeouts >= MAX_CONSECUTIVE_DIVE_TIMEOUTS) {
 			new_is_underwater = false;
-			surface_lockout_until = HAL_GetTick() + SURFACE_LOCKOUT_S * 1000;
+			surface_lockout_start_tick = HAL_GetTick();
+			surface_lockout_ms = SURFACE_LOCKOUT_S * 1000;
 			consecutive_dive_timeouts = 0;
 			observed_peak_adc = water_baseline;
 			consecutive_spike_rejects = 0;
@@ -997,12 +1016,8 @@ static bool detector_state(void)
 	}
 
 	/* 8. SURFACE LOCKOUT (time-based) */
-	if (surface_lockout_until > 0 && HAL_GetTick() < surface_lockout_until) {
-		if (new_is_underwater)
-			new_is_underwater = false;
-	} else {
-		surface_lockout_until = 0;
-	}
+	if (surface_lockout_active() && new_is_underwater)
+		new_is_underwater = false;
 
 	return new_is_underwater;
 }
@@ -1047,7 +1062,8 @@ void MGR_SWS_init(void)
 	min_adc_during_dive = 0xFFFF;
 	surface_readings_idx = 0;
 	surface_readings_count = 0;
-	surface_lockout_until = 0;
+	surface_lockout_start_tick = 0;
+	surface_lockout_ms = 0;
 	consecutive_dive_timeouts = 0;
 	consecutive_spike_rejects = 0;
 	coherence_high_count = 0;
