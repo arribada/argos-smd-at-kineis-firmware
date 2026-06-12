@@ -121,11 +121,14 @@ void MGR_WDG_init(void)
 	/* First refresh */
 	IWDG->KR = IWDG_KEY_REFRESH;
 
-	/* Verify IWDG_STOP option byte is set (IWDG frozen during STOP mode).
-	 * If not set, IWDG would keep running during STOP and reset the device
-	 * during long sleep intervals. FLASH_OPTR bit 17 = IWDG_STOP (1=frozen). */
-	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U)
-		MGR_LOG_WARN("[WDG] IWDG_STOP not set in option bytes!\r\n");
+	/* Verify the IWDG freezes in Stop mode. RM0453 FLASH_OPTR bit 17
+	 * (IWDG_STOP): 0 = counter FROZEN in Stop, 1 = counter RUNNING in
+	 * Stop. Running-in-Stop would reset the device during any STOP2
+	 * sleep longer than the 16 s timeout. The previous check had the
+	 * polarity inverted and warned on the correct (frozen) setting. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) != 0U)
+		MGR_LOG_WARN("[WDG] OPTR.IWDG_STOP=1: IWDG runs in STOP2 — "
+			"sleeps >16s will reset!\r\n");
 
 	MGR_LOG_INFO("[WDG] IWDG started (timeout ~16s)\r\n");
 }

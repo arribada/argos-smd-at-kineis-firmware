@@ -405,8 +405,14 @@ uint16_t MGR_LOG_flush(void)
  */
 void MGR_LOG_flush_all(void)
 {
-	while (MGR_LOG_has_pending()) {
-		MGR_LOG_flush();
+	/* flush() returns 0 without consuming the ring when log_paused is set
+	 * (AT console priority) — looping on has_pending() alone would then
+	 * never terminate. Bail on zero progress; hard-cap iterations as a
+	 * second line of defence (ring is bounded, each productive flush
+	 * consumes at least one byte). */
+	for (uint32_t guard = 0; guard < 1024u && MGR_LOG_has_pending(); guard++) {
+		if (MGR_LOG_flush() == 0u)
+			break;
 	}
 }
 
