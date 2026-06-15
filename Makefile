@@ -963,8 +963,9 @@ erase-all:
 #######################################
 help:
 	@echo "Canonical builds (ALWAYS 'make clean' first when changing any flag below):"
-	@echo "  Bench   : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART DEBUG=1 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20"
-	@echo "  Release : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART DEBUG=0 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20"
+	@echo "  Bench   : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=1 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20 full"
+	@echo "  Release : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=0 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20 full"
+	@echo "            then: make flash-full   (app + bootloader, FLASH_USER preserved)"
 	@echo ""
 	@echo "DEBUG=1: console always on, logs INFO  | DEBUG=0: UART torn down ~2s after"
 	@echo "boot (sealed tag), logs ERROR-only; console re-entry = 3s magnet -> CONFIG."
