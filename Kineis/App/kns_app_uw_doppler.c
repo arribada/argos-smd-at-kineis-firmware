@@ -392,21 +392,12 @@ static void boot_loop_mark_success(void)
 	boot_retained_commit();
 	MGR_LOG_INFO("[BOOT-LOOP] Boot success latched\r\n");
 
-	/* IWDG DISABLED on this build.
-	 *
-	 * Why: IWDG_STOP option byte is NOT set, so IWDG keeps counting while
-	 * the MCU is in STOP. In MONITORING the LPM client requests STOP and
-	 * the MAC stack may keep the chip asleep > 16s between events → IWDG
-	 * fires → silent reset every ~18s.
-	 *
-	 * Two production-ready fixes (pick one before deployment):
-	 *   1. Set IWDG_STOP option byte (FLASH_OPTR bit 17 = 1) so IWDG
-	 *      freezes during STOP. Safest path, but requires an OPTR write
-	 *      that has historically been risky to script on this board.
-	 *   2. Arm an RTC wake-up at < 16s and refresh IWDG on every wake.
-	 *
-	 * Until either is in place, leave the watchdog OFF. */
-	/* MGR_WDG_init();  -- intentionally disabled, see above */
+	/* NOTE: the IWDG is ENABLED for this build — started in
+	 * KNS_APP_uw_doppler_init() (MGR_WDG_init), after
+	 * MGR_WDG_ensureIwdgStopOptionByte() has programmed OPTR.IWDG_STOP to
+	 * FREEZE. Frozen-in-STOP means long STOP2 sleeps do NOT accumulate the
+	 * watchdog, while a wedged main loop still resets within ~16 s. Nothing
+	 * to (re)arm here — this function only latches boot-loop success. */
 }
 
 /* Exported for fault handlers (MGR_ERR_LOG_FAULT macro in stm32wlxx_it.c) */
@@ -770,7 +761,15 @@ static bool     tcxo_first_tx_skip = false;   /**< Apply 0ms warmup for next TX 
 static uint32_t tcxo_warmup_saved_ms = 0;     /**< Original warmup, restored after 1st TX */
 
 /* Periodic SWS calibration save to flash (debounced) */
-#define NVM_CALIB_SAVE_MIN_INTERVAL_S  300  /**< Min 5 min between flash writes */
+/* Min interval between SWS-calib flash writes. The adapted baselines also
+ * live in SRAM2 retention (sws_retained, restored every boot) which survives
+ * ALL resets except VBAT loss — and a sealed deployment never loses VBAT
+ * mid-mission. The flash copy therefore only earns its keep across a battery
+ * swap, so we trade calib-freshness for flash endurance: at 7200 s a tag that
+ * chop-surfaces all year writes <= 12 pages/day = ~4.4k/year, comfortably
+ * under the 10k page endurance. 300 s would have hit ~105k/year on the
+ * single (non-wear-leveled) NVM config page. */
+#define NVM_CALIB_SAVE_MIN_INTERVAL_S  7200  /**< 2 h — flash-endurance bound */
 
 /* Simple LCG for jitter (no need for cryptographic randomness) */
 static uint32_t prng_state = 0xA5A5A5A5UL;
