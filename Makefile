@@ -703,10 +703,12 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 #######################################
 # DFU binary generation
 #######################################
-# DFU file contains:
-# - Application header at 0x08008000 (256 bytes)
-# - Application code at 0x08008100 (~183KB max)
-# FLASH_USER section (0x0803B000+) is preserved during DFU update
+# DFU file contains (app-first layout):
+# - Application header at 0x08000200 (256 bytes, APP_HEADER_ADDR)
+# - Application vector table + code at 0x08000000 (APP_FLASH_BASE, ~200KB max)
+# FLASH_USER section (0x0803B000+) is preserved during DFU update.
+# (The bootloader lives at 0x08033000; do NOT confuse with the pre-flip
+#  bootloader-first 0x08008000/0x08008100 addresses.)
 
 DFU_SCRIPT = Tools/create_dfu.py
 DFU_OUTPUT = $(BUILD_DIR)/$(TARGET)_dfu.bin
@@ -717,14 +719,14 @@ $(DFU_OUTPUT): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary with header --"
 	$(PYTHON) $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
 	@echo "DFU file: $@"
-	@echo "Flash address: 0x08008000 (header + code)"
+	@echo "Flash address: 0x08000000 (vector table + code; header @ 0x08000200)"
 
 # DFU without header (legacy mode - for testing)
 $(DFU_LEGACY): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary (legacy mode, no header) --"
 	$(PYTHON) $(DFU_SCRIPT) $< $@ --no-header
 	@echo "DFU file: $@"
-	@echo "Flash address: 0x08008100 (code only)"
+	@echo "Flash address: 0x08000000 (code only, no header)"
 
 # Main DFU target
 dfu: $(DFU_OUTPUT)

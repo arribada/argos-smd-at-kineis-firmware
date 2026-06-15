@@ -150,8 +150,12 @@ class DFUTool:
         print(f"Writing firmware: {filename}")
         print(f"  Size: {len(firmware)} bytes")
 
-        # Write in chunks
-        base_addr = 0x08008100  # Application start address
+        # Write in chunks. App-first layout: the application (vector table
+        # included) lives at APP_FLASH_BASE = 0x08000000; the bootloader sits
+        # at 0x08033000. The legacy 0x08008100 here was a pre-layout-flip
+        # address (bootloader-first) and wrote the image 0x8100 too high ->
+        # vector table misplaced -> non-bootable.
+        base_addr = 0x08000000  # APP_FLASH_BASE (must match bootloader)
         offset = 0
         total_chunks = (len(firmware) + self.CHUNK_SIZE - 1) // self.CHUNK_SIZE
 
@@ -247,7 +251,7 @@ def create_app_header(firmware_data, version=(1, 0, 0)):
     MAGIC = 0x4B494E45  # "KINE"
     HEADER_VERSION = 0x0001
     HEADER_SIZE = 256
-    APP_START_ADDR = 0x08008100
+    APP_START_ADDR = 0x08000000  # APP_FLASH_BASE (app-first layout)
 
     # Calculate CRC of firmware
     app_crc = crc32_stm32(firmware_data)
