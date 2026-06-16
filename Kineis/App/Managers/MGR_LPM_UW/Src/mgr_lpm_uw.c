@@ -557,10 +557,10 @@ void MGR_LPM_UW_enterStandbyTimed(uint32_t seconds)
 	/* Settle: TPS63901 takes ~1-2 ms to switch its internal feedback
 	 * divider. Add margin so we are firmly at 1.8V before STANDBY. */
 	HAL_Delay(3);
-	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_SEL_Pin);
+	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PWR_GPIO_BIT_1 /* PA_PSU_SEL = PC1 */);
 #else
 	/* Hold VSEL HIGH so TPS63901 stays in 3V3 mode on wake. */
-	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
+	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PWR_GPIO_BIT_1 /* PA_PSU_SEL = PC1 */);
 #endif
 
 	HAL_PWREx_EnableSRAMRetention();
@@ -615,9 +615,9 @@ void MGR_LPM_UW_enterShutdownReed(void)
 	 * operator asked for power-off. */
 	MCU_MISC_turn_off_pa();
 	HAL_PWREx_EnablePullUpPullDownConfig();
-	(void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);
+	(void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PWR_GPIO_BIT_0 /* PA_PSU_EN = PC0 */);
 	/* VSEL anchored HIGH so the TPS63901 wakes up in 3V3 mode. */
-	(void)HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);
+	(void)HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PWR_GPIO_BIT_1 /* PA_PSU_SEL = PC1 */);
 
 	GPIO_DisableAllToAnalogInput();
 	(void)HAL_SUBGHZ_DeInit(&hsubghz);

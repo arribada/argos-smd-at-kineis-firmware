@@ -62,6 +62,13 @@ static const struct timer_desc_t timerDflt = {
  * * So far, it is mapped in RTC BACKUP register to support both SHUTDOSN and STANDBY. In case only
  * need to support STANDBY (no shutdown), it shuold be fine to mapp this in retentionRamData section
  */
+/* @attention DFU-flag aliasing: .lpmSection is placed at RTC_BKPR origin
+ * (0x4000B100) by the linker, so timer[0] overlaps TAMP BKP0R/BKP1R — the same
+ * registers the bootloader reads/clears as a DFU-request flag (bl_main.c,
+ * bl_flash.c). This is safe ONLY because the app routes DFU requests through
+ * the SRAM flag (main.c request_dfu_mode, 0x2000FFF8), never TAMP. Do NOT add
+ * a TAMP-based DFU path while the MAC owns timer[0] here, or a pending TX-period
+ * timer would be read as a DFU request (and vice-versa). */
 __attribute__((__section__(".lpmSection")))
 static struct timer_desc_t timer[MCU_TIM_HDLR_MAX] = {timerDflt};
 

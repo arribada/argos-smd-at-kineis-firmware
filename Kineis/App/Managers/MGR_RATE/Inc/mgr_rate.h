@@ -9,9 +9,12 @@
  *
  * Storage:
  *   - Ring buffer of unix-style timestamps (seconds since boot, monotonic)
- *     held in SRAM2 retention RAM (.retentionRamBss), survives every reset
- *     class except VBAT removal.
- *   - Magic + CRC32 detect first-power-on / accidental corruption.
+ *     held in SRAM2 retention RAM (.retentionRamBss). This survives IWDG and
+ *     software resets, but BOR/NRST(PIN)/OBL re-run Sram2_Init which zeroes
+ *     the section — the rolling window is cleared on those (and on first
+ *     power-on). NOT brownout-persistent.
+ *   - Magic + CRC32 detect the wipe / first-power-on / accidental corruption
+ *     and re-init the ring fresh.
  *
  * Config is held in RAM (gettable/settable via API) and is persisted by the
  * NVM layer so that AT+RATECFG values survive a power cycle.

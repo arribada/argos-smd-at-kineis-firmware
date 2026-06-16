@@ -206,8 +206,6 @@ static uint8_t  ma3_trend_count = 0;
 
 /* Level 4 & 5: Dive tracking */
 static uint16_t peak_adc_since_underwater = 0;
-static uint16_t recent_peak = 0;
-static uint16_t min_adc_during_dive = 0xFFFF;
 
 /* Safety / lockout. Stored as start + duration and compared with wrap-safe
  * tick deltas: the old absolute-deadline form misfired at the 49.7-day tick
@@ -648,10 +646,6 @@ static bool detector_state(void)
 	/* 2. Filter */
 	uint16_t filtered = moving_average(raw_value);
 
-	/* Track min during dive */
-	if (is_underwater && filtered < min_adc_during_dive)
-		min_adc_during_dive = filtered;
-
 	uint32_t time_in_state = elapsed_s(state_enter_tick);
 
 	/* 3. 5-LEVEL SURFACE DETECTION */
@@ -750,12 +744,6 @@ static bool detector_state(void)
 	if (is_underwater) {
 		if (filtered > peak_adc_since_underwater)
 			peak_adc_since_underwater = filtered;
-
-		/* Recent peak: decays 2% per sample toward current reading */
-		if (raw_value > recent_peak || recent_peak == 0)
-			recent_peak = raw_value;
-		else
-			recent_peak = (uint16_t)(((uint32_t)recent_peak * 98 + (uint32_t)raw_value * 2) / 100);
 	}
 
 	if (surface_level == 0 && is_underwater &&
@@ -1069,11 +1057,9 @@ void MGR_SWS_init(void)
 	ma3_trend_start = 0;
 	ma3_trend_count = 0;
 	prev_raw = 0;
-	recent_peak = 0;
 	drop_reference = 0;
 	consecutive_raw_drops = 0;
 	peak_adc_since_underwater = 0;
-	min_adc_during_dive = 0xFFFF;
 	surface_readings_idx = 0;
 	surface_readings_count = 0;
 	surface_lockout_start_tick = 0;
@@ -1167,9 +1153,7 @@ void MGR_SWS_task(void)
 		state_changed_flag = true;
 
 		if (new_state == MGR_SWS_STATE_UNDERWATER) {
-			min_adc_during_dive = 0xFFFF;
 			peak_adc_since_underwater = 0;
-			recent_peak = 0;
 			consecutive_raw_drops = 0;
 			drop_reference = 0;
 			trend_buffer_count = 0;

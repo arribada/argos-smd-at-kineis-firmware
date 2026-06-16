@@ -277,7 +277,14 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
         }
         return KNS_STATUS_OK;
     } else {
-        // Full, reset area and increment overflow
+        /* WL area full: increment the overflow word + erase-reset the WL area.
+         * @attention the overflow word (of_addr) lives at FLASH_USER offset 56,
+         * i.e. INSIDE page 0 alongside ID/ADDR/SECKEY/RADIOCONF (the device
+         * credentials). MCU_FLASH_write below does a full page-0 erase+reprogram,
+         * so a brownout during this rare event (~every 1024 TX, ~12x/year) could
+         * corrupt the credentials. The RAM high-water-mark cache (mcu_nvm.c)
+         * bounds the cadence; a future hardening would relocate the OF words off
+         * page 0. Credentials are not CRC-checked here, so keep this rare. */
         uint64_t of = *(uint64_t*)of_addr;
         /* Handle erased flash as 0 */
         if (of == 0xFFFFFFFFFFFFFFFFULL) {

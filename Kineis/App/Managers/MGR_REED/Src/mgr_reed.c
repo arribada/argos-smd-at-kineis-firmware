@@ -5,17 +5,19 @@
  * Hardware: PB6 = reed, active HIGH (magnet → HIGH via reed-to-VBAT path with
  * internal pull-down on PB6). PB7 = PWR_LATCH, HIGH = board powered.
  *
- * EXTI on both edges. ISR runs a single-producer / single-consumer ring
- * buffer (this file is the only writer; MGR_REED_getEvent is the only reader).
+ * Event model (current): the EXTI ISR is WAKE-ONLY — it just bumps diagnostic
+ * counters (g_reed_isr_*) and lets the WFI return; it does NOT push events. The
+ * event ring is produced AND consumed entirely in main context by the polled
+ * debouncer (reed_poll, driven from MGR_REED_isMagnetPresent/getEvent). So the
+ * ring is single-context, not a true ISR/main SPSC — the torn-read protection
+ * below is belt-and-suspenders, not load-bearing.
  *
  * Hardening choices made for sealed-capsule deployment:
  *  - Buffer 8 entries (was 4): copes with chatter/double-tap bursts; debounce
  *    is 50 ms so absolute max producer rate is ~20 ev/s, but a flurry of
  *    edges right after the debounce window can still pile 4-6 in <200 ms.
- *  - Reader pops by reading into a LOCAL first, then incrementing tail —
- *    closes the torn-read window if a preempting IRQ overwrites the same
- *    slot between the buf read and the tail increment.
- *  - EXTI9_5 handler dispatches ONLY pin 6 (other lines are not configured
+ *  - Reader pops by reading into a LOCAL first, then incrementing tail.
+ *  - EXTI handler dispatches ONLY the reed pin (other lines are not configured
  *    for EXTI in this build; if another peripheral ever does, give it its
  *    own dispatch, do not let it pile through this callback).
  *  - All ISR-shared state is `volatile` and accessed as 32-bit single-word
