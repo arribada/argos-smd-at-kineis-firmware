@@ -38,6 +38,16 @@
 #include "mgr_reed.h"      /* MGR_REED_releasePower + REED_MCU_Pin (stubs if no reed) */
 #include "mgr_at_cmd.h"    /* MGR_AT_CMD_getLastActivityTick — console grace window */
 
+/* This LPM path owns the single RTC wake-up timer and clobbers it on every
+ * sleep. That is safe ONLY because the Kineis MAC's RTC-WUT consumers
+ * (kns_mac_prfl_blind / aks_l1) are not linked in the BASIC profile, leaving
+ * exactly one WUT owner. Fail the build if a non-BASIC profile is ever paired
+ * with the UW_DOPPLER LPM path so this load-bearing invariant can't silently
+ * regress. */
+#if defined(USE_UW_DOPPLER_APP) && !defined(USE_MAC_PRFL_BASIC)
+#error "MGR_LPM_UW requires MAC_PRFL=BASIC: a non-BASIC MAC also arms the RTC WUT this path clobbers"
+#endif
+
 /* Deep sleep is held off this long after the last decoded AT command so a
  * bench/commissioning session stays interactive. */
 #define LPM_UW_AT_GRACE_MS  30000u
@@ -428,17 +438,29 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 	 * into a wake storm (debug logic re-wakes the WFI immediately —
 	 * observed at ~33 entries/s) and every loop service (reed, SWS, AT,
 	 * LED) crawls through endless sleep/wake churn. Spin instead while
-	 * the probe is connected; deployed tags never have one. */
+	 * the probe is connected — but ONLY in a DEBUG build. DHCSR.C_DEBUGEN
+	 * latches when a probe attaches and is cleared only by a true POR, not
+	 * by a soft/IWDG reset. A release tag flashed then sealed without a
+	 * full power cycle would otherwise keep C_DEBUGEN set and NEVER sleep
+	 * (~5 mA → dead in days). In a sealed deployment there is no probe, so
+	 * the release build always allows STOP2. */
+#ifdef DEBUG
 	if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0u)
 		return;
+#endif
 
-	/* Stabilization gate. Full 30 s on true cold-boot to give the
-	 * operator a UART window for AT commands. On wake-from-STANDBY
-	 * the previous cycle has proven the device is healthy, the box
-	 * is sealed and no operator is interacting — skip the wait. */
-	const uint32_t stabilize_ms = MGR_LPM_UW_isWakeFromStandby()
-	                              ? 0u
-	                              : DUTY_STABILIZE_MS;
+	/* Stabilization gate: a 30 s UART window for the operator right after
+	 * a true power-on (deploy, NRST, or magnet-wake from SHUTDOWN — all set
+	 * BORRSTF/PINRSTF). On an unattended fault reboot (IWDG/SFT/OBL/LPWR)
+	 * no operator is present and the sealed tag must resume deep sleep
+	 * immediately instead of leaking a fresh 30 s at MONITORING current
+	 * (~5 mA) after every recovery reset. g_boot_rcc_csr_raw is this boot's
+	 * cause (flags cleared right after the snapshot in main). */
+	extern uint32_t g_boot_rcc_csr_raw;
+	const bool operator_boot =
+	    (g_boot_rcc_csr_raw & (RCC_CSR_BORRSTF | RCC_CSR_PINRSTF)) != 0u &&
+	    !MGR_LPM_UW_isWakeFromStandby();
+	const uint32_t stabilize_ms = operator_boot ? DUTY_STABILIZE_MS : 0u;
 	if ((HAL_GetTick() - s_first_monitoring_tick) < stabilize_ms)
 		return;
 

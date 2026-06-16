@@ -2217,6 +2217,13 @@ void KNS_APP_uw_doppler_loop(void)
 			if (since >= MIN_INTER_TX_INTERVAL_MS) {
 				MGR_LOG_INFO("[UW_DPL] Test TX %u remaining\r\n",
 					test_tx_remaining);
+#if defined(BSP_HAS_VBAT_ADC)
+				/* Refresh battery telemetry: the test-burst path
+				 * bypasses the normal surface branch that latches
+				 * last_vbat_mV, so without this the frame would ship
+				 * a stale (boot-time or prior) voltage. */
+				last_vbat_mV = MGR_BAT_readVoltage_mV();
+#endif
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
 				transition_to(UW_DOPPLER_SURFACE_TX);
 				return;  /* loop again next tick to enter SURFACE_TX */

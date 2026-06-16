@@ -430,26 +430,11 @@ static void apply_config(const NVM_Config_t *cfg)
 	KNS_APP_uw_doppler_setPayCfg(cfg->payload_format,
 		(cfg->stat_window_h == 0u) ? 24u : cfg->stat_window_h);
 
-	/* SWS config */
-	MGR_SWS_Config_t sws_cfg;
+	/* SWS config. Zero-init so no heal/validation below ever reads an
+	 * indeterminate field (the heals run against assigned values only). */
+	MGR_SWS_Config_t sws_cfg = {0};
 	sws_cfg.threshold_min                 = cfg->sws_threshold_min;
 	sws_cfg.threshold_max                 = cfg->sws_threshold_max;
-	/* Heal the stale linkit-v4-ported default. 2000 (= linkit's 8000 on
-	 * their 14-bit scale) silently REJECTS real seawater on this board's
-	 * analog frontend (measured ~4000 on 12 bits) — every sample above
-	 * the cap is dropped and immersion is never detected. Boards that
-	 * ever saved with the old default carry it through every migration;
-	 * 2000 has no legitimate use on this hardware, so map it to full
-	 * scale. Other operator-set values are respected. */
-	if (sws_cfg.threshold_max == 2000u)
-		sws_cfg.threshold_max = 4095u;
-	/* Same class of heal for the adaptive RC-charge ceiling: old builds
-	 * defaulted to 1000 us (or 5000 us for a while) where the linkit-v4
-	 * reference uses 10000 us — biofouled electrodes (tau > 10 ms) stay
-	 * undercharged below that and dives go undetected. */
-	if (sws_cfg.sample_delay_max_us == 1000u ||
-	    sws_cfg.sample_delay_max_us == 5000u)
-		sws_cfg.sample_delay_max_us = 10000u;
 	sws_cfg.initial_air_baseline          = cfg->sws_initial_air_baseline;
 	sws_cfg.initial_water_baseline        = cfg->sws_initial_water_baseline;
 	sws_cfg.test_interval_surface_ms      = cfg->sws_test_interval_surface_ms;
@@ -460,6 +445,20 @@ static void apply_config(const NVM_Config_t *cfg)
 	sws_cfg.sample_delay_max_us           = cfg->sws_sample_delay_max_us;
 	sws_cfg.sample_delay_default_us       = cfg->sws_sample_delay_default_us;
 	sws_cfg.enabled                       = cfg->sws_enabled;
+	/* Heals must run AFTER the fields above are assigned (an earlier
+	 * version tested sample_delay_max before its assignment — dead heal +
+	 * indeterminate read). Heal the stale linkit-v4-ported defaults that
+	 * have no legitimate use on this board's analog frontend:
+	 *  - threshold_max 2000 (= linkit's 8000 on their 14-bit scale) silently
+	 *    REJECTS real seawater (~4000 on 12 bits) -> immersion never detected.
+	 *  - sample_delay_max 1000/5000 us undercharges biofouled electrodes
+	 *    (tau > 10 ms) -> dives go undetected; linkit-v4 reference is 10000 us.
+	 * Operator-set values outside these sentinels are respected. */
+	if (sws_cfg.threshold_max == 2000u)
+		sws_cfg.threshold_max = 4095u;
+	if (sws_cfg.sample_delay_max_us == 1000u ||
+	    sws_cfg.sample_delay_max_us == 5000u)
+		sws_cfg.sample_delay_max_us = 10000u;
 	MGR_SWS_setConfig(&sws_cfg);
 
 	/* SWS runtime calibration */
@@ -647,6 +646,13 @@ static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
 	out->sws_enabled             = v2->sws_enabled;
 	out->bat_min_tx_mV           = v2->bat_min_tx_mV;
 }
+
+/* The prefix memcpy below is only correct while every v7 field up to crc32
+ * sits at the same offset in v8, i.e. the new v8 fields begin exactly where
+ * v7's crc32 was. Guard it at compile time so a future layout drift is a
+ * build error, not a silently mis-migrated (but CRC-consistent) deploy. */
+_Static_assert(offsetof(NVM_Config_v7_t, crc32) == offsetof(NVM_Config_t, payload_format),
+	"v7->v8 prefix migration broken: v8's first new field must align with v7's crc32 offset");
 
 static void migrate_v7_to_v8(const NVM_Config_v7_t *v7, NVM_Config_t *out)
 {
@@ -841,7 +847,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v1_to_v3(&v1, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v1 -> v7\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v1 -> v8\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -857,7 +863,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v2_to_v3(&v2, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v2 -> v7\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v2 -> v8\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -873,7 +879,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v3_to_v4(&v3, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v3 -> v7\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v3 -> v8\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -889,7 +895,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v4_to_v5(&v4, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v4 -> v7\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v4 -> v8\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -905,7 +911,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v5_to_v6(&v5, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v5 -> v7\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v5 -> v8\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -921,7 +927,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v6_to_v7(&v6, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v6 -> v7 (tx_seq_restart_s defaults to 0)\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v6 -> v8 (tx_seq_restart_s defaults to 0)\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;

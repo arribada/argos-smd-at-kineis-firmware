@@ -2,7 +2,10 @@
  * @file    mgr_evtlog.h
  * @brief   Event logger - circular buffer of 256 structured events in SRAM2 retention RAM
  *
- * Survives all resets (watchdog, software, brownout) except full power-off.
+ * Lives in .retentionRamBss: survives IWDG and software resets only. BOR,
+ * NRST(PIN) and OBL re-run Sram2_Init (main.c) which zeroes this section —
+ * the magic re-init then recovers cleanly. NOT brownout-persistent; only the
+ * crash-forensics struct (.retentionRamNoload) survives VBAT-level events.
  * Each entry is 8 bytes: tick(4) + type(1) + state(1) + data(2).
  *
  * Usage:

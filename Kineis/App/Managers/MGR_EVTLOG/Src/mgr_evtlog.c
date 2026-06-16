@@ -2,9 +2,10 @@
  * @file    mgr_evtlog.c
  * @brief   Event logger - circular buffer in SRAM2 retention RAM
  *
- * The buffer is placed in .retentionRamBss (SRAM2) so it survives
- * all resets except power-off. On first boot (or after power cycle),
- * the magic word will be wrong and the buffer is initialized fresh.
+ * The buffer is placed in .retentionRamBss (SRAM2): survives IWDG and
+ * software resets. BOR/NRST(PIN)/OBL re-run Sram2_Init which zeroes the
+ * section; the magic word is then wrong and the buffer re-inits fresh
+ * (same path as first power-on). NOT brownout-persistent.
  *
  * Buffer layout (2056 bytes total):
  *   - Header: magic(4) + head(2) + count(2) = 8 bytes

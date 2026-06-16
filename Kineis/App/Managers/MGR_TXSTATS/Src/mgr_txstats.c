@@ -10,8 +10,10 @@
 
 #define MGR_TXSTATS_MAGIC  0x54585354UL  /* "TXST" */
 
-/* All persistent state in SRAM2 retention so it survives every reset class
- * short of full power-off. Magic + CRC32 detect first-power-on / corruption. */
+/* All persistent state in .retentionRamBss: survives IWDG and software
+ * resets. BOR/NRST(PIN)/OBL re-run Sram2_Init which zeroes this section;
+ * magic + CRC32 then detect the wipe and re-init (first-power-on / corruption
+ * take the same path). NOT brownout-persistent. */
 static __attribute__((__section__(".retentionRamBss")))
 struct {
 	uint32_t      magic;
