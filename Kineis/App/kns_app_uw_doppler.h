@@ -31,9 +31,12 @@ typedef struct {
 	uint16_t tx_max_interval_s;     /**< Max interval cap (default 180s) */
 	uint8_t  tx_max_count;          /**< Max TX count per surface event (0 = unlimited) */
 	uint8_t  tx_jitter_percent;     /**< Random +/-% applied per TX interval (default 10, 0=off) */
-	uint16_t tx_cooldown_s;         /**< Global post-TX quiet time (default 60s, 0=off).
-	                                     Survives surface/dive cycles so a turtle that
-	                                     resurfaces immediately can't burst-TX. */
+	uint16_t tx_cooldown_s;         /**< Quiet floor between TXs, measured from the
+	                                     last actual TX and surviving dive/surface
+	                                     cycles, so a turtle that resurfaces seconds
+	                                     after a TX can't immediately burst again.
+	                                     0 = disabled (first TX gated only by the
+	                                     anti-collision offset). Default 10s. */
 	uint16_t tx_seq_restart_s;      /**< Idle-at-surface timer (default 0 = disabled).
 	                                     If the tag is still at SURFACE this many
 	                                     seconds after the last TX of a completed

@@ -448,6 +448,12 @@ static bool boot_window_at_received = false;
 /* TX scheduling state */
 static uint32_t tx_count = 0;              /**< Number of TXs sent in current surface event */
 static uint32_t last_tx_tick = 0;          /**< Tick of last TX */
+/* Tick of the last ACTUAL TX, never zeroed by surface-detect (unlike
+ * last_tx_tick, which the surface paths zero to fire the first TX of a burst
+ * fast). Used only to enforce tx_cooldown_s as a quiet floor BETWEEN TXs that
+ * survives dive/surface cycles. 0 = no TX yet (cooldown bypassed). The tick is
+ * RTC-wall-clock-compensated across STOP2, so the elapsed delta is real time. */
+static uint32_t last_actual_tx_tick = 0;
 static uint32_t current_interval_ms = 0;   /**< Current interval between TXs in ms */
 static bool     surface_tx_pending = false; /**< Immediate TX needed on surface detection */
 /* One-shot: a fresh OPERATIONAL boot counts as the first surface event.
@@ -1096,10 +1102,10 @@ static uint32_t compute_next_interval_ms(uint32_t n)
 static void reset_tx_scheduling(void)
 {
 	tx_count = 0;
-	/* IMPORTANT: don't reset last_tx_tick. Preserving it makes the inter-TX
-	 * minimum interval check honor the configured tx_initial_interval_s even
-	 * across dive/surface cycles — a re-surface within X seconds after the
-	 * previous TX won't trigger a new one until X has elapsed. */
+	/* Cross-cycle anti-spam is enforced by tx_cooldown_s against
+	 * last_actual_tx_tick (which the surface-detect paths do NOT zero), not
+	 * by last_tx_tick — the surface paths zero last_tx_tick to fire the
+	 * first TX of a burst fast. */
 	current_interval_ms = 0;
 	surface_tx_pending = false;
 }
@@ -2247,43 +2253,28 @@ void KNS_APP_uw_doppler_loop(void)
 			bool should_tx = false;
 			uint32_t since_last_tx = HAL_GetTick() - last_tx_tick;
 
-			/* Effective minimum interval between any two TX requests.
-			 * Uses the largest of:
-			 *   - MIN_INTER_TX_INTERVAL_MS  (safety floor, hardcoded)
-			 *   - tx_initial_interval_s     (user-configured initial gap)
-			 *   - tx_cooldown_s             (global post-TX quiet time, also
-			 *                                applies across surface/dive cycles)
-			 * The cooldown is what stops a turtle that oscillates UW/SURF
-			 * every few seconds from spamming TX bursts each time it surfaces. */
-			uint32_t effective_min_ms = MIN_INTER_TX_INTERVAL_MS;
-			/* In LB mode the initial interval is replaced by lb_tx_interval_s. */
-			uint32_t configured_min_ms = lb_active
-				? (uint32_t)lb_cfg.lb_tx_interval_s * 1000
-				: (uint32_t)tx_cfg.tx_initial_interval_s * 1000;
-			uint32_t cooldown_ms = (uint32_t)tx_cfg.tx_cooldown_s * 1000;
-			if (configured_min_ms > effective_min_ms)
-				effective_min_ms = configured_min_ms;
-			if (cooldown_ms > effective_min_ms)
-				effective_min_ms = cooldown_ms;
-
 			if (surface_tx_pending) {
-				/* Surface detected (first ever, or re-surface): fire the
-				 * first TX as soon as the anti-collision random offset
-				 * has elapsed.
-				 *
-				 * Why we no longer apply `effective_min_ms` here: it
-				 * mixes `tx_initial_interval_s` (intended as the gap
-				 * BETWEEN consecutive TXs of a burst) and `tx_cooldown_s`
-				 * (intended as a post-burst quiet window) with the
-				 * 5 s safety floor. None of those should delay the
-				 * *first* TX of a surface event — the operator wants to
-				 * minimize latency from "head out of water" to "Argos
-				 * frame on the wire". Inter-TX cadence is handled below
-				 * by `current_interval_ms` once tx_count > 0, and global
-				 * spam is bounded by the rate limiter + backoff (rate
-				 * limiter uses RTC-seconds so it remains accurate even
-				 * across STOP2 cycles where HAL_GetTick is paused). */
-				if (since_last_tx >= first_tx_random_offset_ms) {
+				/* First TX of a surface event. Two gates, both must pass:
+				 *  1. Anti-collision random offset (de-bunches a fleet).
+				 *  2. tx_cooldown_s quiet floor measured from the last
+				 *     ACTUAL TX (last_actual_tx_tick, never zeroed by the
+				 *     surface-detect paths) so a turtle that re-surfaces a
+				 *     few seconds after its last TX can't burst again until
+				 *     the cooldown elapses. This survives dive/surface
+				 *     cycles because the tick is RTC-wall-clock-compensated
+				 *     across STOP2.
+				 * tx_cooldown_s == 0 disables the cooldown entirely (operator
+				 * opt-out). The very first TX ever (last_actual_tx_tick == 0)
+				 * also bypasses it so a fresh deploy transmits immediately.
+				 * tx_initial_interval_s is intentionally NOT applied to the
+				 * first TX — it is the inter-TX gap within a burst, handled
+				 * below once tx_count > 0. */
+				const uint32_t cooldown_ms =
+					(uint32_t)tx_cfg.tx_cooldown_s * 1000u;
+				bool cooldown_ok = (cooldown_ms == 0u) ||
+					(last_actual_tx_tick == 0u) ||
+					((HAL_GetTick() - last_actual_tx_tick) >= cooldown_ms);
+				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok) {
 					should_tx = true;
 					surface_tx_pending = false;
 				}
@@ -2535,6 +2526,7 @@ void KNS_APP_uw_doppler_loop(void)
 
 			MGR_TXSTATS_recordAttempt();  /* Sprint 4 — count the request */
 			last_tx_tick = HAL_GetTick();
+			last_actual_tx_tick = last_tx_tick;  /* cooldown reference */
 			current_interval_ms = compute_next_interval_ms(tx_count);
 			tx_count++;
 
