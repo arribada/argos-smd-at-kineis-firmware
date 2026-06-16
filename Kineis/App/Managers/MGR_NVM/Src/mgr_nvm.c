@@ -989,6 +989,23 @@ bool MGR_NVM_save(void)
 
 	cfg.crc32 = nvm_crc32(&cfg, offsetof(NVM_Config_t, crc32));
 
+	/* Skip the write if the stored config is byte-identical. MGR_NVM_save runs
+	 * inside enter_shutdown right before power is cut (magnet seal) — a
+	 * destructive single-page erase+reprogram there, interrupted by the VDD
+	 * sag, would lose all operator config. The CRC32 covers every field, so an
+	 * equal stored CRC means nothing changed and the brownout-exposed write is
+	 * pure risk with no benefit. Reading flash is non-destructive. */
+	{
+		NVM_Config_t stored;
+		if (MCU_FLASH_read(FLASH_NVM_CONFIG_ADDR, &stored, sizeof(stored))
+		        == KNS_STATUS_OK &&
+		    stored.magic == NVM_MAGIC && stored.version == NVM_VERSION &&
+		    stored.crc32 == cfg.crc32) {
+			MGR_SWS_clearCalibDirty();
+			return true;  /* unchanged — no flash write, no brownout window */
+		}
+	}
+
 	MGR_WDG_refresh();
 
 	if (MCU_FLASH_write(FLASH_NVM_CONFIG_ADDR, &cfg, sizeof(cfg)) != KNS_STATUS_OK) {

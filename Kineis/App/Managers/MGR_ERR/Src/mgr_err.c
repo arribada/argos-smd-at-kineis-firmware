@@ -186,14 +186,23 @@ bool MGR_ERR_checkCrashLoop(void)
 	 */
 	__HAL_RCC_RTCAPB_CLK_ENABLE();
 
+	/* Unlock RTC write protection (RM0453: 0xCA then 0x53). Without this,
+	 * MX_RTC_Init leaves WPR locked and EVERY RTC->CR/WUTR write below is
+	 * SILENTLY DROPPED — the wakeup timer is never armed and the chip would
+	 * enter STOP2 with no wake source = strand. Re-locked on every exit. */
+	RTC->WPR = 0xCAU;
+	RTC->WPR = 0x53U;
+
 	/* Disable wakeup timer to modify it */
 	RTC->CR &= ~RTC_CR_WUTE;
 	{
 		uint32_t timeout = 100000U;
 		while ((RTC->ICSR & RTC_ICSR_WUTWF) == 0 && --timeout > 0)
 			;
-		if (timeout == 0)
-			return false;  /* RTC not responding, skip safe sleep */
+		if (timeout == 0) {
+			RTC->WPR = 0xFFU;  /* re-lock before bailing */
+			return false;      /* RTC not responding, skip safe sleep */
+		}
 	}
 
 	/* Select 1 Hz clock source (ck_spre) and set countdown */
@@ -215,9 +224,10 @@ bool MGR_ERR_checkCrashLoop(void)
 	HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
 	__enable_irq();
 
-	/* Woke up - disable wakeup timer */
+	/* Woke up - disable wakeup timer, then re-lock RTC write protection */
 	RTC->CR &= ~(RTC_CR_WUTE | RTC_CR_WUTIE);
 	RTC->SCR = RTC_SCR_CWUTF;
+	RTC->WPR = 0xFFU;
 
 	/* Reset crash counter to give the device another chance */
 	ERR_BKP_CRASH = 0;

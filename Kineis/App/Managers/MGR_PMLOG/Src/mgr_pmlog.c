@@ -25,9 +25,23 @@ static const MGR_PMLOG_Entry_t *slot_at(uint16_t idx)
 		(uint32_t)idx * MGR_PMLOG_ENTRY_BYTES);
 }
 
-static bool slot_is_empty(uint16_t idx)
+/* Second double-word of a slot (bytes 8..15: seq/sev/type/state/data). */
+static uint64_t slot_dw1(uint16_t idx)
 {
-	return slot_at(idx)->magic == MGR_PMLOG_MAGIC_EMPTY;
+	uint64_t v;
+	memcpy(&v, (const void *)(MGR_PMLOG_FLASH_ADDR +
+		(uint32_t)idx * MGR_PMLOG_ENTRY_BYTES + 8u), 8u);
+	return v;
+}
+
+/* A slot is writable only if BOTH double-words are erased (all-ones). A torn
+ * write (see program order below) leaves magic erased but dw1 programmed; such
+ * a slot must NOT be reused (flash can't reprogram a non-erased dword) and must
+ * NOT trigger a page wipe — it is skipped as wasted. */
+static bool slot_is_truly_empty(uint16_t idx)
+{
+	return slot_at(idx)->magic == MGR_PMLOG_MAGIC_EMPTY &&
+	       slot_dw1(idx) == 0xFFFFFFFFFFFFFFFFull;
 }
 
 /* Erase the single PMLOG page. Blocks ~25 ms — only called on init recovery
@@ -73,7 +87,11 @@ void MGR_PMLOG_init(void)
 			s_valid_count++;
 			if (e->seq >= max_seq) max_seq = e->seq;
 		} else if (e->magic == MGR_PMLOG_MAGIC_EMPTY) {
-			if (s_next_slot == MGR_PMLOG_MAX_ENTRIES)
+			/* Cursor is the first TRULY-empty slot. A torn slot (magic
+			 * erased but dw1 written) is skipped as wasted, not used as
+			 * the cursor — reusing it would fail the dw1 reprogram. */
+			if (s_next_slot == MGR_PMLOG_MAX_ENTRIES &&
+			    slot_is_truly_empty(i))
 				s_next_slot = i;
 		} else {
 			corrupt = true;
@@ -103,11 +121,16 @@ static bool program_two_dwords(uint32_t addr, const uint64_t *dw)
 {
 	if ((addr & 0x7u) != 0u) return false;
 
+	/* Program the MAGIC-bearing dword (dw[0], bytes 0..7) LAST. If a brownout
+	 * tears the write, the magic stays erased (EMPTY) so the slot reads as
+	 * not-valid — it is skipped as a wasted slot rather than committing a
+	 * VALID magic over corrupt data (which would make the next log wipe the
+	 * whole page). */
 	HAL_FLASH_Unlock();
-	HAL_StatusTypeDef st1 = HAL_FLASH_Program(
-		FLASH_TYPEPROGRAM_DOUBLEWORD, addr,     dw[0]);
 	HAL_StatusTypeDef st2 = HAL_FLASH_Program(
 		FLASH_TYPEPROGRAM_DOUBLEWORD, addr + 8, dw[1]);
+	HAL_StatusTypeDef st1 = HAL_FLASH_Program(
+		FLASH_TYPEPROGRAM_DOUBLEWORD, addr,     dw[0]);
 	HAL_FLASH_Lock();
 
 	if (st1 != HAL_OK || st2 != HAL_OK) {
@@ -121,10 +144,17 @@ static bool program_two_dwords(uint32_t addr, const uint64_t *dw)
 void MGR_PMLOG_log(MGR_EVTLOG_Severity_t severity, uint8_t type,
                    uint8_t state, uint16_t data)
 {
-	/* If we wrapped, erase the page first. s_next_slot==0 with the page
-	 * fully populated is the wrap condition latched in init / on previous
-	 * call. Detect it by checking whether slot 0 is currently valid. */
-	if (s_next_slot >= MGR_PMLOG_MAX_ENTRIES || !slot_is_empty(s_next_slot)) {
+	/* Advance past any wasted slots (torn writes from a prior brownout: magic
+	 * erased but dw1 programmed — not reusable). The cursor then points at a
+	 * truly-empty slot or runs off the end. This replaces the old
+	 * `!slot_is_empty` page-wipe trigger that a single torn write could fire,
+	 * destroying the whole post-mortem log. */
+	while (s_next_slot < MGR_PMLOG_MAX_ENTRIES &&
+	       !slot_is_truly_empty(s_next_slot))
+		s_next_slot++;
+
+	/* Genuine wrap (cursor ran off the end) → erase the page and restart. */
+	if (s_next_slot >= MGR_PMLOG_MAX_ENTRIES) {
 		if (!pmlog_erase_page())
 			return;  /* erase failed → silently skip; can't risk a corrupt write */
 	}
@@ -150,6 +180,11 @@ void MGR_PMLOG_log(MGR_EVTLOG_Severity_t severity, uint8_t type,
 		s_next_slot++;
 		s_valid_count++;
 		if (s_next_seq < 0xFFFFu) s_next_seq++;
+	} else {
+		/* Torn/failed write: skip the wasted slot (do NOT erase the page —
+		 * prior valid entries must survive). The next log goes to a fresh
+		 * slot; the magic-last order kept this slot's magic erased. */
+		s_next_slot++;
 	}
 }
 
