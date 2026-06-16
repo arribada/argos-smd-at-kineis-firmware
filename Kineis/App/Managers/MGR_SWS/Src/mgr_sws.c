@@ -157,6 +157,11 @@ static MGR_SWS_State_t sws_state = MGR_SWS_STATE_UNKNOWN;
 static bool state_changed_flag = false;
 static bool force_measurement = false;
 static uint16_t last_raw_adc = 0;
+/* Last ADC sample that came back from a SUCCESSFUL HAL conversion. Returned by
+ * sws_read_adc when a conversion fails, so a dead ADC never injects a 0 (which
+ * would read as SURFACE). Seeded to the water baseline = the safe "underwater"
+ * default (no spurious TX) if the very first read fails. */
+static uint16_t s_last_valid_adc = 0;
 
 /* Calibration dirty flag (set on baseline/peak update, cleared after flash save) */
 static bool calib_dirty = false;
@@ -461,10 +466,16 @@ static uint16_t sws_read_adc(void)
 	uint32_t count = (uint32_t)sample_delay_us * 8;
 	while (count--) __NOP();
 
-	uint32_t raw = ADC_ReadValue();
+	/* On a HAL failure DON'T inject 0 — a zero reads below threshold and flips
+	 * the detector to SURFACE (spurious TX). Hold the last valid sample
+	 * instead; a persistent ADC failure then returns the same value every
+	 * cycle, which the STUCK fault detector latches (visible in AT+STATUS). */
+	uint32_t raw;
+	if (ADC_ReadValueChecked(&raw))
+		s_last_valid_adc = (uint16_t)(raw & 0xFFF);
 	sws_power_off();
 
-	return (uint16_t)(raw & 0xFFF);
+	return s_last_valid_adc;
 }
 
 /* ---- Core Detection (5-level + hardening) ---- */
@@ -1042,6 +1053,9 @@ void MGR_SWS_init(void)
 	water_baseline = sws_config.initial_water_baseline;
 	observed_peak_adc = 0;
 	contrast_x10 = 100;
+	/* Seed the ADC-failure fallback to the water baseline (safe = underwater =
+	 * no spurious TX) until a real conversion succeeds. */
+	s_last_valid_adc = sws_config.initial_water_baseline;
 	update_dynamic_threshold();
 
 	memset(adc_history, 0, sizeof(adc_history));
