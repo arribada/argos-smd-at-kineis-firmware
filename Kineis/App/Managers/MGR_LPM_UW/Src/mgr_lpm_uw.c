@@ -874,20 +874,31 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	 *    the SWS period" (the old fixed-period behaviour).
 	 *  - >= 29 s: CK_SPRE 1 Hz, duration FLOORED to whole seconds. */
 	if (ms > 0u) {
+		HAL_StatusTypeDef wut_st;
 		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 		__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
 		if (ms < 29000u) {
 			uint32_t ticks = (ms * 2048u) / 1000u;
 			if (ticks == 0u)
 				ticks = 1u;
-			(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+			wut_st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
 			    (uint16_t)(ticks - 1u),
 			    RTC_WAKEUPCLOCK_RTCCLK_DIV16, 0);
 		} else {
 			uint32_t seconds = ms / 1000u;
-			(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
+			wut_st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc,
 			    (uint16_t)(seconds - 1u),
 			    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
+		}
+		/* If the wake timer did NOT arm (LSE stall / RTC busy), entering STOP2
+		 * now would strand the chip with no wake source — and IWDG is frozen in
+		 * STOP2, so nothing rescues a sealed unit. Bail out AWAKE instead:
+		 * peripherals are still up, IWDG still covers us, and the main loop
+		 * retries idleTick next pass. One high-current pass beats a brick. */
+		if (wut_st != HAL_OK) {
+			MGR_LOG_ERR("[LPM_UW] WUT arm failed (0x%x) — staying awake\r\n",
+				(unsigned)wut_st);
+			return;
 		}
 	}
 

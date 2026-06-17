@@ -863,6 +863,18 @@ void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 		 * exit SHUTDOWN. */
 		HAL_PWREx_DisableInternalWakeUpLine();
 		HAL_PWREx_EnableInternalWakeUpLine();
+
+#if defined(BSP_HAS_PWR_LATCH)
+		/* Auto-wake SHUTDOWN MUST keep the board powered: LPM_shutdown_enter()
+		 * above set a PB7 pull-DOWN (the true-power-off default), which on
+		 * STDALONE opens the regulator latch, drops VDD, kills the RTC backup
+		 * domain, and makes the wake-up timer above unable to ever fire ->
+		 * permanent brick. Override with a pull-UP so PB7 stays HIGH and the
+		 * latch stays CLOSED through SHUTDOWN; the RTC then cold-boots the chip
+		 * at the deadline. (No effect on the wakeup_seconds==0 true-off path.) */
+		HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);
+		HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_7);
+#endif
 	}
 
 	/* Mirror what vMGR_LPM_enterShutdown() in mgr_lpm.c does: clear sticky

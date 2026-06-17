@@ -350,8 +350,11 @@ static void boot_loop_handle(void)
 		boot_retained.permanent_off_armed = 1;
 		boot_retained_commit();
 #if defined(BSP_HAS_REED_SWITCH)
-		MGR_REED_releasePower();
-		/* RTC auto-wake every 24 h — sealed capsule never goes truly off. */
+		/* Do NOT cut the PWR latch (MGR_REED_releasePower) here: on STDALONE
+		 * that drops VDD and the RTC backup domain dies, so the 24h auto-wake
+		 * below could NEVER fire -> permanent brick in a sealed capsule.
+		 * LPM_shutdownWithAutoWake keeps PB7 HIGH for the auto-wake case so the
+		 * board stays powered through SHUTDOWN and the RTC wakes it. */
 		LPM_shutdownWithAutoWake(BOOT_PERMANENT_OFF_WAKE_S);
 #else
 		MGR_ERR_logAndReset(ERR_BOOT_LOOP);
