@@ -261,6 +261,12 @@ static uint32_t elapsed_s(uint32_t from_tick)
 	return (HAL_GetTick() - from_tick) / 1000;
 }
 
+/* Clamp an air-baseline candidate up to the anti-collapse floor. */
+static uint16_t clamp_air_floor(uint16_t v)
+{
+	return (v < AIR_BASELINE_FLOOR) ? AIR_BASELINE_FLOOR : v;
+}
+
 static void mark_calib_dirty(void)
 {
 	calib_dirty = true;
@@ -641,8 +647,7 @@ static bool detector_state(void)
 				if (water_baseline > sws_config.threshold_max)
 					water_baseline = sws_config.threshold_max;
 			}
-			if (air_baseline < AIR_BASELINE_FLOOR)
-				air_baseline = AIR_BASELINE_FLOOR;
+			air_baseline = clamp_air_floor(air_baseline);
 			if (water_baseline <= (uint32_t)air_baseline * MIN_WATER_AIR_RATIO)
 				water_baseline = air_baseline * MIN_WATER_AIR_RATIO;
 			update_dynamic_threshold();
@@ -822,9 +827,7 @@ static bool detector_state(void)
 			if (elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
 				/* Periodic full air recalibration with FLOOR clamp */
 				uint16_t old __attribute__((unused)) = air_baseline;
-				uint16_t new_air = avg;
-				if (new_air < AIR_BASELINE_FLOOR)
-					new_air = AIR_BASELINE_FLOOR;
+				uint16_t new_air = clamp_air_floor(avg);
 				air_baseline = new_air;
 				/* Slow decay of observed peak (1% per cycle) */
 				if (observed_peak_adc > 0)
@@ -845,8 +848,7 @@ static bool detector_state(void)
 					new_air = AIR_BASELINE_FLOOR;
 				} else {
 					new_air = (uint16_t)((90 * (uint32_t)air_baseline + 10 * (uint32_t)avg) / 100);
-					if (new_air < AIR_BASELINE_FLOOR)
-						new_air = AIR_BASELINE_FLOOR;
+					new_air = clamp_air_floor(new_air);
 				}
 				if (new_air != air_baseline) {
 					air_baseline = new_air;
@@ -860,8 +862,7 @@ static bool detector_state(void)
 				bool air_already_low = (air_baseline < avg * 2);
 				if (!avg_too_low && !air_already_low) {
 					uint16_t new_air = (uint16_t)((80 * (uint32_t)air_baseline + 20 * (uint32_t)avg) / 100);
-					if (new_air < AIR_BASELINE_FLOOR)
-						new_air = AIR_BASELINE_FLOOR;
+					new_air = clamp_air_floor(new_air);
 					air_baseline = new_air;
 					update_dynamic_threshold();
 					adjust_sample_delay();
@@ -995,7 +996,7 @@ static bool detector_state(void)
 			(uint32_t)raw_value * AIR_RECALIB_EMA_WEIGHT_PCT) / 100);
 		uint16_t hard_cap = (uint16_t)((uint32_t)water_baseline * AIR_RECALIB_MAX_RATIO_PCT / 100);
 		if (new_air > hard_cap) new_air = hard_cap;
-		if (new_air < AIR_BASELINE_FLOOR) new_air = AIR_BASELINE_FLOOR;
+		new_air = clamp_air_floor(new_air);
 		if (new_air != air_baseline && new_air < water_baseline) {
 			air_baseline = new_air;
 			update_dynamic_threshold();
@@ -1094,9 +1095,7 @@ void MGR_SWS_init(void)
 	HAL_GPIO_Init(SWS_POWER_PORT, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(SWS_POWER_PORT, SWS_POWER_PIN, GPIO_PIN_RESET);
 
-	air_baseline = sws_config.initial_air_baseline;
-	if (air_baseline < AIR_BASELINE_FLOOR)
-		air_baseline = AIR_BASELINE_FLOOR;
+	air_baseline = clamp_air_floor(sws_config.initial_air_baseline);
 	water_baseline = sws_config.initial_water_baseline;
 	observed_peak_adc = 0;
 	contrast_x10 = 100;
@@ -1151,14 +1150,10 @@ void MGR_SWS_init(void)
 		if (initial_read > WATER_DETECT_HEURISTIC) {
 			sws_state = MGR_SWS_STATE_UNDERWATER;
 			water_baseline = initial_read;
-			air_baseline = initial_read / 3;
-			if (air_baseline < AIR_BASELINE_FLOOR)
-				air_baseline = AIR_BASELINE_FLOOR;
+			air_baseline = clamp_air_floor(initial_read / 3);
 		} else if (initial_read < threshold_current) {
 			sws_state = MGR_SWS_STATE_SURFACE;
-			air_baseline = initial_read;
-			if (air_baseline < AIR_BASELINE_FLOOR)
-				air_baseline = AIR_BASELINE_FLOOR;
+			air_baseline = clamp_air_floor(initial_read);
 		} else {
 			sws_state = MGR_SWS_STATE_UNDERWATER;
 		}
@@ -1265,9 +1260,7 @@ void MGR_SWS_setConfig(const MGR_SWS_Config_t *config)
 		return;
 
 	sws_config = *config;
-	air_baseline = config->initial_air_baseline;
-	if (air_baseline < AIR_BASELINE_FLOOR)
-		air_baseline = AIR_BASELINE_FLOOR;
+	air_baseline = clamp_air_floor(config->initial_air_baseline);
 	water_baseline = config->initial_water_baseline;
 	update_dynamic_threshold();
 
@@ -1299,8 +1292,7 @@ uint16_t MGR_SWS_getThreshold(void)     { return threshold_current; }
 void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water)
 {
 	if (air > 0 && water > air) {
-		if (air < AIR_BASELINE_FLOOR)
-			air = AIR_BASELINE_FLOOR;
+		air = clamp_air_floor(air);
 		air_baseline = air;
 		water_baseline = water;
 		update_dynamic_threshold();
