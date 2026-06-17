@@ -245,8 +245,18 @@ bool bMGR_AT_CMD_SWSFORCE_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)
 	/* Accept both modes for convenience */
 	if (e_exec_mode == ATCMD_ACTION_MODE || e_exec_mode == ATCMD_STATUS_MODE) {
 		MGR_WDG_refresh();
+		/* CONFIG mode parks the SWS analog rail (PA12 -> ANALOG/high-Z) and
+		 * pauses MGR_SWS_task() in the main loop, so a plain force would read
+		 * a dead electrode and return a frozen value. Power the rail up for
+		 * this one-shot live read, then restore the parking if still CONFIG. */
+		const bool sws_parked =
+			(MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG);
+		if (sws_parked)
+			MGR_SWS_exitLowPower();
 		MGR_SWS_forceMeasurement();
 		MGR_SWS_task();
+		if (sws_parked)
+			MGR_SWS_enterLowPower();
 
 		MGR_SWS_State_t state = MGR_SWS_getState();
 		uint16_t adc = MGR_SWS_getLastADC();
@@ -532,8 +542,17 @@ bool bMGR_AT_CMD_DIAG_cmd(uint8_t *pu8_cmdParamString,
 	if (e_exec_mode != ATCMD_ACTION_MODE)
 		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
 
-	/* SWS: trigger a fresh measurement, then read back the ADC. */
+	/* SWS: trigger a fresh measurement, then read back the ADC. CONFIG mode
+	 * parks the rail + pauses task(), so power up around the one-shot read
+	 * (without this, forceMeasurement alone never runs and the value is stale). */
+	const bool sws_parked =
+		(MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG);
+	if (sws_parked)
+		MGR_SWS_exitLowPower();
 	MGR_SWS_forceMeasurement();
+	MGR_SWS_task();
+	if (sws_parked)
+		MGR_SWS_enterLowPower();
 	uint16_t sws_adc = MGR_SWS_getLastADC();
 	/* Health check combines the instant plausibility above with the rolling
 	 * fault detector (stuck, OOR, no-variance). The fault bitfield is also
