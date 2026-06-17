@@ -756,10 +756,26 @@ BOOTLOADER_BUILD = $(BOOTLOADER_DIR)/build
 BOOTLOADER_HEX = $(BOOTLOADER_BUILD)/bootloader.hex
 BOOTLOADER_BIN = $(BOOTLOADER_BUILD)/bootloader.bin
 
+# The bootloader UART-DFU baud MUST match the app console baud (usart.c:
+# UW_DOPPLER or COMM=SPI -> 115200, else 9600), otherwise AT+DFU=PING lands at
+# the wrong speed and the bootloader stays silent. Auto-derive it from APP/COMM
+# so DFU just works; override with BL_UART_BAUD=<n>, add BL_LED=1 for the
+# STDALONE activity LED. (BL_UART_BAUD / BL_LED are Bootloader/Makefile flags
+# and were previously NOT forwarded by this sub-make — passing them to the top
+# Makefile did nothing.)
+ifeq ($(APP),UW_DOPPLER)
+APP_CONSOLE_BAUD := 115200
+else ifeq ($(COMM),SPI)
+APP_CONSOLE_BAUD := 115200
+else
+APP_CONSOLE_BAUD := 9600
+endif
+BL_UART_BAUD ?= $(APP_CONSOLE_BAUD)
+
 # Build bootloader only
 bootloader:
-	@echo "=== Building Bootloader ==="
-	$(MAKE) -C $(BOOTLOADER_DIR) PROTOCOL=$(COMM)
+	@echo "=== Building Bootloader (UART-DFU @ $(BL_UART_BAUD) baud) ==="
+	$(MAKE) -C $(BOOTLOADER_DIR) PROTOCOL=$(COMM) BL_UART_BAUD=$(BL_UART_BAUD) $(if $(BL_LED),BL_LED=$(BL_LED))
 	@if [ ! -f $(BOOTLOADER_BIN) ]; then \
 		echo "ERROR: Bootloader build failed - $(BOOTLOADER_BIN) not found"; \
 		exit 1; \
