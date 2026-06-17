@@ -406,7 +406,12 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 		} else if (mc_in < 0 || mc_in > 0xFFFF) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		} else {
-			mc = (uint16_t)mc_in;
+			/* The MC is a 9-bit protocol field (0..511). Fold any larger
+			 * operator value back into range (mod 512) so the stored MC, the
+			 * +MC echo and every frame agree: a raw value > 511 wraps in the
+			 * 9-bit header but NOT in the 16-bit AES counter, which corrupts
+			 * the frame. MCU_NVM_setMC re-clamps as defence in depth. */
+			mc = (uint16_t)(mc_in % 512);
 			if (KNS_CFG_setMC(mc) == KNS_STATUS_OK)
 			{
 				MGR_LOG_DEBUG("+MC=%u\r\n", mc);

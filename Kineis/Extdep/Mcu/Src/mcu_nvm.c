@@ -109,6 +109,17 @@ static uint8_t radioConfZone[16] = {
 
 /* ---- Message Counter: RAM cache + flash high-water mark ----------------
  *
+ * 9-BIT PROTOCOL LIMIT (load-bearing): the Argos/Kineis MC is a 9-bit field
+ * (0..511). The closed libkineis uses the raw getMC value for the CURRENT
+ * frame, writing it BOTH as a 9-bit header AND as the 16-bit AES-CTR counter
+ * (it only masks & 0x1ff when storing the *next* value). So any MC > 511 makes
+ * the 9-bit header wrap (e.g. 512 -> 0) while the AES counter keeps 512: the
+ * ground segment rebuilds the wrong IV and the whole payload decrypts to
+ * garbage. We therefore clamp to 9 bits at every point the lib can see the MC
+ * (seed / getMC / setMC) so a stray AT+MC > 511 or a restored high-water value
+ * can never ship a corrupt frame. Normal operation cycles 0..511 (a standard
+ * rolling counter) and is unaffected by the mask.
+ *
  * The closed lib persists the MC with getMC + setMC(mc+1) after EVERY TX,
  * and the per-sequence MC logic in the app rolls it back with setMC before
  * every push. MCU_FLASH_set_msg_counter is destructive: it rewrites the
@@ -137,7 +148,9 @@ static void mc_seed_cache(void)
 {
 	if (!mc_cache_valid) {
 		mc_flash_shadow = MCU_FLASH_read_msg_counter();
-		message_counter = (uint16_t)(mc_flash_shadow & 0xFFFF);
+		/* Clamp to the 9-bit protocol range: a high-water value > 511 would
+		 * otherwise ship a corrupt first frame after boot (see header note). */
+		message_counter = (uint16_t)(mc_flash_shadow & 0x1FFu);
 		mc_cache_valid = true;
 	}
 }
@@ -148,12 +161,20 @@ enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
 		return KNS_STATUS_ERROR;
 
 	mc_seed_cache();
-	*mc_ptr = message_counter;
+	/* Defensive 9-bit clamp at the lib boundary: this value goes straight into
+	 * the 9-bit header AND the 16-bit AES counter, so it MUST be <= 511 (see
+	 * header note). No-op during normal 0..511 operation. */
+	*mc_ptr = (uint16_t)(message_counter & 0x1FFu);
 	return KNS_STATUS_OK;
 }
 
 enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
 {
+	/* Clamp every setter to the 9-bit protocol range — lib auto-increment,
+	 * the app per-sequence stomp, and operator AT+MC all converge here, so a
+	 * value > 511 can never reach the frame and corrupt it (see header note).
+	 * The wear-leveling math below then runs on the 9-bit value it expects. */
+	mcTmp = (uint16_t)(mcTmp & 0x1FFu);
 	mc_seed_cache();
 	message_counter = mcTmp;
 

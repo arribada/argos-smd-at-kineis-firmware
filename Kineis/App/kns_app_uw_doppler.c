@@ -2511,7 +2511,9 @@ void KNS_APP_uw_doppler_loop(void)
 			}
 		}
 		/* Override the auto-incremented MC so every TX in this sequence
-		 * uses the same Message Counter. */
+		 * uses the same Message Counter. The MC is a 9-bit protocol field;
+		 * MCU_NVM_setMC clamps to 0..511, so a session_mc > 511 is applied
+		 * mod 512 and never ships a corrupt frame (see mcu_nvm.c header note). */
 		(void)KNS_CFG_setMC(mc_retained.session_mc);
 
 		UWDPL_TRACE("KNS_Q_push start");
