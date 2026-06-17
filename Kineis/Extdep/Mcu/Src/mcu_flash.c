@@ -432,6 +432,10 @@ enum KNS_status_t MCU_FLASH_increment_msg_counter(void) {
 
 /**
  * @brief Reset the MSG counter.
+ * @note  Unwired maintenance hook with no caller today. Its twin
+ *        MCU_FLASH_reset_wku_counter is exposed via AT+DPLWKU=0; the MSG
+ *        counter never got an equivalent AT command. Kept (read/set/increment
+ *        are the live entry points) for a future AT+DPLMC=0 / SAV reset.
  * @return KNS status of the operation.
  */
 enum KNS_status_t MCU_FLASH_reset_msg_counter(void) {

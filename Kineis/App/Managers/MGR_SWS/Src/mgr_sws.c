@@ -1286,8 +1286,11 @@ bool MGR_SWS_stateChanged(void)
 uint16_t MGR_SWS_getAirBaseline(void)   { return air_baseline; }
 uint16_t MGR_SWS_getWaterBaseline(void) { return water_baseline; }
 uint16_t MGR_SWS_getObservedPeak(void)  { return observed_peak_adc; }
-uint16_t MGR_SWS_getSampleDelayUs(void) { return sample_delay_us; }
 uint16_t MGR_SWS_getThreshold(void)     { return threshold_current; }
+/* Unwired diagnostic hook: the runtime adaptive sample delay is not
+ * persisted nor surfaced over AT (unlike the baselines above). Kept for a
+ * future AT status readout — has no caller today. */
+uint16_t MGR_SWS_getSampleDelayUs(void) { return sample_delay_us; }
 
 void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water)
 {

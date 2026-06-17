@@ -124,11 +124,21 @@ extern void MX_GPIO_Init(void);
 #include "subghz.h"
 extern void MX_SUBGHZ_Init(void);
 
-/* LPTIM1 is the wake source for the SLEEP tier — autonomous LSI-clocked
- * timer that keeps running through STOP1 and fires an IRQ at the
- * configured timeout, giving us sub-second precision (LSI ≈ 32 kHz ⇒
- * ~31 µs resolution, capped to ~2 s per pass by the 16-bit ARR). Only
- * compiled when the board has the PWR latch (real LPM path). */
+/* RETIRED "SLEEP" tier (STOP1 + LPTIM wake) — DEAD CODE, kept for reference.
+ * NO live path reaches it: MGR_LPM_UW_idleTick() routes every band to STOP2
+ * (rationale in that function). It was the middle tier of the old 3-level
+ * design (spin / STOP1+LPTIM / STOP2+RTC). Dropped because on the bench it
+ * never woke from its WFI and — with IWDG frozen in STOP — wedged the chip
+ * silent/AT-deaf at ~700 µA until magnet/NRST; it also skipped the SubGHz
+ * teardown (~500 µA leak even when it did wake). STOP2-DIV16 gives the same
+ * sub-second precision with full teardown and a proven RTC wake.
+ * Do NOT re-wire enter_sleep_for_ms() without re-validating the wake path
+ * on hardware.
+ *
+ * LPTIM1 was the wake source: autonomous LSI-clocked timer that keeps
+ * running through STOP1 and fires an IRQ at the configured timeout —
+ * sub-second precision (LSI ≈ 32 kHz ⇒ ~31 µs res, ~2 s/pass via 16-bit
+ * ARR). Compiled only when the board has the PWR latch. */
 #if defined(BSP_HAS_PWR_LATCH)
 static LPTIM_HandleTypeDef s_lptim;
 static volatile bool       s_lptim_fired = false;
@@ -722,7 +732,7 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
 	for (;;) { /* unreachable */ }
 }
 
-/* ---- SLEEP tier: STOP1 + LPTIM sub-second wake ---- */
+/* ---- SLEEP tier: STOP1 + LPTIM sub-second wake (RETIRED — dead code, see banner above) ---- */
 
 /* LSI nominal frequency. WL55 datasheet quotes ±50 % tolerance; that
  * jitter is fine for the 10–500 ms range — the operator's perception

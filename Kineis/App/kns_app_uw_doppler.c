@@ -2705,6 +2705,9 @@ uint8_t KNS_APP_uw_doppler_startTestBurst(uint8_t count)
 	return count;
 }
 
+/* Unwired diagnostic hook: exposes the test-burst countdown started by
+ * KNS_APP_uw_doppler_startTestBurst (AT+TESTTX). No AT query reads it back
+ * today — kept for a future "bursts remaining" status command. */
 uint8_t KNS_APP_uw_doppler_getTestBurstRemaining(void)
 {
 	return test_tx_remaining;
