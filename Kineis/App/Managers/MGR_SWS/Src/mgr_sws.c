@@ -218,6 +218,14 @@ static uint32_t surface_lockout_start_tick = 0;
 static uint32_t surface_lockout_ms = 0;       /**< 0 = no lockout armed */
 static uint8_t  consecutive_dive_timeouts = 0;
 
+/* Degraded beacon mode. Armed by the dive-timeout escalation (3x max_dive_time_s
+ * stuck underwater): hold SURFACE for a full max_dive_time_s window so the tag
+ * runs a real beacon (normal seq_restart cadence) instead of a 30s blip, then
+ * drop back underwater for another 3x escalation. Exits early on a frank air
+ * reading (raw < threshold_low = the real sensor recovered). */
+static bool     degraded_mode = false;
+static uint32_t degraded_start_tick = 0;
+
 static bool surface_lockout_active(void)
 {
 	if (surface_lockout_ms == 0u)
@@ -1023,8 +1031,10 @@ static bool detector_state(void)
 
 		if (consecutive_dive_timeouts >= MAX_CONSECUTIVE_DIVE_TIMEOUTS) {
 			new_is_underwater = false;
-			surface_lockout_start_tick = HAL_GetTick();
-			surface_lockout_ms = SURFACE_LOCKOUT_S * 1000;
+			/* Enter degraded beacon mode: section 9 holds surface for a full
+			 * max_dive_time_s window. Supersedes the old 30s lockout. */
+			degraded_mode = true;
+			degraded_start_tick = HAL_GetTick();
 			consecutive_dive_timeouts = 0;
 			observed_peak_adc = water_baseline;
 			consecutive_spike_rejects = 0;
@@ -1032,8 +1042,8 @@ static bool detector_state(void)
 			surface_readings_idx = 0;
 			update_dynamic_threshold();
 			mark_calib_dirty();
-			MGR_LOG_WARN("[SWS] Dive timeout escalation -> force surface (water %u->%u)\r\n",
-				old_water, water_baseline);
+			MGR_LOG_WARN("[SWS] Dive timeout escalation -> degraded beacon (surface %lus, water %u->%u)\r\n",
+				(unsigned long)sws_config.max_dive_time_s, old_water, water_baseline);
 		} else {
 			/* Reset state timer for next escalation interval */
 			state_enter_tick = HAL_GetTick();
@@ -1046,6 +1056,29 @@ static bool detector_state(void)
 	/* 8. SURFACE LOCKOUT (time-based) */
 	if (surface_lockout_active() && new_is_underwater)
 		new_is_underwater = false;
+
+	/* 9. DEGRADED BEACON MODE (final override). While armed (section 7), hold
+	 * SURFACE for a full max_dive_time_s window so the app runs a real beacon
+	 * (normal seq_restart cadence). Exit early on a frank air reading (the real
+	 * sensor recovered) -> resume normal; or when the window elapses -> drop
+	 * back underwater so the dive-timeout (counter reset at entry) re-arms the
+	 * 3x escalation. raw_value/threshold_low are this cycle's sensor read. */
+	if (degraded_mode) {
+		const uint32_t window_ms =
+			(uint32_t)sws_config.max_dive_time_s * 1000u;
+		if (raw_value < threshold_low) {
+			degraded_mode = false;        /* real surface recovered */
+			new_is_underwater = false;
+			MGR_LOG_INFO("[SWS] Degraded beacon: real surface (raw=%u<%u), exit\r\n",
+				raw_value, threshold_low);
+		} else if ((uint32_t)(HAL_GetTick() - degraded_start_tick) >= window_ms) {
+			degraded_mode = false;        /* window done -> re-test underwater */
+			new_is_underwater = true;
+			MGR_LOG_INFO("[SWS] Degraded beacon window ended -> underwater\r\n");
+		} else {
+			new_is_underwater = false;    /* hold beacon surface */
+		}
+	}
 
 	return new_is_underwater;
 }
@@ -1070,6 +1103,8 @@ void MGR_SWS_init(void)
 	water_baseline = sws_config.initial_water_baseline;
 	observed_peak_adc = 0;
 	contrast_x10 = 100;
+	degraded_mode = false;
+	degraded_start_tick = 0;
 	/* Seed the ADC-failure fallback to the water baseline (safe = underwater =
 	 * no spurious TX) until a real conversion succeeds. */
 	s_last_valid_adc = sws_config.initial_water_baseline;
