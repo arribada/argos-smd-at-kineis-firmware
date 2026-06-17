@@ -206,6 +206,9 @@ static uint8_t  ma3_trend_count = 0;
 
 /* Level 4 & 5: Dive tracking */
 static uint16_t peak_adc_since_underwater = 0;
+/* L4 debounce: require 2 consecutive below-threshold samples before declaring
+ * surface (linkit-v4 parity), so a single noisy MA2 dip can't false-trigger. */
+static uint8_t  l4_consecutive_below = 0;
 
 /* Safety / lockout. Stored as start + duration and compared with wrap-safe
  * tick deltas: the old absolute-deadline form misfired at the 49.7-day tick
@@ -416,8 +419,12 @@ static void calibrate_water_baseline(uint16_t value)
 	bool air_ratio_ok = (air_baseline >= 750) ||
 		(value >= air_baseline * MIN_WATER_AIR_RATIO);
 
+	/* No absolute ADC floor (linkit-v4 removed it intentionally): fresh /
+	 * brackish water has lower conductivity -> lower water-side ADC, well below
+	 * the old 2000 (500 on 12-bit) floor. Validity is ratio-based only. The
+	 * legacy ABSOLUTE_MIN_WATER_ADC kept the water baseline from converging in
+	 * low-conductivity deployments. */
 	bool ok = (value > threshold_with_margin) &&
-		(value >= ABSOLUTE_MIN_WATER_ADC) &&
 		air_ratio_ok &&
 		(value >= min_expected_water || value > water_baseline);
 
@@ -749,22 +756,44 @@ static bool detector_state(void)
 	if (surface_level == 0 && is_underwater &&
 	    time_in_state >= OVERRIDE_MIN_TIME_SEC && proximity_ok) {
 
-		/* LEVEL 4: Drop relative to water baseline */
+		/* linkit-v4 hardening guard for L4/L5: the RAW reading must be in the
+		 * air zone (below threshold_high) too — otherwise a stale water/peak
+		 * baseline (e.g. after biofouling reduction) makes `filtered` dip below
+		 * a too-high reference and false-triggers surface while raw is still
+		 * water-level. Computed locally; the state machine recomputes it below. */
+		uint16_t l45_threshold_high = threshold_current + hysteresis_value;
+
+		/* LEVEL 4: Drop relative to water baseline. Requires raw in the air zone
+		 * AND two consecutive below-threshold samples (debounce). */
 		if (water_baseline > 0) {
 			uint16_t water_thresh = (uint16_t)((uint32_t)water_baseline * (100 - L4_DROP_PERCENT) / 100);
-			if (filtered < water_thresh)
-				surface_level = 4;
+			if (filtered < water_thresh && raw_value < l45_threshold_high) {
+				if (l4_consecutive_below < 0xFFu)
+					l4_consecutive_below++;
+				if (l4_consecutive_below >= 2u)
+					surface_level = 4;
+			} else {
+				l4_consecutive_below = 0;
+			}
+		} else {
+			l4_consecutive_below = 0;
 		}
 
-		/* LEVEL 5: Cumulative drop from dive peak (>10s gate, underflow guard) */
+		/* LEVEL 5: Cumulative drop from dive peak (>10s gate, underflow guard).
+		 * Same raw-air-zone guard as L4 so stale peaks can't false-fire L5. */
 		if (surface_level == 0 && peak_adc_since_underwater > 0 &&
 		    filtered < peak_adc_since_underwater &&
+		    raw_value < l45_threshold_high &&
 		    time_in_state > L5_MIN_TIME_SEC) {
 			uint16_t drop_pct = (uint16_t)(((uint32_t)(peak_adc_since_underwater - filtered) * 100) /
 				peak_adc_since_underwater);
 			if (drop_pct >= L5_DROP_PERCENT)
 				surface_level = 5;
 		}
+	} else {
+		/* Out of the L4/L5 evaluation window — reset the debounce so the next
+		 * dive starts fresh. */
+		l4_consecutive_below = 0;
 	}
 
 	/* 4. SURFACE BASELINE TRACKING (blocked during lockout) */
