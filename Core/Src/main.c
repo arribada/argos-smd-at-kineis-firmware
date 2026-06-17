@@ -1077,6 +1077,11 @@ int main(void)
   /* USER CODE END 3 */
 }
 
+/* Set when the LSE 32 kHz crystal fails to start and the RTC falls back to LSI.
+ * Read by rtc.c (HAL_RTC_MspInit) to pick the RTC clock source. Degraded-LSE
+ * survival mode: a dead crystal must NOT brick a sealed unit (see #2 audit). */
+volatile uint8_t g_rtc_use_lsi = 0;
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -1095,10 +1100,13 @@ void SystemClock_Config(void)
   */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** Initializes the CPU, AHB and APB buses clocks
+  /** Initializes the CPU, AHB and APB buses clocks.
+   * HSI + PLL only here — a failure of the core clock is genuinely
+   * unrecoverable so Error_Handler/reset stays correct. LSE is configured
+   * SEPARATELY below so a dead 32 kHz crystal degrades the RTC to LSI instead
+   * of bricking the boot in an Error_Handler reset loop (sealed-deploy audit #2).
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -1127,6 +1135,26 @@ void SystemClock_Config(void)
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
+  }
+
+  /* RTC reference clock: LSE 32.768 kHz preferred, LSI fallback if the crystal
+   * does not start (solder fracture / aging in a sealed capsule). A degraded
+   * RTC on LSI (~32 kHz, ±5 %) still drives every duty-cycle and SHUTDOWN
+   * auto-wake, so the device keeps transmitting instead of reset-looping
+   * forever at boot. This block is the ONLY clock path allowed to continue on
+   * failure — the core HSI/PLL above is not. */
+  {
+    RCC_OscInitTypeDef lse_cfg = {0};
+    lse_cfg.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+    lse_cfg.LSEState = RCC_LSE_ON;
+    if (HAL_RCC_OscConfig(&lse_cfg) != HAL_OK)
+    {
+      RCC_OscInitTypeDef lsi_cfg = {0};
+      lsi_cfg.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+      lsi_cfg.LSIState = RCC_LSI_ON;
+      (void)HAL_RCC_OscConfig(&lsi_cfg);   /* on-chip, effectively always ready */
+      g_rtc_use_lsi = 1;
+    }
   }
 }
 

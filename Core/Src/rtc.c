@@ -126,7 +126,12 @@ void HAL_RTC_MspInit(RTC_HandleTypeDef* rtcHandle)
   /** Initializes the peripherals clocks
   */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    /* LSI fallback when the LSE crystal failed to start (SystemClock_Config sets
+     * g_rtc_use_lsi). Keeps the RTC — and thus every timed wake — alive on a
+     * dead 32 kHz crystal instead of bricking a sealed unit. */
+    extern volatile uint8_t g_rtc_use_lsi;
+    PeriphClkInitStruct.RTCClockSelection =
+        g_rtc_use_lsi ? RCC_RTCCLKSOURCE_LSI : RCC_RTCCLKSOURCE_LSE;
 
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
