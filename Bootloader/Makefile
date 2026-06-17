@@ -111,6 +111,14 @@ ifeq ($(DEBUG), 1)
 C_DEFS += -DDEBUG
 endif
 
+# Optional board activity LED indicator (e.g. SMD_STDALONE RGB on PA1/PB4/PB5).
+# OFF by default so already-deployed bootloaders stay byte-identical.
+# Enable only for a board with free LED pins in UART-DFU: make BL_LED=1
+ifeq ($(BL_LED), 1)
+C_DEFS += -DBL_LED
+$(info Bootloader LED indicator ENABLED (RGB on PA1/PB4/PB5))
+endif
+
 # C includes
 C_INCLUDES =  \
 -I$(BL_DIR)/Inc \

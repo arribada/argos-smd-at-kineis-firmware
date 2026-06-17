@@ -44,6 +44,62 @@ void Error_Handler(void);
 /* early_debug_print is declared in bl_main.h */
 static void early_debug_update_baudrate(void);
 
+#ifdef BL_LED
+/* ---- Optional bootloader activity LEDs (opt-in: Makefile BL_LED=1) --------
+ * SMD_STDALONE RGB: PA1=RED, PB4=GREEN, PB5=BLUE, ACTIVE LOW (RESET = on).
+ * These pins are also the SPI1 bus, but STANDALONE forces UART DFU and never
+ * initialises SPI, so they stay free. Entirely compiled out by default, so
+ * already-deployed bootloaders stay byte-identical. The R->G->B "rainbow scan"
+ * is deliberately unlike the UW_DOPPLER app's LED use (blue/yellow/green) so
+ * you can tell at a glance you are in the bootloader, not the app. */
+static uint32_t bl_led_activity_tick = 0;   /* tick of last WRITE/ERASE */
+static bool     bl_led_fault         = false;
+
+static void bl_led_rgb(bool r, bool g, bool b)
+{
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, r ? GPIO_PIN_RESET : GPIO_PIN_SET); /* RED   */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, g ? GPIO_PIN_RESET : GPIO_PIN_SET); /* GREEN */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, b ? GPIO_PIN_RESET : GPIO_PIN_SET); /* BLUE  */
+}
+
+static void bl_led_init(void)
+{
+    GPIO_InitTypeDef io = {0};
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    io.Mode  = GPIO_MODE_OUTPUT_PP;
+    io.Pull  = GPIO_NOPULL;
+    io.Speed = GPIO_SPEED_FREQ_LOW;
+    io.Pin = GPIO_PIN_1; HAL_GPIO_Init(GPIOA, &io);
+    io.Pin = GPIO_PIN_4; HAL_GPIO_Init(GPIOB, &io);
+    io.Pin = GPIO_PIN_5; HAL_GPIO_Init(GPIOB, &io);
+    bl_led_rgb(false, false, false);
+}
+
+/* Non-blocking; called every bl_run() iteration. */
+static void bl_led_service(void)
+{
+    /* Drive only in the UART-DFU states. Anything else (SPI, jump, app) ->
+     * LEDs off, so the SPI bus and the running app are never disturbed.
+     * STANDALONE only ever reaches the UART path. */
+    if (current_state != BL_STATE_DFU_UART && current_state != BL_STATE_DFU_IDLE) {
+        bl_led_rgb(false, false, false);
+        return;
+    }
+
+    const uint32_t now = HAL_GetTick();
+
+    if (bl_led_fault) {
+        bl_led_rgb(true, false, false);                  /* ERROR: red solid    */
+    } else if (bl_led_activity_tick != 0u && (now - bl_led_activity_tick) < 600u) {
+        bl_led_rgb(false, (now % 160u) < 80u, false);    /* UPDATING: green fast */
+    } else {
+        const uint32_t phase = (now / 250u) % 3u;         /* ACTIVE: R->G->B scan */
+        bl_led_rgb(phase == 0u, phase == 1u, phase == 2u);
+    }
+}
+#endif /* BL_LED */
+
 void bl_init(void)
 {
     BL_DBG("[BL] HAL_Init...\r\n");
@@ -60,6 +116,9 @@ void bl_init(void)
     bl_flash_init();
     bl_crc_init();
     bl_dfu_init();
+#ifdef BL_LED
+    bl_led_init();
+#endif
 
     current_state = BL_STATE_INIT;
 }
@@ -67,6 +126,9 @@ void bl_init(void)
 void bl_run(void)
 {
     while (1) {
+#ifdef BL_LED
+        bl_led_service();
+#endif
         switch (current_state) {
             case BL_STATE_INIT:
                 bl_state_init();
@@ -345,6 +407,13 @@ static void bl_state_dfu_uart(void)
                 status = bl_dfu_process_cmd(dfu_cmd, payload, payload_len,
                                            response, &response_len);
                 bl_uart_send_response(status, response, response_len);
+#ifdef BL_LED
+                if (status == DFU_RSP_OK &&
+                    (dfu_cmd == DFU_CMD_WRITE || dfu_cmd == DFU_CMD_ERASE)) {
+                    bl_led_activity_tick = HAL_GetTick();
+                    bl_led_fault = false;
+                }
+#endif
 
                 if (status == DFU_RSP_OK) {
                     if (dfu_cmd == DFU_CMD_JUMP) {
@@ -484,6 +553,9 @@ static void bl_state_validate(void)
         if (detected_protocol == BL_PROTO_UART) {
             bl_uart_print("+DFU=ERR,VALIDATION_FAILED\r\n");
         }
+#ifdef BL_LED
+        bl_led_fault = true;
+#endif
         current_state = BL_STATE_ERROR;
     }
 }
@@ -526,6 +598,9 @@ void bl_jump_to_app(void)
     }
 
     early_debug_print("[BL] Jump to app\r\n");
+#ifdef BL_LED
+    bl_led_rgb(false, false, false);   /* LEDs off before handing over to the app */
+#endif
 
     /* Reset SPI peripheral before jumping */
     SPI1->CR1 &= ~SPI_CR1_SPE;
