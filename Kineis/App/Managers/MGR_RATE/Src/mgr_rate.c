@@ -102,8 +102,7 @@ void MGR_RATE_init(void)
 			(unsigned long)ring.magic);
 		mono_s = 0;
 		memset(&ring, 0, sizeof(ring));
-		ring.magic = MGR_RATE_RETAIN_MAGIC;
-		ring_commit();
+		ring_commit();  /* sets magic + mono_base_s + crc32 */
 	} else {
 		/* Resume the limiter clock from the last committed snapshot so
 		 * retained timestamps stay comparable across soft resets. */
@@ -113,15 +112,21 @@ void MGR_RATE_init(void)
 	}
 }
 
+/* Oldest valid timestamp (entry at (head - count) mod capacity). Caller must
+ * ensure ring.count > 0. */
+static uint32_t ring_oldest(void)
+{
+	uint16_t idx = (uint16_t)((ring.head + MGR_RATE_MAX_CAP -
+		ring.count) % MGR_RATE_MAX_CAP);
+	return ring.timestamps[idx];
+}
+
 /* Remove timestamps older than (now - window). After the call, the ring
  * contains only entries that still count against the budget. */
 static void trim_window(uint32_t now_s, uint32_t window_s)
 {
 	while (ring.count > 0) {
-		/* Oldest entry is at (head - count) mod capacity. */
-		uint16_t oldest_idx = (uint16_t)((ring.head + MGR_RATE_MAX_CAP -
-			ring.count) % MGR_RATE_MAX_CAP);
-		uint32_t oldest = ring.timestamps[oldest_idx];
+		uint32_t oldest = ring_oldest();
 
 		/* Use unsigned diff so future-dated entries (clock skew on restart)
 		 * are NOT dropped — they look "newer than now". */
@@ -159,9 +164,7 @@ bool MGR_RATE_isBlocked(uint32_t *retry_in_s)
 		return false;
 
 	if (retry_in_s) {
-		uint16_t oldest_idx = (uint16_t)((ring.head + MGR_RATE_MAX_CAP -
-			ring.count) % MGR_RATE_MAX_CAP);
-		uint32_t oldest = ring.timestamps[oldest_idx];
+		uint32_t oldest = ring_oldest();
 		uint32_t elapsed = (now_s >= oldest) ? (now_s - oldest) : 0;
 		*retry_in_s = (elapsed >= cfg_window_s) ? 0
 			: (cfg_window_s - elapsed);

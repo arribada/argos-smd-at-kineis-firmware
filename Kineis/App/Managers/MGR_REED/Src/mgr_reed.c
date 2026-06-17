@@ -78,7 +78,6 @@ static volatile uint8_t evt_tail = 0;  /**< Next read index (main only) */
 
 static volatile uint32_t rising_tick = 0;     /**< Tick of last rising edge */
 static volatile uint32_t last_hold_ms = 0;    /**< Duration of last completed hold */
-static volatile uint32_t last_edge_tick = 0;  /**< Tick of last confirmed edge */
 
 /* Debouncer state. Confirmed-state is what the rest of the firmware sees
  * via MGR_REED_isMagnetPresent. The candidate-state is the raw pin
@@ -152,7 +151,6 @@ void MGR_REED_init(void)
 	evt_head = 0;
 	evt_tail = 0;
 	rising_tick = 0;
-	last_edge_tick = 0;
 
 	HAL_NVIC_SetPriority(REED_EXTI_IRQn, 2, 0);
 	HAL_NVIC_EnableIRQ(REED_EXTI_IRQn);
@@ -211,7 +209,6 @@ static void reed_poll(void)
 		rising_tick = 0u;
 		evt = MGR_REED_EVT_MAGNET_OFF;
 	}
-	last_edge_tick = now;
 
 	const uint8_t depth = (uint8_t)(evt_head - evt_tail);
 	if (depth < EVT_BUF_SIZE) {
@@ -277,7 +274,6 @@ void MGR_REED_releasePower(void)
  * (main loop) on aligned uint32_t → atomic. */
 volatile uint32_t g_reed_isr_count       = 0;
 volatile uint32_t g_reed_isr_last_state  = 0;
-volatile uint32_t g_reed_isr_pin_at_call = 0;
 
 /**
  * @brief EXTI interrupt handler for the reed line. Only the reed pin is
@@ -305,7 +301,6 @@ void EXTI9_5_IRQHandler(void)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	g_reed_isr_count++;
-	g_reed_isr_pin_at_call = GPIO_Pin;
 
 	if (GPIO_Pin != REED_MCU_Pin)
 		return;

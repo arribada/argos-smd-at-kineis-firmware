@@ -231,7 +231,6 @@ static uint32_t boot_retained_crc(void)
 	return s;
 }
 
-__attribute__((unused))
 static bool boot_retained_valid(void)
 {
 	return boot_retained.magic == BOOT_RETAIN_MAGIC &&
@@ -2185,7 +2184,6 @@ void KNS_APP_uw_doppler_loop(void)
 				 * itself when it processes the TX request. We do NOT set
 				 * tcxo_first_tx_skip so SURFACE_TX leaves the warmup at its
 				 * configured value (no `set_warmup(0)` optimisation). */
-				(void)tcxo_warmup_saved_ms;  /* unused now */
 #if defined(BSP_HAS_LED_RGB)
 				MGR_LED_blink(MGR_LED_GREEN, 1, 500, 0);
 #endif

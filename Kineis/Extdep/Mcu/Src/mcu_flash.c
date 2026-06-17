@@ -32,6 +32,9 @@
 #pragma GCC optimize("O0")
 #define FLASH_WAIT_TIMEOUT_MS   500U   // à ajuster si besoin
 
+/* Erased flash reads all-ones; an erased double-word is the empty-slot marker. */
+#define FLASH_ERASED_DWORD      0xFFFFFFFFFFFFFFFFULL
+
 static enum KNS_status_t MCU_FLASH_WaitReady(uint32_t timeout_ms)
 {
     uint32_t start = HAL_GetTick();
@@ -139,7 +142,7 @@ enum KNS_status_t MCU_FLASH_write(uint32_t address, const void *data, size_t siz
     FLASH_EraseInitTypeDef EraseInitStruct;
     uint32_t PageError;
     EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
-    EraseInitStruct.Page = (page_start_addr - FLASH_BASE) / FLASH_PAGE_SIZE,
+    EraseInitStruct.Page = (page_start_addr - FLASH_BASE) / FLASH_PAGE_SIZE;
     EraseInitStruct.NbPages = 1;
 
     if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK) {
@@ -243,12 +246,12 @@ uint64_t read_wear_counter(uint32_t start_addr, uint32_t wl_size_words, uint32_t
     uint32_t valid_index = 0;
     for (uint32_t i = 0; i < wl_size_words; ++i) {
         uint64_t val = read_flash_word(start_addr + i * 8);
-        if (val == 0xFFFFFFFFFFFFFFFFULL) break;
+        if (val == FLASH_ERASED_DWORD) break;
         valid_index = i + 1;
     }
     uint64_t overflow = *(uint64_t*)overflow_addr;
     /* Handle erased flash (0xFFFFFFFFFFFFFFFF) as 0 */
-    if (overflow == 0xFFFFFFFFFFFFFFFFULL) {
+    if (overflow == FLASH_ERASED_DWORD) {
         overflow = 0;
     }
     return overflow * wl_size_words + valid_index;
@@ -265,7 +268,7 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
 {
     uint32_t current_index = wl_size; /* Default to full (no erased slot found) */
     for (uint32_t i = 0; i < wl_size; ++i) {
-        if (read_flash_word(wl_start + i * 8) == 0xFFFFFFFFFFFFFFFFULL) {
+        if (read_flash_word(wl_start + i * 8) == FLASH_ERASED_DWORD) {
             current_index = i;
             break;
         }
@@ -287,7 +290,7 @@ enum KNS_status_t increment_wear_counter(uint32_t wl_start, uint32_t wl_size, ui
          * page 0. Credentials are not CRC-checked here, so keep this rare. */
         uint64_t of = *(uint64_t*)of_addr;
         /* Handle erased flash as 0 */
-        if (of == 0xFFFFFFFFFFFFFFFFULL) {
+        if (of == FLASH_ERASED_DWORD) {
             of = 0;
         }
         ++of;

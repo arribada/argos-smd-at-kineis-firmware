@@ -136,17 +136,6 @@ static void persist_mode(MGR_GESTURE_Mode_t mode)
 	GESTURE_BKP_REG = GESTURE_BKP_MAGIC | ((uint32_t)mode & GESTURE_BKP_MODE_MASK);
 }
 
-static MGR_GESTURE_Mode_t load_mode_default_operational(void)
-{
-	uint32_t raw = GESTURE_BKP_REG;
-	if ((raw & GESTURE_BKP_MAGIC_MASK) != GESTURE_BKP_MAGIC)
-		return MGR_GESTURE_MODE_OPERATIONAL;
-	MGR_GESTURE_Mode_t m = (MGR_GESTURE_Mode_t)(raw & GESTURE_BKP_MODE_MASK);
-	if (m >= MGR_GESTURE_MODE_COUNT)
-		return MGR_GESTURE_MODE_OPERATIONAL;
-	return m;
-}
-
 /* ---- LED helpers ---- */
 
 static MGR_LED_Color_t target_color(MGR_GESTURE_Mode_t target, bool is_shutdown)
@@ -251,7 +240,6 @@ void MGR_GESTURE_init(void)
 	 * gesture; it is never inherited. TAMP BKP10R is still written by
 	 * MGR_GESTURE_setMode (observable / debuggable) but is overridden
 	 * on every boot here — equivalent to "no persistence". */
-	(void)load_mode_default_operational();  /* legacy: keep symbol live */
 	s_mode = MGR_GESTURE_MODE_OPERATIONAL;
 	persist_mode(s_mode);
 	gst_trace("[MODE] boot in OPERATIONAL t=%lu ms\r\n", HAL_GetTick());

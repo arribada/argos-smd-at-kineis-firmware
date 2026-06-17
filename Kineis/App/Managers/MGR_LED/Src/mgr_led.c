@@ -159,8 +159,6 @@ static bool is_mode_active(void)
 
 void MGR_LED_init(void)
 {
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
-
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -176,18 +174,7 @@ void MGR_LED_init(void)
 #endif
 
 	/* Init each LED individually (pins may be on different ports) */
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-
-	GPIO_InitStruct.Pin = LED_RED_Pin;
-	HAL_GPIO_Init(LED_RED_GPIO_Port, &GPIO_InitStruct);
-
-	GPIO_InitStruct.Pin = LED_GREEN_Pin;
-	HAL_GPIO_Init(LED_GREEN_GPIO_Port, &GPIO_InitStruct);
-
-	GPIO_InitStruct.Pin = LED_BLUE_Pin;
-	HAL_GPIO_Init(LED_BLUE_GPIO_Port, &GPIO_InitStruct);
+	led_reinit_gpio();
 
 	mode_start_tick = HAL_GetTick();
 }

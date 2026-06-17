@@ -65,7 +65,6 @@
 #define FAST_CONVERGENCE_MAX_SAMPLES        5
 
 /* Water baseline protection */
-#define ABSOLUTE_MIN_WATER_ADC            500   /**< 2000/4 */
 #define MIN_WATER_AIR_RATIO                 3
 
 /* Air baseline floor (anti-collapse / death-spiral) */
@@ -107,7 +106,6 @@
 
 /* Safety */
 #define OVERRIDE_MIN_TIME_SEC               1   /**< Min UW time before any L-override */
-#define SURFACE_LOCKOUT_S                  30
 #define MAX_CONSECUTIVE_DIVE_TIMEOUTS       3   /**< Force surface after N timeouts */
 
 /* Proximity guard (adaptive) */
@@ -821,8 +819,7 @@ static bool detector_state(void)
 				sum += surface_readings[i];
 			uint16_t avg = (uint16_t)(sum / surface_readings_count);
 
-			if (CALIB_INTERVAL_S > 0 &&
-			    elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
+			if (elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
 				/* Periodic full air recalibration with FLOOR clamp */
 				uint16_t old __attribute__((unused)) = air_baseline;
 				uint16_t new_air = avg;

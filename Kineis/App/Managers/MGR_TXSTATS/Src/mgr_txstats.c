@@ -72,6 +72,15 @@ static void inc_saturating(uint32_t *p)
 	if (*p < 0xFFFFFFFFUL) (*p)++;
 }
 
+/* Bump the failure streak and track its worst-ever depth. Shared by the
+ * timeout and error paths. */
+static void bump_fail_streak(void)
+{
+	inc_saturating(&stats.s.consecutive_fail);
+	if (stats.s.consecutive_fail > stats.s.worst_consecutive)
+		stats.s.worst_consecutive = stats.s.consecutive_fail;
+}
+
 void MGR_TXSTATS_recordAttempt(void)
 {
 	inc_saturating(&stats.s.attempts);
@@ -88,18 +97,14 @@ void MGR_TXSTATS_recordDone(void)
 void MGR_TXSTATS_recordTimeout(void)
 {
 	inc_saturating(&stats.s.timeouts);
-	inc_saturating(&stats.s.consecutive_fail);
-	if (stats.s.consecutive_fail > stats.s.worst_consecutive)
-		stats.s.worst_consecutive = stats.s.consecutive_fail;
+	bump_fail_streak();
 	stats_commit();
 }
 
 void MGR_TXSTATS_recordError(void)
 {
 	inc_saturating(&stats.s.errors);
-	inc_saturating(&stats.s.consecutive_fail);
-	if (stats.s.consecutive_fail > stats.s.worst_consecutive)
-		stats.s.worst_consecutive = stats.s.consecutive_fail;
+	bump_fail_streak();
 	stats_commit();
 }
 

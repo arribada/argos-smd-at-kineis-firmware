@@ -60,8 +60,8 @@ enum KNS_status_t MGR_LPM_init(struct MgrLpm_EnvConfig_t env_config)
 		mgrLpmClientTab[i].fpMGR_LPM_LpmReqCb        = NULL;
 		mgrLpmClientTab[i].fpMGR_LPM_LpmNotifEnterCb = NULL;
 		mgrLpmClientTab[i].fpMGR_LPM_LpmNotifExitCb  = NULL;
-		mgrLpmClientNbr = 0;
 	}
+	mgrLpmClientNbr = 0;
 	return KNS_STATUS_OK;
 }
 

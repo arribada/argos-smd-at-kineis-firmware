@@ -51,6 +51,9 @@
 #define MGR_BAT_DIV_R_TOP_KOHM   120
 #define MGR_BAT_DIV_R_BOT_KOHM   300
 
+/* 12-bit ADC full-scale count (raw value at VDDA). */
+#define MGR_BAT_ADC_FULL_SCALE   4095
+
 /* Last known good reading — returned on ADC failure instead of 0 */
 static uint16_t last_good_vbat_mV = 0;
 
@@ -151,8 +154,8 @@ cleanup:
 	 * 4095 * 3300 * 420 = 5.67e9). */
 	uint32_t div_num = MGR_BAT_DIV_R_TOP_KOHM + MGR_BAT_DIV_R_BOT_KOHM;
 	uint32_t div_den = MGR_BAT_DIV_R_BOT_KOHM;
-	uint32_t vbat_mV = (uint32_t)(
-		(uint64_t)raw_vbat * vdda_mV * div_num / ((uint64_t)4095 * div_den));
+	uint32_t vbat_mV = (uint32_t)((uint64_t)raw_vbat * vdda_mV * div_num /
+		((uint64_t)MGR_BAT_ADC_FULL_SCALE * div_den));
 
 	MGR_LOG_DEBUG("[BAT] raw_vref=%lu raw_pb13=%lu vdda=%lumV vbat=%lumV\r\n",
 		raw_vref, raw_vbat, vdda_mV, vbat_mV);

@@ -44,8 +44,6 @@
 __attribute__((__section__(".msgCntSectionData")))
 static uint16_t message_counter = 0;
 
-static uint16_t wakeup_counter = 0;
-
 /** The device identifier may be stored in a secured way (encryption, etc.) */
 const uint32_t test_device_id = 123456; // stored in flash
 
@@ -109,25 +107,6 @@ static uint8_t radioConfZone[16] = {
  * UID word is ignored) + 8 hex (die X/Y coordinates, kept verbatim). */
 /* Functions -------------------------------------------------------------*/
 
-//enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
-//{
-//	if (!mc_ptr)
-//		return KNS_STATUS_ERROR;
-//
-//	uint64_t full_counter = MCU_FLASH_read_msg_counter();
-//    *mc_ptr = (uint16_t)(full_counter & 0xFFFF);
-//    message_counter = *mc_ptr;
-//    return KNS_STATUS_OK;
-//
-//}
-//
-//enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
-//{
-//	message_counter = mcTmp;
-//
-//	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
-//
-//}
 /* ---- Message Counter: RAM cache + flash high-water mark ----------------
  *
  * The closed lib persists the MC with getMC + setMC(mc+1) after EVERY TX,
@@ -224,9 +203,7 @@ enum KNS_status_t MCU_NVM_getWUC(uint16_t *wuc_ptr)
 
 enum KNS_status_t MCU_NVM_setWUC(uint16_t wucTmp)
 {
-	wakeup_counter = wucTmp;
 	return MCU_FLASH_set_wku_counter((uint64_t)wucTmp);
-
 }
 enum KNS_status_t MCU_NVM_getRadioConfZonePtr(void **ConfZonePtr)
 {
