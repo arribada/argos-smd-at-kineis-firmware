@@ -190,10 +190,15 @@
  * UART mode: 9600 baud (for UART DFU communication)
  * SPI mode: 115200 baud (for debug output while SPI handles DFU)
  */
+/* Baud can be overridden from the Makefile (-DBL_UART_BAUDRATE=...) to decouple
+ * the UART DFU speed from the PROTOCOL flag — e.g. a UW_DOPPLER board whose app
+ * console is 115200 needs the bootloader at 115200 even in UART-DFU mode. */
+#ifndef BL_UART_BAUDRATE
 #ifdef BL_PROTOCOL_UART
 #define BL_UART_BAUDRATE            9600
 #else
 #define BL_UART_BAUDRATE            115200
+#endif
 #endif
 #define BL_UART_WORDLENGTH          UART_WORDLENGTH_8B
 #define BL_UART_STOPBITS            UART_STOPBITS_1

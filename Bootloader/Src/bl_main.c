@@ -776,7 +776,10 @@ static void bl_hw_init(void)
 #define BRR_9600_HSI16      426667UL
 #define BRR_115200_HSI16    35556UL
 
-#ifdef BL_PROTOCOL_UART
+/* Follow the resolved BL_UART_BAUDRATE (which may be overridden) so the boot
+ * banner and the DFU UART always agree. Defaults are unchanged: PROTOCOL=UART
+ * -> 9600 -> BRR_9600, PROTOCOL=SPI -> 115200 -> BRR_115200. */
+#if BL_UART_BAUDRATE == 9600
 #define EARLY_DEBUG_BRR     BRR_9600_HSI16
 #else
 #define EARLY_DEBUG_BRR     BRR_115200_HSI16

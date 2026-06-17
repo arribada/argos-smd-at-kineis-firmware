@@ -119,6 +119,14 @@ C_DEFS += -DBL_LED
 $(info Bootloader LED indicator ENABLED (RGB on PA1/PB4/PB5))
 endif
 
+# Optional explicit UART DFU baud override (decouples baud from PROTOCOL).
+# Unset by default -> baud follows PROTOCOL (deployed builds unchanged).
+# UW_DOPPLER board console is 115200: make PROTOCOL=UART BL_UART_BAUD=115200
+ifdef BL_UART_BAUD
+C_DEFS += -DBL_UART_BAUDRATE=$(BL_UART_BAUD)
+$(info Bootloader UART DFU baud forced to $(BL_UART_BAUD))
+endif
+
 # C includes
 C_INCLUDES =  \
 -I$(BL_DIR)/Inc \
