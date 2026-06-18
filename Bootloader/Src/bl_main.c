@@ -126,6 +126,32 @@ void bl_init(void)
 void bl_run(void)
 {
     while (1) {
+        /* Refresh IWDG every iteration.
+         *
+         * The Kineis application activates IWDG with a 16 s timeout
+         * (Kineis/App/Managers/MGR_WDG/Src/mgr_wdg.c: prescaler /256,
+         * reload=2000, LSI=32 kHz → 2000*256/32000 = 16 s). The STM32WL55
+         * IWDG cannot be disabled by software once enabled — it survives
+         * NVIC_SystemReset and keeps counting. AT+BOOT does a system reset
+         * to land here, so the bootloader inherits an active 16 s watchdog
+         * that nothing has been petting.
+         *
+         * Symptom without this refresh: UART DFU stalls deterministically
+         * after ~16 s of activity (≈44 KB written at 115200 baud with
+         * chunkSize=112). The host sends the next WRITE, the BL has just
+         * reset, no reply, host times out at 10 s. From the operator's
+         * perspective the flash "fails at 40 %".
+         *
+         * The main loop polls UART/SPI for a single command per iteration
+         * and returns; the longest single call is ERASE (≈2.8 s for a full
+         * 128-page app region erase), well under the 16 s budget. A single
+         * refresh here is sufficient. Defense-in-depth refreshes inside
+         * the page-erase / chunk-write loops in bl_dfu.c would also be
+         * fine but are not required while page erase stays this short.
+         *
+         * Key value 0xAAAA per RM0461 §28.4.1 (IWDG_KR). */
+        IWDG->KR = 0xAAAAU;
+
 #ifdef BL_LED
         bl_led_service();
 #endif
@@ -302,7 +328,7 @@ static void bl_state_detect_protocol(void)
 static void bl_state_dfu_uart(void)
 {
     /* Use static buffers to reduce stack usage (was causing stack overflow) */
-    /* Buffer must hold: AT+DFU=WRITE,<8 addr>,<128 hex data>\r\n (~160 chars) */
+    /* cmd_buffer sized in bl_config.h to hold a full WRITE line (largest chunk) */
     static char cmd_buffer[BL_CMD_BUFFER_SIZE];
     static uint8_t response[BL_TX_BUFFER_SIZE];
     static uint8_t payload[BL_CHUNK_SIZE];

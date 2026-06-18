@@ -23,10 +23,13 @@ static volatile bool rx_overflow = false;
 static uint8_t tx_buffer[BL_TX_BUFFER_SIZE];
 
 /* Command parsing state */
-/* Buffer must hold: AT+DFU=WRITE,<8 addr>,<128 hex data>\r\n (~160 chars) */
+/* cmd_buffer holds one full AT+DFU line; sized in bl_config.h to fit the
+ * largest WRITE chunk. cmd_overflow flags a line that didn't fit so it is
+ * dropped whole instead of being acted on as a truncated WRITE. */
 static char cmd_buffer[BL_CMD_BUFFER_SIZE];
 static uint16_t cmd_len = 0;
 static volatile bool cmd_ready = false;
+static bool cmd_overflow = false;
 
 /* Single byte for interrupt reception */
 static uint8_t rx_byte;
@@ -217,6 +220,7 @@ bool bl_uart_process(void)
     if (rx_overflow) {
         rx_overflow = false;
         cmd_len = 0;  /* Discard partial command */
+        cmd_overflow = false;
         /* Don't flush rx buffer - let it continue receiving */
     }
 
@@ -225,13 +229,23 @@ bool bl_uart_process(void)
         uint8_t c = rx_buffer[rx_tail];
         rx_tail = (rx_tail + 1) % BL_RX_BUFFER_SIZE;
 
-        /* Add to command buffer if not full */
+        /* Add to command buffer if room; else flag overflow (don't truncate) */
         if (cmd_len < sizeof(cmd_buffer) - 1) {
             cmd_buffer[cmd_len++] = c;
+        } else {
+            cmd_overflow = true;
         }
 
         /* Check for command terminator */
         if (c == '\n' || c == '\r') {
+            /* A line that didn't fit is dropped whole: never act on a partial
+             * command (a truncated WRITE would program a short/garbled chunk). */
+            if (cmd_overflow) {
+                cmd_overflow = false;
+                cmd_len = 0;
+                continue;
+            }
+
             /* Check if we have a valid AT+DFU command */
             cmd_buffer[cmd_len] = '\0';
 

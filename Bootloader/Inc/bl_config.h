@@ -93,8 +93,12 @@
 #define BL_DEBUG
 #endif
 
-/** @brief Command buffer size for UART DFU parsing */
-#define BL_CMD_BUFFER_SIZE      256
+/** @brief Command buffer size for UART DFU parsing.
+ *  Must hold a full WRITE line for the largest chunk the bootloader accepts:
+ *  "AT+DFU=WRITE," + 8 addr + "," + 2*BL_CHUNK_SIZE hex + "\r\n" = ~520 chars
+ *  at BL_CHUNK_SIZE=248. Undersizing here silently truncates the line into a
+ *  short WRITE (data gaps) -> keep >= that bound. */
+#define BL_CMD_BUFFER_SIZE      600
 
 /** @brief Peripheral settle delay (short busy-wait after reset, ~3us at 32MHz) */
 #define BL_SETTLE_DELAY(n) do { for (volatile int _i = 0; _i < (n); _i++); } while(0)
@@ -204,8 +208,11 @@
 #define BL_UART_STOPBITS            UART_STOPBITS_1
 #define BL_UART_PARITY              UART_PARITY_NONE
 
-/* Communication buffers - must be >= BL_SPI_TRANSACTION_SIZE (280) */
-#define BL_RX_BUFFER_SIZE           512
+/* Communication buffers - must be >= BL_SPI_TRANSACTION_SIZE (280) and, for
+ * UART DFU, big enough to hold a full WRITE line plus the start of the next
+ * one arriving while a flash write blocks the consumer (else the ring
+ * overflows mid-transfer and the bootloader desyncs/freezes). */
+#define BL_RX_BUFFER_SIZE           1024
 #define BL_TX_BUFFER_SIZE           512
 #define BL_CHUNK_SIZE               248         /* Data chunk size for writes (31×8=248 for 64-bit flash alignment) */
 
