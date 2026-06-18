@@ -1937,7 +1937,8 @@ void KNS_APP_uw_doppler_loop(void)
 	 * the very next iteration since `blinking` is then false. */
 	{
 		const bool eligible =
-		    (uw_doppler_state == UW_DOPPLER_MONITORING) &&
+		    ((uw_doppler_state == UW_DOPPLER_MONITORING) ||
+		     (uw_doppler_state == UW_DOPPLER_CRED_FAIL)) &&
 		    !MGR_GESTURE_isInteracting();
 
 		if (eligible) {
@@ -2082,25 +2083,37 @@ void KNS_APP_uw_doppler_loop(void)
 		transition_to(UW_DOPPLER_WAIT_MAC_READY);
 		return;
 
-	case UW_DOPPLER_CRED_FAIL:
-		/* Identity lost. Stay AT-responsive (solid red) for a bounded window so
-		 * a bench operator can re-provision — re-check each tick; on success the
-		 * mirror is seeded and we resume with no power cycle. */
-		MGR_LED_setForced(MGR_LED_RED);
-		g_cred_result = MGR_CRED_syncAndRestore();
-		if (g_cred_result != MGR_CRED_FAIL_LOUD) {
-			MGR_LOG_INFO("[UW_DPL] credentials re-provisioned — resuming\r\n");
-			MGR_LED_off();
-			transition_to(UW_DOPPLER_INIT_MAC);
+	case UW_DOPPLER_CRED_FAIL: {
+		/* Re-check creds at ~1 Hz (NOT every tick — avoids flash-read churn and
+		 * log noise). On re-provision (AT or CONFIG) resume a normal boot. */
+		static uint32_t cred_recheck_tick = 0;
+		if ((HAL_GetTick() - cred_recheck_tick) >= 1000u) {
+			cred_recheck_tick = HAL_GetTick();
+			g_cred_result = MGR_CRED_syncAndRestore();
+			if (g_cred_result != MGR_CRED_FAIL_LOUD) {
+				MGR_LOG_INFO("[UW_DPL] credentials re-provisioned — resuming\r\n");
+				MGR_LED_off();
+				transition_to(UW_DOPPLER_INIT_MAC);
+				return;
+			}
+		}
+#if defined(UW_DOPPLER_HAS_GESTURE)
+		/* CONFIG mode (or a magnet gesture in progress) = the operator is
+		 * provisioning. Run a LIVE CONFIG session: AT stays up, the BLUE CONFIG
+		 * indicator shows (the LED block above is eligible in CRED_FAIL), and we
+		 * NEVER force red or sleep. A blank-cred unit must stay fully
+		 * configurable — only block TX, never CONFIG. */
+		if (MGR_GESTURE_getMode() == MGR_GESTURE_MODE_CONFIG ||
+		    MGR_GESTURE_isInteracting()) {
 			return;
 		}
-		/* No operator: once the awake window has elapsed AND the AT console has
-		 * been idle, drop to STOP2 with a periodic RTC auto-wake instead of
-		 * draining a sealed pack awake forever. LPM_shutdownWithAutoWake tears
-		 * down SubGHz (~500 µA gone) and keeps PB7 latched so the RTC re-wakes
-		 * (cold boot -> re-checks creds). Duty-average ~0.2 mA (≈60 s awake per
-		 * hour) vs the ~10 mA of staying awake — ~50x better; the unit survives
-		 * the deploy in a lost-cred state instead of dying in ~79 days. */
+#endif
+		/* OPERATIONAL + no recoverable identity (sealed, no operator): fail loud
+		 * (solid red, TX refused) then, once the awake window elapsed and AT has
+		 * been idle, drop to STOP2 with a periodic RTC re-check instead of
+		 * draining the pack awake. LPM_shutdownWithAutoWake tears down SubGHz
+		 * and keeps PB7 latched. Duty-average ~0.2 mA vs ~10 mA always-awake. */
+		MGR_LED_setForced(MGR_LED_RED);
 		if (state_elapsed_ms() > CRED_FAIL_AWAKE_MS &&
 		    (HAL_GetTick() - MGR_AT_CMD_getLastActivityTick()) > CRED_FAIL_AT_IDLE_MS) {
 			MGR_LOG_WARN("[UW_DPL] CRED_FAIL: low-power, RTC re-check in %us\r\n",
@@ -2110,6 +2123,7 @@ void KNS_APP_uw_doppler_loop(void)
 			/* never returns — cold-boots on RTC wake */
 		}
 		return;
+	}
 
 	case UW_DOPPLER_WAIT_MAC_READY:
 		process_mac_events();

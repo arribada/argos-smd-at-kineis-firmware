@@ -180,6 +180,8 @@ MGR_CRED_Result_t MGR_CRED_syncAndRestore(void)
 		return MGR_CRED_FAIL_LOUD;
 	}
 
-	MGR_LOG_ERR("[CRED] credentials blank and no valid mirror — re-provision\r\n");
+	/* No log here: syncAndRestore is polled every second from the CRED_FAIL
+	 * wait state, so logging FAIL_LOUD here would spam. The caller logs the
+	 * blank-creds condition ONCE on the INIT_MAC -> CRED_FAIL transition. */
 	return MGR_CRED_FAIL_LOUD;
 }
