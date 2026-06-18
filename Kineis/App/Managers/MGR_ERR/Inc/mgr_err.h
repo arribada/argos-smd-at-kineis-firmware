@@ -56,6 +56,8 @@ typedef enum {
 	ERR_PA_STUCK,        /**< External PA stayed ON beyond watchdog threshold */
 	ERR_BOOT_LOOP,       /**< Application never reached MONITORING after factory reset */
 	ERR_STATE_HANG,      /**< State machine stuck in a non-steady state past MAX_STATE_HANG_MS */
+	ERR_CREDS_BLANK,     /**< Page-0 credentials blank and no valid mirror — re-provision over AT */
+	ERR_RTC_DEAD,        /**< RTC clock not ticking before STOP2 (LSE crystal death) — reset to LSI fallback */
 } MGR_ERR_Code_t;
 
 /**

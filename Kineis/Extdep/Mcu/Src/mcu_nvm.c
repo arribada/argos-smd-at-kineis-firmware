@@ -178,17 +178,21 @@ enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
 	mc_seed_cache();
 	message_counter = mcTmp;
 
-	/* Distance from the persisted low-16 value, in uint16 arithmetic so
-	 * the 0xFFFF -> 0x0000 wrap reads as a normal +1 forward step. */
-	const uint16_t flash_lo = (uint16_t)(mc_flash_shadow & 0xFFFF);
-	const uint16_t fwd = (uint16_t)(mcTmp - flash_lo);
+	/* mc_flash_shadow is a monotonic 64-bit TX count; mcTmp is 9-bit clamped.
+	 * Compare on the 9-bit ring so the 511->0 rolling wrap reads as a normal
+	 * +1 forward step, NOT an operator jump (the old 16-bit compare misfired
+	 * here and forced a destructive page-0 rewrite every 512 TX). Ring
+	 * distance both directions, mod-512. */
+	const uint16_t flash_lo = (uint16_t)(mc_flash_shadow & 0x1FFu);
+	const uint16_t fwd = (uint16_t)((mcTmp - flash_lo) & 0x1FFu);
 
 	if (fwd == 0u)
 		return KNS_STATUS_OK;            /* already persisted */
 
 	if (fwd <= MC_SMALL_STEP) {
-		/* Normal TX flow: advance the wear-leveled counter slot by
-		 * slot (one 8-byte program each, no erase). */
+		/* Normal TX flow (incl. the 511->0 wrap): advance the wear-leveled
+		 * counter slot by slot (one 8-byte program each, NO page-0 erase).
+		 * Shadow stays monotonic so a reboot can never replay a used MC. */
 		for (uint16_t i = 0; i < fwd; i++) {
 			enum KNS_status_t st = MCU_FLASH_increment_msg_counter();
 			if (st != KNS_STATUS_OK)
@@ -198,16 +202,18 @@ enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
 		return KNS_STATUS_OK;
 	}
 
-	if ((uint16_t)(flash_lo - mcTmp) <= MC_SMALL_STEP) {
+	if ((uint16_t)((flash_lo - mcTmp) & 0x1FFu) <= MC_SMALL_STEP) {
 		/* Small rollback (per-sequence MC reuse): RAM only — the flash
 		 * high-water mark stays ahead so a reboot can never replay an
 		 * already-used MC. */
 		return KNS_STATUS_OK;
 	}
 
-	/* Operator-style jump: genuine destructive rewrite. */
-	mc_flash_shadow = (uint64_t)mcTmp;
-	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
+	/* Genuine far jump (operator AT+MC to a distant in-ring value): rewrite.
+	 * Realign shadow UP to the next 512-boundary + mcTmp so it stays strictly
+	 * monotonic (never rewinds the high-water) and its 9-bit residue == mcTmp. */
+	mc_flash_shadow = (mc_flash_shadow & ~0x1FFull) + 0x200u + (uint64_t)mcTmp;
+	return MCU_FLASH_set_msg_counter(mc_flash_shadow);
 }
 
 

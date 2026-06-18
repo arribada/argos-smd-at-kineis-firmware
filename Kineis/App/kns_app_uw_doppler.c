@@ -127,6 +127,7 @@
 #include "mgr_rate.h"
 #include "mgr_txstats.h"
 #include "mgr_pmlog.h"
+#include "mgr_cred.h"
 #include "mgr_lpm_uw.h"
 #if defined(BSP_HAS_REED_SWITCH) && defined(BSP_HAS_LED_RGB)
 #include "mgr_gesture.h"
@@ -140,6 +141,10 @@ typedef enum {
 	UW_DOPPLER_BOOT_DEPLOY_LED,
 	UW_DOPPLER_INIT_MAC,
 	UW_DOPPLER_WAIT_MAC_READY,
+	/* Terminal fail-loud state (creds blank + no mirror). Placed BEFORE
+	 * MONITORING so the `< / >= MONITORING` guards treat it as non-operational
+	 * (no SWS task, no LPM sleep). Excluded from the state-hang deadman. */
+	UW_DOPPLER_CRED_FAIL,
 	UW_DOPPLER_MONITORING,
 	UW_DOPPLER_SURFACE_TX,
 	UW_DOPPLER_WAIT_TX_DONE,
@@ -153,6 +158,11 @@ typedef enum {
  * self-validation check is safe. */
 static __attribute__((__section__(".retentionRamNoload")))
 UwDopplerState_t uw_doppler_state;
+
+/* Result of the boot-time credential reconciliation (MGR_CRED, Layer 2B).
+ * Set once in init before MAC init; FAIL_LOUD routes INIT_MAC to the terminal
+ * CRED_FAIL state instead of starting the MAC (never TX under test identity). */
+static MGR_CRED_Result_t g_cred_result = MGR_CRED_OK_NOOP;
 
 /* SWS baselines retained across ALL software-class resets (NOLOAD section
  * in SRAM2 — never wiped by Sram2_Init). Magic-checked at first read. */
@@ -723,6 +733,13 @@ static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
 #define TIMEOUT_TX_DONE_MS       10000  /**< Wait for TX done — MUST be < IWDG (16s) so app times out gracefully instead of getting reset by watchdog */
 #define TIMEOUT_SHUTDOWN_BLINK_MS 10000 /**< Shutdown blink timeout */
 #define MAX_MAC_INIT_RETRIES     3      /**< Max MAC init retries before reset */
+/* CRED_FAIL (Layer 2B) low-power discipline: stay AT-responsive for a bounded
+ * window so a bench operator can re-provision, then drop to STOP2 with a
+ * periodic RTC re-check instead of draining a sealed pack awake (~10 mA -> a
+ * lost-cred unit would otherwise flatten the pack in ~79 days). */
+#define CRED_FAIL_AWAKE_MS       60000u  /**< min awake/AT window per CRED_FAIL entry */
+#define CRED_FAIL_AT_IDLE_MS     30000u  /**< extend the window while AT is active */
+#define CRED_FAIL_RETRY_S        3600u   /**< STOP2 re-check cadence while creds lost */
 #define MIN_INTER_TX_INTERVAL_MS 5000   /**< Hard floor between two consecutive TX requests AND between MAC-ready and first TX — protects against MAC stack re-entry and PA back-to-back inrush */
 #define PA_WDG_THRESHOLD_MS      30000  /**< Max time PA can stay ON without a TX_DONE before we force-off + reset. A normal Argos TX is < 1 s; 30 s leaves ample room for the longest BLIND retx pattern while still cutting silent 60 mA drain quickly enough to spare battery. */
 #define MAX_STATE_HANG_MS       300000  /**< 5 min cap on any non-steady state. MONITORING is excluded (steady state). Anything longer means the SM is wedged — log + reset rather than silently hang. */
@@ -987,6 +1004,11 @@ static void transition_to(UwDopplerState_t new_state)
 	if (new_state == UW_DOPPLER_MONITORING) {
 		boot_loop_mark_success();
 		MGR_LPM_UW_markMonitoringEntered();
+	} else if (new_state == UW_DOPPLER_CRED_FAIL) {
+		/* Deliberate terminal low-power wait (creds lost), NOT a crash —
+		 * disarm the boot-loop guard so the periodic RTC re-check cold-boots
+		 * don't accumulate failures and escalate to 24 h PERMANENT_OFF. */
+		boot_loop_mark_success();
 	}
 }
 
@@ -1644,6 +1666,11 @@ void KNS_APP_uw_doppler_init(void)
 	 * doesn't matter relative to NVM_load — neither uses NVM config. */
 	MGR_TXSTATS_init();
 	MGR_PMLOG_init();   /* iterates the flash log ring — ~100 ms worst case */
+	/* Self-heal page-0 credentials from the mirror (and seed the mirror on
+	 * first boot) BEFORE any credential read or MAC init. The result drives
+	 * the Layer-2B fail-loud terminal state. Worst case one page erase (~25 ms,
+	 * << the 16 s IWDG budget); WDG refreshed right after. */
+	g_cred_result = MGR_CRED_syncAndRestore();
 	MGR_WDG_refresh();
 
 #if defined(BSP_HAS_VBAT_ADC)
@@ -1743,6 +1770,7 @@ void KNS_APP_uw_doppler_loop(void)
 	 * timeouts (TIMEOUT_BOOT_MS, TIMEOUT_MAC_READY_MS, TIMEOUT_TX_DONE_MS,
 	 * etc.) catch the common cases sooner; this is the long-tail safety net. */
 	if (uw_doppler_state != UW_DOPPLER_MONITORING &&
+	    uw_doppler_state != UW_DOPPLER_CRED_FAIL &&
 	    state_elapsed_ms() > MAX_STATE_HANG_MS) {
 		MGR_LOG_ERR("[UW_DPL] State hang: state=%u elapsed=%lums\r\n",
 			(unsigned)uw_doppler_state, (unsigned long)state_elapsed_ms());
@@ -2036,8 +2064,51 @@ void KNS_APP_uw_doppler_loop(void)
 	}
 
 	case UW_DOPPLER_INIT_MAC:
+		if (g_cred_result == MGR_CRED_FAIL_LOUD) {
+			/* Identity blank and unrecoverable: NEVER start the MAC (it would
+			 * read the silent test-cred fallback and TX under a wrong identity).
+			 * Land in the terminal CRED_FAIL state — excluded from BOTH reset
+			 * deadmen (MAC-timeout here, state-hang in the loop) — and signal
+			 * loudly so an operator re-provisions instead of a sealed unit
+			 * polluting the constellation under a test ID. */
+			MGR_LOG_ERR("[UW_DPL] BLANK creds + no mirror — TX refused, re-provision over AT\r\n");
+			MGR_EVTLOG_log(EVT_ERROR, (uint16_t)ERR_CREDS_BLANK);
+			MGR_ERR_log(ERR_CREDS_BLANK);
+			MGR_LED_setForced(MGR_LED_RED);
+			transition_to(UW_DOPPLER_CRED_FAIL);
+			return;
+		}
 		start_mac_profile();
 		transition_to(UW_DOPPLER_WAIT_MAC_READY);
+		return;
+
+	case UW_DOPPLER_CRED_FAIL:
+		/* Identity lost. Stay AT-responsive (solid red) for a bounded window so
+		 * a bench operator can re-provision — re-check each tick; on success the
+		 * mirror is seeded and we resume with no power cycle. */
+		MGR_LED_setForced(MGR_LED_RED);
+		g_cred_result = MGR_CRED_syncAndRestore();
+		if (g_cred_result != MGR_CRED_FAIL_LOUD) {
+			MGR_LOG_INFO("[UW_DPL] credentials re-provisioned — resuming\r\n");
+			MGR_LED_off();
+			transition_to(UW_DOPPLER_INIT_MAC);
+			return;
+		}
+		/* No operator: once the awake window has elapsed AND the AT console has
+		 * been idle, drop to STOP2 with a periodic RTC auto-wake instead of
+		 * draining a sealed pack awake forever. LPM_shutdownWithAutoWake tears
+		 * down SubGHz (~500 µA gone) and keeps PB7 latched so the RTC re-wakes
+		 * (cold boot -> re-checks creds). Duty-average ~0.2 mA (≈60 s awake per
+		 * hour) vs the ~10 mA of staying awake — ~50x better; the unit survives
+		 * the deploy in a lost-cred state instead of dying in ~79 days. */
+		if (state_elapsed_ms() > CRED_FAIL_AWAKE_MS &&
+		    (HAL_GetTick() - MGR_AT_CMD_getLastActivityTick()) > CRED_FAIL_AT_IDLE_MS) {
+			MGR_LOG_WARN("[UW_DPL] CRED_FAIL: low-power, RTC re-check in %us\r\n",
+				(unsigned)CRED_FAIL_RETRY_S);
+			MGR_LED_off();
+			LPM_shutdownWithAutoWake(CRED_FAIL_RETRY_S);
+			/* never returns — cold-boots on RTC wake */
+		}
 		return;
 
 	case UW_DOPPLER_WAIT_MAC_READY:

@@ -37,6 +37,7 @@
 #endif
 #include "mgr_reed.h"      /* MGR_REED_releasePower + REED_MCU_Pin (stubs if no reed) */
 #include "mgr_at_cmd.h"    /* MGR_AT_CMD_getLastActivityTick — console grace window */
+#include "mgr_err.h"       /* MGR_ERR_logAndReset(ERR_RTC_DEAD) — RTC-liveness gate */
 
 /* This LPM path owns the single RTC wake-up timer and clobbers it on every
  * sleep. That is safe ONLY because the Kineis MAC's RTC-WUT consumers
@@ -875,6 +876,26 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	 *  - >= 29 s: CK_SPRE 1 Hz, duration FLOORED to whole seconds. */
 	if (ms > 0u) {
 		HAL_StatusTypeDef wut_st;
+		/* RTC-liveness gate (runtime LSE-death recovery). A STOP2 whose ONLY
+		 * wake is the RTC must NOT be entered if the RTC clock has stopped
+		 * ticking — the IWDG is frozen in STOP2, so a dead-crystal sleep would
+		 * strand a sealed unit forever (no wake, no rescue). The boot-time
+		 * LSE->LSI fallback (brick #2) only catches a crystal that fails to
+		 * START, not one that dies mid-mission; this closes that gap.
+		 * HAL_RTC_WaitForSynchro clears RSF and waits for the shadow to re-sync
+		 * — RSF re-sets within ~2 RTCCLK cycles (~60 us) when alive, and times
+		 * out only when RTCCLK is dead, right before we reset. The reset re-runs
+		 * SystemClock_Config which fails LSE and comes up on LSI (~±5% timing).
+		 * MGR_ERR_logAndReset leaves a TAMP forensic marker (readable post-mortem). */
+		if (HAL_RTC_WaitForSynchro(&hrtc) != HAL_OK) {
+			/* Latch LSI for the recovery boot so a MARGINAL crystal (OK at boot,
+			 * dead in cold STOP2) can't be re-selected into a reset loop. */
+			extern void SystemClock_armLsiFallback(void);
+			SystemClock_armLsiFallback();
+			MGR_LOG_ERR("[LPM_UW] RTC clock stalled (LSE dead?) — reset to LSI fallback\r\n");
+			MGR_ERR_logAndReset(ERR_RTC_DEAD);
+			/* never returns */
+		}
 		HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 		__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
 		if (ms < 29000u) {

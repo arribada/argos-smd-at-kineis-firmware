@@ -56,6 +56,8 @@ __attribute__((unused)) static const char *err_code_str(MGR_ERR_Code_t code)
 	case ERR_PA_STUCK:       return "PA_STUCK";
 	case ERR_BOOT_LOOP:      return "BOOT_LOOP";
 	case ERR_STATE_HANG:     return "STATE_HANG";
+	case ERR_CREDS_BLANK:    return "CREDS_BLANK";
+	case ERR_RTC_DEAD:       return "RTC_DEAD";
 	default:                 return "UNKNOWN";
 	}
 }

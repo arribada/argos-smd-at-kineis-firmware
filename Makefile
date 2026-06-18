@@ -344,6 +344,7 @@ ifeq ($(APP),UW_DOPPLER)
 	$(KINEIS_DIR)/App/Managers/MGR_RATE/Src/mgr_rate.c \
 	$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Src/mgr_txstats.c \
 	$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Src/mgr_pmlog.c \
+	$(KINEIS_DIR)/App/Managers/MGR_CRED/Src/mgr_cred.c \
 	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
 	$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Src/mgr_gesture.c \
 	$(KINEIS_DIR)/App/Managers/MGR_LPM_UW/Src/mgr_lpm_uw.c \
@@ -539,6 +540,7 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_RATE/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_CRED/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_LPM_UW/Inc
 endif

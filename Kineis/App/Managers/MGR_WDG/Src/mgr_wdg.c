@@ -42,6 +42,22 @@
 #define IWDG_PRESCALER     6U
 #define IWDG_RELOAD        2000U
 
+/* VDD headroom gate for the (commissioning-time) IWDG_STOP option-byte write —
+ * never risk an OB program on a sagging supply (OB-class brick). PVD left
+ * disabled afterwards. Mirrors the gate in main.c:ensure_sram_preserved_on_reset. */
+static bool wdg_vdd_safe_for_ob(void)
+{
+	PWR_PVDTypeDef pvd = {0};
+	pvd.PVDLevel = PWR_PVDLEVEL_3;        /* ~2.5 V — well above the 1.71 V flash floor */
+	pvd.Mode     = PWR_PVD_MODE_NORMAL;
+	HAL_PWR_ConfigPVD(&pvd);
+	HAL_PWR_EnablePVD();
+	for (volatile uint32_t i = 0; i < 4000u; i++) { __NOP(); }
+	bool vdd_low = (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != 0U);
+	HAL_PWR_DisablePVD();
+	return !vdd_low;
+}
+
 bool MGR_WDG_ensureIwdgStopOptionByte(void)
 {
 	/* WL55 OPTR.IWDG_STOP semantics (RM0453 §3.4.1 + stm32wlxx_hal_flash.h):
@@ -53,6 +69,13 @@ bool MGR_WDG_ensureIwdgStopOptionByte(void)
 	 * programming on a fresh chip — the IWDG kept counting in STOP2 and
 	 * fired after ~16 s, cold-booting the device during every long sleep. */
 	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U) {
+		return false;
+	}
+
+	/* Defer the OB program if VDD is marginal — the next adequate-VDD boot
+	 * retries (idempotent while the bit is still set). */
+	if (!wdg_vdd_safe_for_ob()) {
+		MGR_LOG_WARN("[WDG] VDD low — deferring IWDG_STOP OB program\r\n");
 		return false;
 	}
 

@@ -25,6 +25,7 @@
 #include "lpm_cli_kstk.h"
 #include "mgr_log.h"
 #include "rtc.h"
+#include "mgr_err.h"   /* MGR_ERR_logAndReset(ERR_RTC_DEAD) — RTC-liveness gate */
 
 #if defined(USE_SPI_DRIVER)
 #include "spi.h"
@@ -793,6 +794,20 @@ void LPM_shutdownNow(void)
 void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 {
 #ifdef LPM_SHUTDOWN_ENABLED
+	/* RTC-liveness gate (runtime LSE-death recovery): an auto-wake SHUTDOWN
+	 * relies on the RTC to cold-boot the unit at the deadline. If the LSE
+	 * crystal died mid-mission the RTC isn't ticking and the wake would NEVER
+	 * fire -> permanent brick of a sealed unit. HAL_RTC_WaitForSynchro times
+	 * out only when RTCCLK is dead; reset so the boot LSE->LSI fallback
+	 * (brick #2) re-inits the RTC on LSI. The wakeup_seconds==0 magnet-only
+	 * true-off path uses the HW reed latch (no RTC) and is exempt. */
+	if (wakeup_seconds > 0 && HAL_RTC_WaitForSynchro(&hrtc) != HAL_OK) {
+		extern void SystemClock_armLsiFallback(void);
+		SystemClock_armLsiFallback();   /* force LSI on the recovery boot */
+		MGR_ERR_logAndReset(ERR_RTC_DEAD);
+		/* never returns */
+	}
+
 	/* Run the same teardown that the MGR_LPM aggregator would: ADC deinit,
 	 * GPIO to analog, pull-up/down config, wake-up RTC + pins armed. */
 	LPM_shutdown_enter();

@@ -14,7 +14,7 @@
  *   - L1: Drop > 4% from previous raw -> immediate surface
  *   - L2: 2 consecutive raw drops, cumulative > 3%, each step >=2% -> surface
  *   - L3: MA3 decreasing 3+ times, total drop > 4% -> surface
- *   - L4: filtered < water_baseline * 92% -> surface
+ *   - L4: filtered < water_baseline * 85% (L4_DROP_PERCENT=15) -> surface
  *   - L5: Drop from dive peak > 10%, >10s gate -> safety fallback
  *
  * **Hardening fixes ported from linkit v4 commits Apr-2026:**
@@ -216,10 +216,11 @@ static uint32_t surface_lockout_start_tick = 0;
 static uint32_t surface_lockout_ms = 0;       /**< 0 = no lockout armed */
 static uint8_t  consecutive_dive_timeouts = 0;
 
-/* Degraded beacon mode. Armed by the dive-timeout escalation (3x max_dive_time_s
- * stuck underwater): hold SURFACE for a full max_dive_time_s window so the tag
- * runs a real beacon (normal seq_restart cadence) instead of a 30s blip, then
- * drop back underwater for another 3x escalation. Exits early on a frank air
+/* Degraded beacon mode. Armed by the dive-timeout escalation: 3x max_dive_time_s
+ * stuck underwater for a HEALTHY sensor, or 1x for a CONFIRMED stuck/no-variance
+ * fault (see section 7). Hold SURFACE for a full max_dive_time_s window so the
+ * tag runs a real beacon (normal seq_restart cadence) instead of a 30s blip,
+ * then drop back underwater to re-arm escalation. Exits early on a frank air
  * reading (raw < threshold_low = the real sensor recovered). */
 static bool     degraded_mode = false;
 static uint32_t degraded_start_tick = 0;
@@ -1027,7 +1028,17 @@ static bool detector_state(void)
 			mark_calib_dirty();
 		}
 
-		if (consecutive_dive_timeouts >= MAX_CONSECUTIVE_DIVE_TIMEOUTS) {
+		/* A CONFIRMED non-responsive sensor (stuck/identical or zero-variance)
+		 * physically cannot detect a real surface — don't sit silent for the
+		 * full 3x backstop. Escalate to the degraded beacon after a SINGLE
+		 * dive-timeout window (~1x max_dive_time ≈ 2h vs ≈6h). A healthy sensor
+		 * keeps the conservative 3x escalation so a long real dive never
+		 * false-surfaces. OOR-high is deliberately excluded (could be valid
+		 * high-conductivity water). */
+		const bool sensor_faulted =
+			(sws_current_fault & (MGR_SWS_FAULT_STUCK | MGR_SWS_FAULT_NO_VARIANCE)) != 0u;
+		if (consecutive_dive_timeouts >= MAX_CONSECUTIVE_DIVE_TIMEOUTS ||
+		    (sensor_faulted && consecutive_dive_timeouts >= 1u)) {
 			new_is_underwater = false;
 			/* Enter degraded beacon mode: section 9 holds surface for a full
 			 * max_dive_time_s window. Supersedes the old 30s lockout. */

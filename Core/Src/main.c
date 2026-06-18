@@ -436,12 +436,37 @@ static void IDLE_task(void)
  *        - 0: SRAM1/SRAM2 erased on system reset (default!)
  *        - 1: SRAM preserved on system reset
  */
+/* True if VDD has enough headroom to safely program the option bytes. An OB
+ * flash program on a sagging supply risks corrupting the option-byte area
+ * (an OB-class brick with no software recovery). These OB writes only ever
+ * fire on a fresh-chip commissioning boot, but gating them behind the PVD
+ * protects the corner case of commissioning (or a stray re-trigger) on a weak
+ * cell. The PVD is left disabled afterwards (no lasting effect). */
+static bool vdd_safe_for_ob_program(void)
+{
+    PWR_PVDTypeDef pvd = {0};
+    pvd.PVDLevel = PWR_PVDLEVEL_3;        /* ~2.5 V — well above the 1.71 V flash floor */
+    pvd.Mode     = PWR_PVD_MODE_NORMAL;   /* comparator + flag only, no EXTI */
+    HAL_PWR_ConfigPVD(&pvd);
+    HAL_PWR_EnablePVD();
+    for (volatile uint32_t i = 0; i < 4000u; i++) { __NOP(); }   /* comparator settle */
+    bool vdd_low = (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != 0U);     /* PVDO=1 => VDD below level */
+    HAL_PWR_DisablePVD();
+    return !vdd_low;
+}
+
 static void ensure_sram_preserved_on_reset(void)
 {
     uint32_t optr = FLASH->OPTR;
 
     /* Check if SRAM_RST bit is set (bit 25 = 0x02000000) */
     if ((optr & FLASH_OPTR_SRAM_RST) == 0) {
+        /* Defer the OB program if VDD is marginal — never risk an OB write on
+         * a sagging supply. The next boot with adequate VDD retries (this is
+         * idempotent: it only runs while SRAM_RST is unset). */
+        if (!vdd_safe_for_ob_program()) {
+            return;
+        }
         /* SRAM will be erased on reset - need to fix this! */
         /* Unlock FLASH */
         if ((FLASH->CR & FLASH_CR_LOCK) != 0U) {
@@ -1082,6 +1107,21 @@ int main(void)
  * survival mode: a dead crystal must NOT brick a sealed unit (see #2 audit). */
 volatile uint8_t g_rtc_use_lsi = 0;
 
+/* Runtime LSE-death latch. Survives a system reset (SRAM2 NOLOAD, magic-
+ * validated against random SRAM on a true cold boot). The RTC-liveness gate in
+ * the STOP2/SHUTDOWN path sets this before an ERR_RTC_DEAD reset; the next boot
+ * then forces LSI directly instead of retrying a MARGINAL LSE — one that starts
+ * fine at boot temperature but dies in cold STOP2 — which would otherwise
+ * reset-loop forever. Cleared only by a true power-cycle (VBAT loss wipes
+ * SRAM2). A false latch costs only the ±5% LSI timing, never function. */
+#define RTC_FORCE_LSI_MAGIC  0x4C534931u   /* "LSI1" */
+__attribute__((__section__(".retentionRamNoload"))) static volatile uint32_t g_rtc_force_lsi;
+
+void SystemClock_armLsiFallback(void)
+{
+	g_rtc_force_lsi = RTC_FORCE_LSI_MAGIC;
+}
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -1144,10 +1184,14 @@ void SystemClock_Config(void)
    * forever at boot. This block is the ONLY clock path allowed to continue on
    * failure — the core HSI/PLL above is not. */
   {
+    /* Skip the LSE entirely if the runtime gate latched a prior RTC death:
+     * a marginal crystal that re-starts at boot would otherwise be chosen
+     * again and die at the next cold STOP2 -> reset loop. */
+    bool force_lsi = (g_rtc_force_lsi == RTC_FORCE_LSI_MAGIC);
     RCC_OscInitTypeDef lse_cfg = {0};
     lse_cfg.OscillatorType = RCC_OSCILLATORTYPE_LSE;
     lse_cfg.LSEState = RCC_LSE_ON;
-    if (HAL_RCC_OscConfig(&lse_cfg) != HAL_OK)
+    if (force_lsi || HAL_RCC_OscConfig(&lse_cfg) != HAL_OK)
     {
       RCC_OscInitTypeDef lsi_cfg = {0};
       lsi_cfg.OscillatorType = RCC_OSCILLATORTYPE_LSI;

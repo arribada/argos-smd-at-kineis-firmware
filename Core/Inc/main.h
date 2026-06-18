@@ -54,6 +54,8 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 void SystemClock_Config(void);
+/* Latch LSI as the RTC source for the next boot (runtime LSE-death recovery). */
+void SystemClock_armLsiFallback(void);
 
 /**
  * @brief Request DFU mode and reset to bootloader
