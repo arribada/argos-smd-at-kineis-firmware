@@ -118,6 +118,20 @@ bool MGR_WDG_ensureIwdgStopOptionByte(void)
 
 void MGR_WDG_init(void)
 {
+	/* Do NOT arm the IWDG until OPTR.IWDG_STOP is FREEZE (bit 17 == 0). On a
+	 * fresh chip the bit is 1 (RUN), and MGR_WDG_ensureIwdgStopOptionByte() (run
+	 * just before us) may have DEFERRED the OB program on a marginal supply
+	 * (the VDD gate). Arming an unfrozen IWDG would let it RUN in STOP2 and
+	 * reset the unit on every sleep > 16 s — a commissioning reboot loop that
+	 * drains the very weak pack the VDD gate exists to protect. Skip arming for
+	 * this one degraded boot; the OB program retries on the next adequate-VDD
+	 * boot, after which FREEZE is committed and the IWDG arms normally. The
+	 * IWDG cannot be stopped once started, so this gate must precede the enable. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) != 0U) {
+		MGR_LOG_WARN("[WDG] IWDG_STOP not frozen yet — IWDG NOT armed this boot\r\n");
+		return;
+	}
+
 	/* Start the IWDG first — activates LSI clock automatically.
 	 * Must be done BEFORE unlock per RM0461 and HAL reference.
 	 * Cannot be stopped after this!

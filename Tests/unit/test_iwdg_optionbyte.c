@@ -152,6 +152,32 @@ void test_optr_other_bits_dont_trigger(void)
     TEST_PASS();
 }
 
+/* Mirror of the MGR_WDG_init() arm gate (B4-regression fix): arm the IWDG ONLY
+ * when IWDG_STOP is FREEZE (bit==0). If the OB program was deferred on a
+ * marginal supply the bit stays 1 (RUN); arming then would reset the unit on
+ * every STOP2 > 16 s — a commissioning reboot loop on the very weak pack the
+ * VDD gate protects. */
+static int wdg_init_arms(uint32_t optr)
+{
+    return (optr & FLASH_OPTR_IWDG_STOP) ? 0 : 1;
+}
+
+void test_wdg_init_skips_arm_when_not_frozen(void)
+{
+    TEST_START("MGR_WDG_init: IWDG_STOP=RUN -> IWDG NOT armed (no reboot loop)");
+    ASSERT_EQ(0, wdg_init_arms(FLASH_OPTR_IWDG_STOP));            /* RUN */
+    ASSERT_EQ(0, wdg_init_arms(FLASH_OPTR_IWDG_STOP | 0xABCDu));  /* other bits irrelevant */
+    TEST_PASS();
+}
+
+void test_wdg_init_arms_when_frozen(void)
+{
+    TEST_START("MGR_WDG_init: IWDG_STOP=FREEZE -> IWDG armed");
+    ASSERT_EQ(1, wdg_init_arms(0));                                  /* FREEZE */
+    ASSERT_EQ(1, wdg_init_arms(0xFFFFFFFFu & ~FLASH_OPTR_IWDG_STOP)); /* only IWDG_STOP matters */
+    TEST_PASS();
+}
+
 int main(void)
 {
     TEST_SUITE_START("IWDG_STOP option-byte ensure logic");
@@ -162,6 +188,8 @@ int main(void)
     test_program_failure_no_launch();
     test_idempotent_after_set();
     test_optr_other_bits_dont_trigger();
+    test_wdg_init_skips_arm_when_not_frozen();
+    test_wdg_init_arms_when_frozen();
     TEST_SUITE_END();
     return tests_failed ? 1 : 0;
 }

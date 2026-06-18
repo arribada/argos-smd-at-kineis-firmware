@@ -1942,7 +1942,10 @@ void KNS_APP_uw_doppler_loop(void)
 		    !MGR_GESTURE_isInteracting();
 
 		if (eligible) {
-			if (lb_active) {
+			/* Low-battery YELLOW only in MONITORING: in CRED_FAIL the
+			 * fail-loud RED (or the CONFIG BLUE below) owns the LED, else
+			 * setForced(RED) and this YELLOW alternate every loop. */
+			if (lb_active && uw_doppler_state == UW_DOPPLER_MONITORING) {
 				MGR_LED_blink(MGR_LED_YELLOW, 0u,
 				              250u, 1750u);
 			} else if (MGR_GESTURE_getMode() ==

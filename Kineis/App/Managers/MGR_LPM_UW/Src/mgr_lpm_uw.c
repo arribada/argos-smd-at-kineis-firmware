@@ -38,6 +38,7 @@
 #include "mgr_reed.h"      /* MGR_REED_releasePower + REED_MCU_Pin (stubs if no reed) */
 #include "mgr_at_cmd.h"    /* MGR_AT_CMD_getLastActivityTick — console grace window */
 #include "mgr_err.h"       /* MGR_ERR_logAndReset(ERR_RTC_DEAD) — RTC-liveness gate */
+#include "mgr_pmlog.h"     /* durable (flash) RTC-dead breadcrumb — TAMP is wiped by the LSE->LSI backup reset */
 
 /* This LPM path owns the single RTC wake-up timer and clobbers it on every
  * sleep. That is safe ONLY because the Kineis MAC's RTC-WUT consumers
@@ -893,6 +894,10 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 			extern void SystemClock_armLsiFallback(void);
 			SystemClock_armLsiFallback();
 			MGR_LOG_ERR("[LPM_UW] RTC clock stalled (LSE dead?) — reset to LSI fallback\r\n");
+			/* Durable forensic: the recovery boot's LSE->LSI RTCSEL switch forces
+			 * a backup-domain reset that WIPES the TAMP marker MGR_ERR_logAndReset
+			 * writes, so also stamp it in flash (survives) before resetting. */
+			MGR_PMLOG_log(EVT_SEV_ERROR, EVT_ERROR, 0xFFu, (uint16_t)ERR_RTC_DEAD);
 			MGR_ERR_logAndReset(ERR_RTC_DEAD);
 			/* never returns */
 		}
