@@ -101,7 +101,7 @@ C_DEFS =  \
 # Both UART and SPI are always supported, but the default baudrate changes
 ifeq ($(PROTOCOL), UART)
 C_DEFS += -DBL_PROTOCOL_UART
-$(info Building bootloader for UART mode (9600 baud for UART, SPI still enabled))
+$(info Building bootloader for UART mode (DFU baud=$(BL_UART_BAUD), SPI still enabled))
 else
 C_DEFS += -DBL_PROTOCOL_SPI
 $(info Building bootloader for SPI mode (115200 baud for UART debug))

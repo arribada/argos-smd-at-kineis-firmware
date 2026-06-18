@@ -765,6 +765,14 @@ BOOTLOADER_BIN = $(BOOTLOADER_BUILD)/bootloader.bin
 # STDALONE activity LED. (BL_UART_BAUD / BL_LED are Bootloader/Makefile flags
 # and were previously NOT forwarded by this sub-make — passing them to the top
 # Makefile did nothing.)
+# SMD_STDALONE board defaults: it carries the RGB activity LED and never drives
+# the SPI bus (UART-DFU only), so default the bootloader to BL_LED on + 115200
+# baud. ?= keeps both overridable on the command line (BL_LED=0 / BL_UART_BAUD=9600).
+ifeq ($(BOARD),SMD_STDALONE)
+BL_LED ?= 1
+BL_UART_BAUD ?= 115200
+endif
+
 ifeq ($(APP),UW_DOPPLER)
 APP_CONSOLE_BAUD := 115200
 else ifeq ($(COMM),SPI)
