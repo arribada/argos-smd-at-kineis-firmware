@@ -25,7 +25,11 @@
 #include "lpm_cli_kstk.h"
 #include "mgr_log.h"
 #include "rtc.h"
-#include "mgr_err.h"   /* MGR_ERR_logAndReset(ERR_RTC_DEAD) — RTC-liveness gate */
+/* NB: lpm.c is shared by ALL apps; MGR_ERR is UW_DOPPLER-only on the include
+ * path, so the RTC-liveness gate below resets via plain NVIC_SystemReset (no
+ * MGR_ERR dependency). The forensic ERR_RTC_DEAD marker is logged on the
+ * UW_DOPPLER duty path (mgr_lpm_uw.c); here the recovery boot's g_rtc_use_lsi=1
+ * is the indicator. */
 
 #if defined(USE_SPI_DRIVER)
 #include "spi.h"
@@ -804,7 +808,7 @@ void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 	if (wakeup_seconds > 0 && HAL_RTC_WaitForSynchro(&hrtc) != HAL_OK) {
 		extern void SystemClock_armLsiFallback(void);
 		SystemClock_armLsiFallback();   /* force LSI on the recovery boot */
-		MGR_ERR_logAndReset(ERR_RTC_DEAD);
+		NVIC_SystemReset();             /* boot re-inits the RTC on LSI (brick #2) */
 		/* never returns */
 	}
 
