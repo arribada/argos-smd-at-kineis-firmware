@@ -27,9 +27,10 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include <stdint.h>
+#include <stdbool.h>
 #include "kns_types.h"
 
-#define MCU_PA_BOOTDELAY_MS 100
+#define MCU_PA_BOOTDELAY_MS 250  /* extended from 100ms: gives TPS22904 soft-start + PA bias + supply recovery extra margin against brownout */
 /* Structures ----------------------------------------------------------------------------------- */
 
 /** @attention Structure below is platform specific, it may not fit your needs
@@ -120,6 +121,55 @@ void MCU_MISC_TCXO_set_warmup(uint32_t time_ms);
  * @param[out] time_ms Pointer to a variable where the warmup time (in milliseconds) will be stored.
  */
 void MCU_MISC_TCXO_get_warmup(uint32_t *time_ms);
+
+/* ---- PA watchdog --------------------------------------------------------- */
+
+/**
+ * @brief Check whether the external PA has been ON longer than the threshold.
+ *
+ * The PA-on timestamp is set by MCU_MISC_turn_on_pa() and cleared by
+ * MCU_MISC_turn_off_pa(). If the MAC stack hangs after enabling the PA, the
+ * 60 mA bias keeps draining the battery silently until IWDG eventually fires.
+ * This wrapper lets the application enforce its own bound and react earlier.
+ *
+ * @param[in] threshold_ms Max allowed duration with PA on (no TX_DONE).
+ * @return true if PA has been on longer than threshold_ms, false otherwise
+ *         (or if PA is currently off).
+ */
+bool MCU_MISC_PA_isStuck(uint32_t threshold_ms);
+
+/** @brief Return how long the PA has been ON (ms), or 0 if currently off. */
+uint32_t MCU_MISC_PA_onDuration_ms(void);
+
+/* ---- VSEL / TPS63901 voltage select (SMD_STDALONE only) ----------------- */
+
+/**
+ * @brief Select the TPS63901 output voltage via PC1 (VSEL pin).
+ *
+ * @warning On SMD_STDALONE rev2+, VSEL controls the **WHOLE BOARD VSYS** rail
+ *          (MCU + radio + TCXO + everything), NOT just VPA. Setting LOW
+ *          drops the entire MCU supply to 1.8 V.
+ *
+ *   HIGH (default) → 3V3 mode, required for radio TX, TCXO, ADC, normal MCU
+ *                    operation. Set actively at boot in gpio.c.
+ *   LOW            → 1.8 V power-save mode. STM32WL55 min Vdd = 1.71 V so the
+ *                    MCU stays running, but the SubGHz radio CANNOT TX at
+ *                    1.8 V, the TCXO may stop oscillating, the ADC reference
+ *                    is degraded, and any spike during the transition can
+ *                    glitch flash writes / I2C / SPI in progress.
+ *
+ * **Never** call this from MAC stack / RF code / interrupt context. Reserved
+ * for application-level deep-idle decisions: only when the radio is fully
+ * off (turn_off_pa returned), no flash write is pending, no UART RX is in
+ * progress, and you can guarantee no peripheral access for the duration.
+ * Always restore HIGH before any radio activity.
+ *
+ * @param high  true → 3V3 (normal/communication), false → 1.8V (deep idle)
+ */
+void MCU_MISC_VSEL_set(bool high);
+
+/** @brief Read back the current VSEL state. */
+bool MCU_MISC_VSEL_isHigh(void);
 
 #endif /* MCU_MISC_H_ */
 

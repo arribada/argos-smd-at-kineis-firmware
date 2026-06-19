@@ -36,17 +36,87 @@
 /* Table of callback function pointer
  */
 typedef enum KNS_status_t (*timeout_isr_cb_t)(void);
-
-/** Timeer callbacks
- * @attention As some timer wmay exit from LPM (standby mode, ensure this table remains
- * avaible at LPM wakeup
+/**
+ * @struct timer description
+ *
+ * Contains:
+ * * callback function (NULL) if timer is not active)
+ * * timer period (valid when timer is active)
  */
+struct timer_desc_t {
+	timeout_isr_cb_t isr_cb;
+	uint32_t timeout_ms;
+};
+
+/** @brief default values of TX fifo elements (all cleared) */
+static const struct timer_desc_t timerDflt = {
+		.isr_cb = NULL,
+		.timeout_ms = 0
+};
+
+/**
+ * @struct timer description
+ *
+ * @attention:
+ * * As some timer should exit from LPM (standby mode), ensure table remains available at LPM wakeup
+ * * So far, it is mapped in RTC BACKUP register to support both SHUTDOSN and STANDBY. In case only
+ * need to support STANDBY (no shutdown), it shuold be fine to mapp this in retentionRamData section
+ */
+/* @attention DFU-flag aliasing: .lpmSection is placed at RTC_BKPR origin
+ * (0x4000B100) by the linker, so timer[0] overlaps TAMP BKP0R/BKP1R — the same
+ * registers the bootloader reads/clears as a DFU-request flag (bl_main.c,
+ * bl_flash.c). This is safe ONLY because the app routes DFU requests through
+ * the SRAM flag (main.c request_dfu_mode, 0x2000FFF8), never TAMP. Do NOT add
+ * a TAMP-based DFU path while the MAC owns timer[0] here, or a pending TX-period
+ * timer would be read as a DFU request (and vice-versa). */
 __attribute__((__section__(".lpmSection")))
-static timeout_isr_cb_t timeout_isr_cb[MCU_TIM_HDLR_MAX] = {NULL};
+static struct timer_desc_t timer[MCU_TIM_HDLR_MAX] = {timerDflt};
+
+/** @brief Force-reset the timer[] callback table to a known-safe state.
+ *
+ * timer[] lives in `.lpmSection`, which the linker maps to the RTC backup
+ * registers. That section is NOT loaded from flash by the C runtime, so the
+ * static initialiser `= {timerDflt}` is effectively a no-op: the array
+ * survives across resets, including a flash erase + reflash. If the
+ * previous firmware left a valid `isr_cb` value pointing at code that has
+ * since been overwritten, the next HAL_TIM_PeriodElapsedCallback /
+ * HAL_RTCEx_WakeUpTimerEventCallback dispatch lands on a bogus address and
+ * the chip HardFaults.
+ *
+ * Call this once from main.c at boot, BEFORE the lib has a chance to arm
+ * any HW timer or expect a callback. Idempotent and safe — just zeroes the
+ * RAM-equivalent backup cells.
+ */
+void MCU_TIM_resetState(void)
+{
+	for (uint32_t i = 0; i < (uint32_t)MCU_TIM_HDLR_MAX; i++) {
+		timer[i].isr_cb     = NULL;
+		timer[i].timeout_ms = 0;
+	}
+}
 
 /* Static function declaration -------------------------------------------------------------*/
 
 /* Functions -------------------------------------------------------------*/
+
+/* Flash range for the application image (cf. STM32WL55XX_FLASH_APP.ld).
+ * Used to validate that a stored isr_cb actually points at a callable
+ * function before we BLX through it.
+ */
+#define MCU_TIM_FLASH_START  0x08000000UL
+#define MCU_TIM_FLASH_END    0x08040000UL
+
+static inline bool mcu_tim_cb_is_valid(timeout_isr_cb_t cb)
+{
+	uintptr_t a = (uintptr_t)cb;
+	/* NULL → skip cleanly (never armed) ; out of flash → stale value left
+	 * by a previous firmware image in the RTC backup register. */
+	if (a == 0u)
+		return false;
+	if (a < MCU_TIM_FLASH_START || a >= MCU_TIM_FLASH_END)
+		return false;
+	return true;
+}
 
 /**
  * @brief  Tx Timeout ISR override
@@ -63,22 +133,38 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if (htim == &htim16) {
 		MGR_LOG_VERBOSE("%d: %s %d\r\n", MCU_TIM_HDLR_TX_TIMEOUT, __FUNCTION__,
 			__LINE__);
-		if (timeout_isr_cb[MCU_TIM_HDLR_TX_TIMEOUT] != NULL)
-			timeout_isr_cb[MCU_TIM_HDLR_TX_TIMEOUT]();
+		timeout_isr_cb_t cb = timer[MCU_TIM_HDLR_TX_TIMEOUT].isr_cb;
+		if (mcu_tim_cb_is_valid(cb))
+			cb();
 	}
 }
 
 /**
   * @brief  Wake Up Timer callback.
   * @param[in] hrtc_local: RTC handle
+  *
+  * @note The isr_cb pointer lives in RTC backup (`.lpmSection`) which
+  *       survives flash erase + reflash. If the previous firmware
+  *       left a value pointing at code we have since overwritten, the
+  *       naive `!= NULL` check passes but the dispatch HardFaults.
+  *       mcu_tim_cb_is_valid() also rejects out-of-flash pointers so
+  *       a stale entry just gets skipped.
   */
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc_local)
 {
 	if (hrtc_local == &hrtc) {
 		MGR_LOG_VERBOSE("%d: %s %d\r\n", MCU_TIM_HDLR_TX_PERIOD, __FUNCTION__, __LINE__);
-		if (timeout_isr_cb[MCU_TIM_HDLR_TX_PERIOD] != NULL)
-			timeout_isr_cb[MCU_TIM_HDLR_TX_PERIOD]();
-
+		timeout_isr_cb_t cb = timer[MCU_TIM_HDLR_TX_PERIOD].isr_cb;
+		if (mcu_tim_cb_is_valid(cb)) {
+			cb();
+		} else {
+			/* Defensive: if a stale wake-up keeps firing, also
+			 * disarm it so we don't burn cycles on the IRQ
+			 * loop. Cheaper than a HardFault. */
+			(void)HAL_RTCEx_DeactivateWakeUpTimer(hrtc_local);
+			__HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc_local, RTC_FLAG_WUTF);
+			timer[MCU_TIM_HDLR_TX_PERIOD].isr_cb = NULL;
+		}
 	}
 }
 
@@ -99,21 +185,20 @@ enum mcu_tim_status_t MCU_TIM_init(enum mcu_tim_hdlr hdlr, enum KNS_status_t (*e
 	case MCU_TIM_HDLR_TX_TIMEOUT:
 		/* uncomment below to handle real init of peripheral HW */
 		MX_TIM16_Init();
-		timeout_isr_cb[MCU_TIM_HDLR_TX_TIMEOUT] = eop_isr_cb;
-		return MCU_TIM_STATUS_OK;
 	break;
 	case MCU_TIM_HDLR_TX_PERIOD:
 		/** @attention Init/DeInit of RTC in timer wrappers may conflict with RTC alarms and
 		 * RTC clock logging */
 		/* uncomment below to handle real init of peripheral HW */
 //		MX_RTC_Init();
-		timeout_isr_cb[MCU_TIM_HDLR_TX_PERIOD] = eop_isr_cb;
-		return MCU_TIM_STATUS_OK;
 	break;
 	default:
 		return MCU_TIM_STATUS_ERROR;
 	break;
 	}
+
+	timer[hdlr].isr_cb = eop_isr_cb;
+	return MCU_TIM_STATUS_OK;
 }
 
 enum mcu_tim_status_t MCU_TIM_deinit(enum mcu_tim_hdlr hdlr)
@@ -127,7 +212,6 @@ enum mcu_tim_status_t MCU_TIM_deinit(enum mcu_tim_hdlr hdlr)
 		/* uncomment below to handle real de-init of peripheral HW */
 		if (HAL_TIM_Base_DeInit(&htim16) != HAL_OK)
 			return MCU_TIM_STATUS_ERROR;
-		return MCU_TIM_STATUS_OK;
 	break;
 	case MCU_TIM_HDLR_TX_PERIOD:
 		/** @attention Init/DeInit of RTC in timer wrappers may conflict with RTC alarms and
@@ -135,12 +219,14 @@ enum mcu_tim_status_t MCU_TIM_deinit(enum mcu_tim_hdlr hdlr)
 		/* uncomment below to handle real de-init of peripheral HW */
 //		if (HAL_RTC_DeInit(&hrtc) != HAL_OK)
 //			return MCU_TIM_STATUS_ERROR;
-		return MCU_TIM_STATUS_OK;
 	break;
 	default:
 		return MCU_TIM_STATUS_ERROR;
 	break;
 	}
+
+	timer[hdlr].isr_cb = NULL;
+	return MCU_TIM_STATUS_OK;
 }
 
 enum mcu_tim_status_t MCU_TIM_start(enum mcu_tim_hdlr hdlr, uint32_t timeout_ms)
@@ -176,6 +262,7 @@ enum mcu_tim_status_t MCU_TIM_start(enum mcu_tim_hdlr hdlr, uint32_t timeout_ms)
 		MGR_LOG_VERBOSE("start timer %d for %d ms, cnt=%d, cnt_max=%d\r\n",
 				hdlr, timeout_ms, cnt_val, cnt_val_max);
 
+		timer[hdlr].timeout_ms = timeout_ms;
 		__HAL_TIM_CLEAR_FLAG(htim, TIM_IT_UPDATE);
 		__HAL_TIM_SET_COUNTER(htim, 0);
 		__HAL_TIM_SET_AUTORELOAD(htim, cnt_val);
@@ -191,6 +278,7 @@ enum mcu_tim_status_t MCU_TIM_start(enum mcu_tim_hdlr hdlr, uint32_t timeout_ms)
 			return MCU_TIM_STATUS_ERROR;
 		MGR_LOG_VERBOSE("start timer %d for %d ms, cnt=%d, cnt_max=%d\r\n",
 				hdlr, timeout_ms, cnt_val, cnt_val_max);
+		timer[hdlr].timeout_ms = timeout_ms;
 		if (HAL_RTCEx_SetWakeUpTimer_IT(hrtc_local, cnt_val,
 		    RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0) != HAL_OK)
 			Error_Handler();
@@ -251,6 +339,22 @@ enum mcu_tim_status_t MCU_TIM_stop(enum mcu_tim_hdlr hdlr)
 	}
 
 	return MCU_TIM_STATUS_OK;
+}
+
+enum mcu_tim_status_t MCU_TIM_suspend(enum mcu_tim_hdlr hdlr, __attribute__((unused)) void *ctxt)
+{
+	MGR_LOG_VERBOSE("%d: %s %d\r\n", hdlr, __FUNCTION__, __LINE__);
+
+	/* So far, stop timer */
+	return MCU_TIM_stop(hdlr);
+}
+
+enum mcu_tim_status_t MCU_TIM_resume(enum mcu_tim_hdlr hdlr, __attribute__((unused)) void *ctxt)
+{
+	MGR_LOG_VERBOSE("%d: %s %d\r\n", hdlr, __FUNCTION__, __LINE__);
+
+	/* So far, restart timer with same period as before */
+	return MCU_TIM_start(hdlr, timer[hdlr].timeout_ms);
 }
 
 /**

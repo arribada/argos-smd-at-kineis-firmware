@@ -14,7 +14,7 @@
  *   - L1: Drop > 4% from previous raw -> immediate surface
  *   - L2: 2 consecutive raw drops, cumulative > 3%, each step >=2% -> surface
  *   - L3: MA3 decreasing 3+ times, total drop > 4% -> surface
- *   - L4: filtered < water_baseline * 92% -> surface
+ *   - L4: filtered < water_baseline * 85% (L4_DROP_PERCENT=15) -> surface
  *   - L5: Drop from dive peak > 10%, >10s gate -> safety fallback
  *
  * **Hardening fixes ported from linkit v4 commits Apr-2026:**
@@ -44,6 +44,7 @@
 #include "adc.h"
 #include "main.h"
 #include "mgr_log.h"
+#include "mgr_evtlog.h"
 #include "stm32wlxx_hal.h"
 
 /* ---- Pin Definitions ---- */
@@ -64,7 +65,6 @@
 #define FAST_CONVERGENCE_MAX_SAMPLES        5
 
 /* Water baseline protection */
-#define ABSOLUTE_MIN_WATER_ADC            500   /**< 2000/4 */
 #define MIN_WATER_AIR_RATIO                 3
 
 /* Air baseline floor (anti-collapse / death-spiral) */
@@ -97,8 +97,8 @@
 #define L3_DROP_PERCENT                     4
 #define TREND_MA_SIZE                       3
 
-/* Level 4: Absolute water baseline drop */
-#define L4_DROP_PERCENT                     8
+/* Level 4: Absolute water baseline drop — aligned to linkit-v4 main (was 8). */
+#define L4_DROP_PERCENT                    15
 
 /* Level 5: Dive peak cumulative drop */
 #define L5_DROP_PERCENT                    10
@@ -106,7 +106,6 @@
 
 /* Safety */
 #define OVERRIDE_MIN_TIME_SEC               1   /**< Min UW time before any L-override */
-#define SURFACE_LOCKOUT_S                  30
 #define MAX_CONSECUTIVE_DIVE_TIMEOUTS       3   /**< Force surface after N timeouts */
 
 /* Proximity guard (adaptive) */
@@ -135,16 +134,20 @@
 
 static MGR_SWS_Config_t sws_config = {
 	.threshold_min                = 0,
-	.threshold_max                = 2000,  /* 8000/4 */
+	.threshold_max                = 4095,  /* 12-bit ADC full scale — accept saturated readings (bench short, real seawater can hit ~4000). Lower to reject only truly invalid readings. */
 	.initial_air_baseline         = 50,    /* 200/4 */
 	.initial_water_baseline       = 750,   /* 3000/4 */
-	.test_interval_surface_ms     = 5000,  /**< Poll less often at surface (saves power) */
-	.test_interval_underwater_ms  = 1000,  /**< Poll fast underwater (rapid surface detection) */
+	.test_interval_surface_ms     = 1000,  /**< Poll every 1s at surface */
+	.test_interval_underwater_ms  = 500,   /**< Poll every 0.5s underwater (fast surface detection) */
 	.max_dive_time_s              = 7200,
 	.min_surface_time_s           = 10,
-	.sample_delay_min_us          = 200,
-	.sample_delay_max_us          = 5000,
-	.sample_delay_default_us      = 1000,
+	.sample_delay_min_us          = 200,   /**< RC charge floor (pulse-ON before ADC read) */
+	/* 10 ms ceiling per the linkit-v4 reference (SAMPLE_DELAY_MAX_US 10000):
+	 * biofouled electrodes have tau > 10 ms — the old 1 ms cap kept the RC
+	 * undercharged, water read as air, and dives went undetected late in a
+	 * deployment. Salt water still converges to the 200 us floor. */
+	.sample_delay_max_us          = 10000, /**< RC charge ceiling */
+	.sample_delay_default_us      = 1000,  /**< RC charge starting point (linkit default) */
 	.enabled                      = true,
 };
 
@@ -152,6 +155,11 @@ static MGR_SWS_State_t sws_state = MGR_SWS_STATE_UNKNOWN;
 static bool state_changed_flag = false;
 static bool force_measurement = false;
 static uint16_t last_raw_adc = 0;
+/* Last ADC sample that came back from a SUCCESSFUL HAL conversion. Returned by
+ * sws_read_adc when a conversion fails, so a dead ADC never injects a 0 (which
+ * would read as SURFACE). Seeded to the water baseline = the safe "underwater"
+ * default (no spurious TX) if the very first read fails. */
+static uint16_t s_last_valid_adc = 0;
 
 /* Calibration dirty flag (set on baseline/peak update, cleared after flash save) */
 static bool calib_dirty = false;
@@ -196,12 +204,38 @@ static uint8_t  ma3_trend_count = 0;
 
 /* Level 4 & 5: Dive tracking */
 static uint16_t peak_adc_since_underwater = 0;
-static uint16_t recent_peak = 0;
-static uint16_t min_adc_during_dive = 0xFFFF;
+/* L4 debounce: require 2 consecutive below-threshold samples before declaring
+ * surface (linkit-v4 parity), so a single noisy MA2 dip can't false-trigger. */
+static uint8_t  l4_consecutive_below = 0;
 
-/* Safety / lockout */
-static uint32_t surface_lockout_until = 0;
+/* Safety / lockout. Stored as start + duration and compared with wrap-safe
+ * tick deltas: the old absolute-deadline form misfired at the 49.7-day tick
+ * wrap (a lockout armed just before the wrap read as ~49 days remaining,
+ * blocking dive detection). */
+static uint32_t surface_lockout_start_tick = 0;
+static uint32_t surface_lockout_ms = 0;       /**< 0 = no lockout armed */
 static uint8_t  consecutive_dive_timeouts = 0;
+
+/* Degraded beacon mode. Armed by the dive-timeout escalation: 3x max_dive_time_s
+ * stuck underwater for a HEALTHY sensor, or 1x for a CONFIRMED stuck/no-variance
+ * fault (see section 7). Hold SURFACE for a full max_dive_time_s window so the
+ * tag runs a real beacon (normal seq_restart cadence) instead of a 30s blip,
+ * then drop back underwater to re-arm escalation. Exits early on a frank air
+ * reading (raw < threshold_low = the real sensor recovered). */
+static bool     degraded_mode = false;
+static uint32_t degraded_start_tick = 0;
+
+static bool surface_lockout_active(void)
+{
+	if (surface_lockout_ms == 0u)
+		return false;
+	if ((uint32_t)(HAL_GetTick() - surface_lockout_start_tick) >=
+	    surface_lockout_ms) {
+		surface_lockout_ms = 0u;
+		return false;
+	}
+	return true;
+}
 
 /* Periodic recalibration timer */
 static uint32_t last_calib_tick = 0;
@@ -228,6 +262,12 @@ static uint32_t elapsed_s(uint32_t from_tick)
 	return (HAL_GetTick() - from_tick) / 1000;
 }
 
+/* Clamp an air-baseline candidate up to the anti-collapse floor. */
+static uint16_t clamp_air_floor(uint16_t v)
+{
+	return (v < AIR_BASELINE_FLOOR) ? AIR_BASELINE_FLOOR : v;
+}
+
 static void mark_calib_dirty(void)
 {
 	calib_dirty = true;
@@ -239,6 +279,33 @@ static uint32_t current_test_interval_ms(void)
 		return sws_config.test_interval_surface_ms;
 	/* UNKNOWN or UNDERWATER -> use underwater (fast) cadence */
 	return sws_config.test_interval_underwater_ms;
+}
+
+/* Public accessors used by the event-driven LPM scheduler to compute the
+ * next wake delay. The LPM client treats the SWS interval as the natural
+ * idle-period source of truth (see MGR_LPM_UW_idleTick). */
+uint32_t MGR_SWS_getSurfIntervalMs(void)
+{
+	return sws_config.test_interval_surface_ms;
+}
+
+uint32_t MGR_SWS_getUWIntervalMs(void)
+{
+	return sws_config.test_interval_underwater_ms;
+}
+
+uint32_t MGR_SWS_msUntilNextSample(void)
+{
+	/* SWS disabled: no sampling deadline — return "infinite" so it never
+	 * dominates the scheduler's min(); other deadlines (or the STOP2
+	 * clamp) bound the sleep. */
+	if (!sws_config.enabled)
+		return 0xFFFFFFFFu;
+	if (last_measurement_tick == 0)
+		return 0;
+	uint32_t interval = current_test_interval_ms();
+	uint32_t elapsed = HAL_GetTick() - last_measurement_tick;
+	return (elapsed >= interval) ? 0u : (interval - elapsed);
 }
 
 static void update_dynamic_threshold(void)
@@ -365,8 +432,12 @@ static void calibrate_water_baseline(uint16_t value)
 	bool air_ratio_ok = (air_baseline >= 750) ||
 		(value >= air_baseline * MIN_WATER_AIR_RATIO);
 
+	/* No absolute ADC floor (linkit-v4 removed it intentionally): fresh /
+	 * brackish water has lower conductivity -> lower water-side ADC, well below
+	 * the old 2000 (500 on 12-bit) floor. Validity is ratio-based only. The
+	 * legacy ABSOLUTE_MIN_WATER_ADC kept the water baseline from converging in
+	 * low-conductivity deployments. */
 	bool ok = (value > threshold_with_margin) &&
-		(value >= ABSOLUTE_MIN_WATER_ADC) &&
 		air_ratio_ok &&
 		(value >= min_expected_water || value > water_baseline);
 
@@ -413,18 +484,101 @@ static uint16_t sws_read_adc(void)
 	uint32_t count = (uint32_t)sample_delay_us * 8;
 	while (count--) __NOP();
 
-	uint32_t raw = ADC_ReadValue();
+	/* On a HAL failure DON'T inject 0 — a zero reads below threshold and flips
+	 * the detector to SURFACE (spurious TX). Hold the last valid sample
+	 * instead; a persistent ADC failure then returns the same value every
+	 * cycle, which the STUCK fault detector latches (visible in AT+STATUS). */
+	uint32_t raw;
+	if (ADC_ReadValueChecked(&raw))
+		s_last_valid_adc = (uint16_t)(raw & 0xFFF);
 	sws_power_off();
 
-	return (uint16_t)(raw & 0xFFF);
+	return s_last_valid_adc;
 }
 
 /* ---- Core Detection (5-level + hardening) ---- */
+
+/* ---- Sensor fault detection (Sprint 3) ---------------------------------- */
+
+#define SWS_FAULT_STUCK_SAMPLES   20u  /* same ADC for N consecutive reads → stuck */
+#define SWS_FAULT_OOR_SAMPLES     10u  /* rail-low/high for N reads → broken sensor */
+#define SWS_FAULT_OOR_LOW         5u
+#define SWS_FAULT_OOR_HIGH        4090u
+#define SWS_FAULT_VAR_WINDOW      30u  /* rolling window for variance check */
+#define SWS_FAULT_VAR_MIN         3u   /* dead if variance < 3 LSB² */
+
+static uint8_t  sws_current_fault    = MGR_SWS_FAULT_NONE;
+static uint16_t sws_fault_stuck_last = 0xFFFFu;
+static uint16_t sws_fault_stuck_cnt  = 0;
+static uint16_t sws_fault_oor_cnt    = 0;
+static uint16_t sws_fault_var_buf[SWS_FAULT_VAR_WINDOW];
+static uint16_t sws_fault_var_idx    = 0;
+static uint16_t sws_fault_var_filled = 0;
+
+static void sws_fault_update(uint16_t adc)
+{
+	uint8_t new_fault = MGR_SWS_FAULT_NONE;
+
+	/* STUCK: identical ADC for N reads. Counter saturates at u16 max. */
+	if (adc == sws_fault_stuck_last) {
+		if (sws_fault_stuck_cnt < 0xFFFFu)
+			sws_fault_stuck_cnt++;
+	} else {
+		sws_fault_stuck_cnt = 0;
+		sws_fault_stuck_last = adc;
+	}
+	if (sws_fault_stuck_cnt >= SWS_FAULT_STUCK_SAMPLES)
+		new_fault |= MGR_SWS_FAULT_STUCK;
+
+	/* OUT-OF-RANGE: rail-low or rail-high for N reads. */
+	if (adc <= SWS_FAULT_OOR_LOW || adc >= SWS_FAULT_OOR_HIGH) {
+		if (sws_fault_oor_cnt < 0xFFFFu)
+			sws_fault_oor_cnt++;
+	} else {
+		sws_fault_oor_cnt = 0;
+	}
+	if (sws_fault_oor_cnt >= SWS_FAULT_OOR_SAMPLES)
+		new_fault |= MGR_SWS_FAULT_OUT_OF_RANGE;
+
+	/* NO_VARIANCE: rolling window, dead-sensor detection. */
+	sws_fault_var_buf[sws_fault_var_idx] = adc;
+	sws_fault_var_idx = (uint16_t)((sws_fault_var_idx + 1u) % SWS_FAULT_VAR_WINDOW);
+	if (sws_fault_var_filled < SWS_FAULT_VAR_WINDOW)
+		sws_fault_var_filled++;
+	if (sws_fault_var_filled >= SWS_FAULT_VAR_WINDOW) {
+		uint32_t sum = 0;
+		for (uint16_t i = 0; i < SWS_FAULT_VAR_WINDOW; i++)
+			sum += sws_fault_var_buf[i];
+		uint16_t mean = (uint16_t)(sum / SWS_FAULT_VAR_WINDOW);
+		uint32_t ssq = 0;
+		for (uint16_t i = 0; i < SWS_FAULT_VAR_WINDOW; i++) {
+			int32_t d = (int32_t)sws_fault_var_buf[i] - (int32_t)mean;
+			ssq += (uint32_t)(d * d);
+		}
+		uint32_t variance = ssq / SWS_FAULT_VAR_WINDOW;
+		if (variance < SWS_FAULT_VAR_MIN)
+			new_fault |= MGR_SWS_FAULT_NO_VARIANCE;
+	}
+
+	/* Log only on rising edge (a fault bit that wasn't set before).
+	 * Avoids spamming the log every single measurement once a sensor is broken. */
+	uint8_t rising = (uint8_t)(new_fault & ~sws_current_fault);
+	if (rising) {
+		MGR_EVTLOG_log(EVT_SWS_FAULT, (uint16_t)new_fault);
+	}
+	sws_current_fault = new_fault;
+}
+
+uint8_t MGR_SWS_getFault(void)
+{
+	return sws_current_fault;
+}
 
 static bool detector_state(void)
 {
 	uint16_t raw_value = sws_read_adc();
 	last_raw_adc = raw_value;
+	sws_fault_update(raw_value);
 
 	/* 1. Validate ADC */
 	if (raw_value > sws_config.threshold_max)
@@ -494,8 +648,7 @@ static bool detector_state(void)
 				if (water_baseline > sws_config.threshold_max)
 					water_baseline = sws_config.threshold_max;
 			}
-			if (air_baseline < AIR_BASELINE_FLOOR)
-				air_baseline = AIR_BASELINE_FLOOR;
+			air_baseline = clamp_air_floor(air_baseline);
 			if (water_baseline <= (uint32_t)air_baseline * MIN_WATER_AIR_RATIO)
 				water_baseline = air_baseline * MIN_WATER_AIR_RATIO;
 			update_dynamic_threshold();
@@ -511,10 +664,6 @@ static bool detector_state(void)
 
 	/* 2. Filter */
 	uint16_t filtered = moving_average(raw_value);
-
-	/* Track min during dive */
-	if (is_underwater && filtered < min_adc_during_dive)
-		min_adc_during_dive = filtered;
 
 	uint32_t time_in_state = elapsed_s(state_enter_tick);
 
@@ -614,38 +763,54 @@ static bool detector_state(void)
 	if (is_underwater) {
 		if (filtered > peak_adc_since_underwater)
 			peak_adc_since_underwater = filtered;
-
-		/* Recent peak: decays 2% per sample toward current reading */
-		if (raw_value > recent_peak || recent_peak == 0)
-			recent_peak = raw_value;
-		else
-			recent_peak = (uint16_t)(((uint32_t)recent_peak * 98 + (uint32_t)raw_value * 2) / 100);
 	}
 
 	if (surface_level == 0 && is_underwater &&
 	    time_in_state >= OVERRIDE_MIN_TIME_SEC && proximity_ok) {
 
-		/* LEVEL 4: Drop relative to water baseline */
+		/* linkit-v4 hardening guard for L4/L5: the RAW reading must be in the
+		 * air zone (below threshold_high) too — otherwise a stale water/peak
+		 * baseline (e.g. after biofouling reduction) makes `filtered` dip below
+		 * a too-high reference and false-triggers surface while raw is still
+		 * water-level. Computed locally; the state machine recomputes it below. */
+		uint16_t l45_threshold_high = threshold_current + hysteresis_value;
+
+		/* LEVEL 4: Drop relative to water baseline. Requires raw in the air zone
+		 * AND two consecutive below-threshold samples (debounce). */
 		if (water_baseline > 0) {
 			uint16_t water_thresh = (uint16_t)((uint32_t)water_baseline * (100 - L4_DROP_PERCENT) / 100);
-			if (filtered < water_thresh)
-				surface_level = 4;
+			if (filtered < water_thresh && raw_value < l45_threshold_high) {
+				if (l4_consecutive_below < 0xFFu)
+					l4_consecutive_below++;
+				if (l4_consecutive_below >= 2u)
+					surface_level = 4;
+			} else {
+				l4_consecutive_below = 0;
+			}
+		} else {
+			l4_consecutive_below = 0;
 		}
 
-		/* LEVEL 5: Cumulative drop from dive peak (>10s gate, underflow guard) */
+		/* LEVEL 5: Cumulative drop from dive peak (>10s gate, underflow guard).
+		 * Same raw-air-zone guard as L4 so stale peaks can't false-fire L5. */
 		if (surface_level == 0 && peak_adc_since_underwater > 0 &&
 		    filtered < peak_adc_since_underwater &&
+		    raw_value < l45_threshold_high &&
 		    time_in_state > L5_MIN_TIME_SEC) {
 			uint16_t drop_pct = (uint16_t)(((uint32_t)(peak_adc_since_underwater - filtered) * 100) /
 				peak_adc_since_underwater);
 			if (drop_pct >= L5_DROP_PERCENT)
 				surface_level = 5;
 		}
+	} else {
+		/* Out of the L4/L5 evaluation window — reset the debounce so the next
+		 * dive starts fresh. */
+		l4_consecutive_below = 0;
 	}
 
 	/* 4. SURFACE BASELINE TRACKING (blocked during lockout) */
 	if (!is_underwater && time_in_state > MIN_SURFACE_TIME_FOR_ADAPT_S &&
-	    (surface_lockout_until == 0 || HAL_GetTick() >= surface_lockout_until)) {
+	    !surface_lockout_active()) {
 		/* Reject sub-floor readings (likely uncharged RC / disconnected electrode) */
 		if (filtered < threshold_current && filtered >= AIR_BASELINE_FLOOR) {
 			surface_readings[surface_readings_idx] = filtered;
@@ -660,13 +825,10 @@ static bool detector_state(void)
 				sum += surface_readings[i];
 			uint16_t avg = (uint16_t)(sum / surface_readings_count);
 
-			if (CALIB_INTERVAL_S > 0 &&
-			    elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
+			if (elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
 				/* Periodic full air recalibration with FLOOR clamp */
-				uint16_t old = air_baseline;
-				uint16_t new_air = avg;
-				if (new_air < AIR_BASELINE_FLOOR)
-					new_air = AIR_BASELINE_FLOOR;
+				uint16_t old __attribute__((unused)) = air_baseline;
+				uint16_t new_air = clamp_air_floor(avg);
 				air_baseline = new_air;
 				/* Slow decay of observed peak (1% per cycle) */
 				if (observed_peak_adc > 0)
@@ -687,8 +849,7 @@ static bool detector_state(void)
 					new_air = AIR_BASELINE_FLOOR;
 				} else {
 					new_air = (uint16_t)((90 * (uint32_t)air_baseline + 10 * (uint32_t)avg) / 100);
-					if (new_air < AIR_BASELINE_FLOOR)
-						new_air = AIR_BASELINE_FLOOR;
+					new_air = clamp_air_floor(new_air);
 				}
 				if (new_air != air_baseline) {
 					air_baseline = new_air;
@@ -702,8 +863,7 @@ static bool detector_state(void)
 				bool air_already_low = (air_baseline < avg * 2);
 				if (!avg_too_low && !air_already_low) {
 					uint16_t new_air = (uint16_t)((80 * (uint32_t)air_baseline + 20 * (uint32_t)avg) / 100);
-					if (new_air < AIR_BASELINE_FLOOR)
-						new_air = AIR_BASELINE_FLOOR;
+					new_air = clamp_air_floor(new_air);
 					air_baseline = new_air;
 					update_dynamic_threshold();
 					adjust_sample_delay();
@@ -723,8 +883,8 @@ static bool detector_state(void)
 	if (!is_underwater && air_baseline < AIR_BASELINE_FLOOR) {
 		air_collapse_count++;
 		if (air_collapse_count >= AIR_COLLAPSE_RECOVERY_SAMPLES) {
-			uint16_t old_air = air_baseline;
-			uint16_t old_water = water_baseline;
+			uint16_t old_air __attribute__((unused)) = air_baseline;
+			uint16_t old_water __attribute__((unused)) = water_baseline;
 
 			uint16_t recovered_air = (filtered >= AIR_BASELINE_FLOOR) ?
 				filtered : AIR_BASELINE_FLOOR;
@@ -752,7 +912,7 @@ static bool detector_state(void)
 	}
 
 	/* 5. WATER BASELINE EMA (when underwater, not during lockout) */
-	if (is_underwater && (surface_lockout_until == 0 || HAL_GetTick() >= surface_lockout_until))
+	if (is_underwater && !surface_lockout_active())
 		calibrate_water_baseline(filtered);
 
 	/* 6. STATE DETERMINATION */
@@ -832,12 +992,12 @@ static bool detector_state(void)
 		new_is_underwater = false;
 
 		/* Air recalib: gentle EMA toward raw with hard cap at AIR_RECALIB_MAX_RATIO_PCT * water */
-		uint16_t old_air = air_baseline;
+		uint16_t old_air __attribute__((unused)) = air_baseline;
 		uint16_t new_air = (uint16_t)(((uint32_t)air_baseline * (100 - AIR_RECALIB_EMA_WEIGHT_PCT) +
 			(uint32_t)raw_value * AIR_RECALIB_EMA_WEIGHT_PCT) / 100);
 		uint16_t hard_cap = (uint16_t)((uint32_t)water_baseline * AIR_RECALIB_MAX_RATIO_PCT / 100);
 		if (new_air > hard_cap) new_air = hard_cap;
-		if (new_air < AIR_BASELINE_FLOOR) new_air = AIR_BASELINE_FLOOR;
+		new_air = clamp_air_floor(new_air);
 		if (new_air != air_baseline && new_air < water_baseline) {
 			air_baseline = new_air;
 			update_dynamic_threshold();
@@ -846,10 +1006,12 @@ static bool detector_state(void)
 		}
 
 		/* Enforce surface lockout */
-		if (sws_config.min_surface_time_s > 0)
-			surface_lockout_until = HAL_GetTick() + sws_config.min_surface_time_s * 1000;
+		if (sws_config.min_surface_time_s > 0) {
+			surface_lockout_start_tick = HAL_GetTick();
+			surface_lockout_ms = sws_config.min_surface_time_s * 1000;
+		}
 
-		MGR_LOG_DEBUG("[SWS] SURFACE L%u raw=%u filt=%u air=%u->%u water=%u\r\n",
+		MGR_LOG_INFO("[SWS] SURFACE L%u raw=%u filt=%u air=%u->%u water=%u\r\n",
 			surface_level, raw_value, filtered, old_air, air_baseline, water_baseline);
 	}
 
@@ -857,7 +1019,7 @@ static bool detector_state(void)
 	if (is_underwater && sws_config.max_dive_time_s > 0 &&
 	    time_in_state >= sws_config.max_dive_time_s) {
 		consecutive_dive_timeouts++;
-		uint16_t old_water = water_baseline;
+		uint16_t old_water __attribute__((unused)) = water_baseline;
 
 		/* Always recalibrate water baseline from current reading */
 		if (filtered > air_baseline * 2) {
@@ -866,9 +1028,22 @@ static bool detector_state(void)
 			mark_calib_dirty();
 		}
 
-		if (consecutive_dive_timeouts >= MAX_CONSECUTIVE_DIVE_TIMEOUTS) {
+		/* A CONFIRMED non-responsive sensor (stuck/identical or zero-variance)
+		 * physically cannot detect a real surface — don't sit silent for the
+		 * full 3x backstop. Escalate to the degraded beacon after a SINGLE
+		 * dive-timeout window (~1x max_dive_time ≈ 2h vs ≈6h). A healthy sensor
+		 * keeps the conservative 3x escalation so a long real dive never
+		 * false-surfaces. OOR-high is deliberately excluded (could be valid
+		 * high-conductivity water). */
+		const bool sensor_faulted =
+			(sws_current_fault & (MGR_SWS_FAULT_STUCK | MGR_SWS_FAULT_NO_VARIANCE)) != 0u;
+		if (consecutive_dive_timeouts >= MAX_CONSECUTIVE_DIVE_TIMEOUTS ||
+		    (sensor_faulted && consecutive_dive_timeouts >= 1u)) {
 			new_is_underwater = false;
-			surface_lockout_until = HAL_GetTick() + SURFACE_LOCKOUT_S * 1000;
+			/* Enter degraded beacon mode: section 9 holds surface for a full
+			 * max_dive_time_s window. Supersedes the old 30s lockout. */
+			degraded_mode = true;
+			degraded_start_tick = HAL_GetTick();
 			consecutive_dive_timeouts = 0;
 			observed_peak_adc = water_baseline;
 			consecutive_spike_rejects = 0;
@@ -876,23 +1051,42 @@ static bool detector_state(void)
 			surface_readings_idx = 0;
 			update_dynamic_threshold();
 			mark_calib_dirty();
-			MGR_LOG_DEBUG("[SWS] Dive timeout escalation -> force surface (water %u->%u)\r\n",
-				old_water, water_baseline);
+			MGR_LOG_WARN("[SWS] Dive timeout escalation -> degraded beacon (surface %lus, water %u->%u)\r\n",
+				(unsigned long)sws_config.max_dive_time_s, old_water, water_baseline);
 		} else {
 			/* Reset state timer for next escalation interval */
 			state_enter_tick = HAL_GetTick();
-			MGR_LOG_DEBUG("[SWS] Dive timeout %u/%u (water %u->%u)\r\n",
+			MGR_LOG_WARN("[SWS] Dive timeout %u/%u (water %u->%u)\r\n",
 				consecutive_dive_timeouts, MAX_CONSECUTIVE_DIVE_TIMEOUTS,
 				old_water, water_baseline);
 		}
 	}
 
 	/* 8. SURFACE LOCKOUT (time-based) */
-	if (surface_lockout_until > 0 && HAL_GetTick() < surface_lockout_until) {
-		if (new_is_underwater)
+	if (surface_lockout_active() && new_is_underwater)
+		new_is_underwater = false;
+
+	/* 9. DEGRADED BEACON MODE (final override). While armed (section 7), hold
+	 * SURFACE for a full max_dive_time_s window so the app runs a real beacon
+	 * (normal seq_restart cadence). Exit early on a frank air reading (the real
+	 * sensor recovered) -> resume normal; or when the window elapses -> drop
+	 * back underwater so the dive-timeout (counter reset at entry) re-arms the
+	 * 3x escalation. raw_value/threshold_low are this cycle's sensor read. */
+	if (degraded_mode) {
+		const uint32_t window_ms =
+			(uint32_t)sws_config.max_dive_time_s * 1000u;
+		if (raw_value < threshold_low) {
+			degraded_mode = false;        /* real surface recovered */
 			new_is_underwater = false;
-	} else {
-		surface_lockout_until = 0;
+			MGR_LOG_INFO("[SWS] Degraded beacon: real surface (raw=%u<%u), exit\r\n",
+				raw_value, threshold_low);
+		} else if ((uint32_t)(HAL_GetTick() - degraded_start_tick) >= window_ms) {
+			degraded_mode = false;        /* window done -> re-test underwater */
+			new_is_underwater = true;
+			MGR_LOG_INFO("[SWS] Degraded beacon window ended -> underwater\r\n");
+		} else {
+			new_is_underwater = false;    /* hold beacon surface */
+		}
 	}
 
 	return new_is_underwater;
@@ -912,12 +1106,15 @@ void MGR_SWS_init(void)
 	HAL_GPIO_Init(SWS_POWER_PORT, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(SWS_POWER_PORT, SWS_POWER_PIN, GPIO_PIN_RESET);
 
-	air_baseline = sws_config.initial_air_baseline;
-	if (air_baseline < AIR_BASELINE_FLOOR)
-		air_baseline = AIR_BASELINE_FLOOR;
+	air_baseline = clamp_air_floor(sws_config.initial_air_baseline);
 	water_baseline = sws_config.initial_water_baseline;
 	observed_peak_adc = 0;
 	contrast_x10 = 100;
+	degraded_mode = false;
+	degraded_start_tick = 0;
+	/* Seed the ADC-failure fallback to the water baseline (safe = underwater =
+	 * no spurious TX) until a real conversion succeeds. */
+	s_last_valid_adc = sws_config.initial_water_baseline;
 	update_dynamic_threshold();
 
 	memset(adc_history, 0, sizeof(adc_history));
@@ -931,14 +1128,13 @@ void MGR_SWS_init(void)
 	ma3_trend_start = 0;
 	ma3_trend_count = 0;
 	prev_raw = 0;
-	recent_peak = 0;
 	drop_reference = 0;
 	consecutive_raw_drops = 0;
 	peak_adc_since_underwater = 0;
-	min_adc_during_dive = 0xFFFF;
 	surface_readings_idx = 0;
 	surface_readings_count = 0;
-	surface_lockout_until = 0;
+	surface_lockout_start_tick = 0;
+	surface_lockout_ms = 0;
 	consecutive_dive_timeouts = 0;
 	consecutive_spike_rejects = 0;
 	coherence_high_count = 0;
@@ -965,14 +1161,10 @@ void MGR_SWS_init(void)
 		if (initial_read > WATER_DETECT_HEURISTIC) {
 			sws_state = MGR_SWS_STATE_UNDERWATER;
 			water_baseline = initial_read;
-			air_baseline = initial_read / 3;
-			if (air_baseline < AIR_BASELINE_FLOOR)
-				air_baseline = AIR_BASELINE_FLOOR;
+			air_baseline = clamp_air_floor(initial_read / 3);
 		} else if (initial_read < threshold_current) {
 			sws_state = MGR_SWS_STATE_SURFACE;
-			air_baseline = initial_read;
-			if (air_baseline < AIR_BASELINE_FLOOR)
-				air_baseline = AIR_BASELINE_FLOOR;
+			air_baseline = clamp_air_floor(initial_read);
 		} else {
 			sws_state = MGR_SWS_STATE_UNDERWATER;
 		}
@@ -984,7 +1176,7 @@ void MGR_SWS_init(void)
 		prev_raw = initial_read;
 	}
 
-	MGR_LOG_DEBUG("[SWS] Init: state=%d air=%u water=%u thresh=%u hyst=%u delay=%uus\r\n",
+	MGR_LOG_INFO("[SWS] Init: state=%d air=%u water=%u thresh=%u hyst=%u delay=%uus\r\n",
 		sws_state, air_baseline, water_baseline, threshold_current, hysteresis_value,
 		sample_delay_us);
 }
@@ -1008,8 +1200,16 @@ void MGR_SWS_task(void)
 
 	MGR_SWS_State_t new_state = is_underwater ? MGR_SWS_STATE_UNDERWATER : MGR_SWS_STATE_SURFACE;
 
+	/* Per-measurement ADC log so the dev can validate PA11 readings live.
+	 * Shows raw ADC, current baselines and threshold. Fires every measurement
+	 * (1s in surface, 500ms underwater per default config). */
+	MGR_LOG_DEBUG("[SWS] adc=%u %s air=%u water=%u th=%u\r\n",
+		last_raw_adc,
+		(new_state == MGR_SWS_STATE_UNDERWATER) ? "UW" : "SURF",
+		air_baseline, water_baseline, threshold_current);
+
 	if (new_state != sws_state) {
-		MGR_LOG_DEBUG("[SWS] %s -> %s (adc=%u air=%u water=%u th=%u peak=%u)\r\n",
+		MGR_LOG_INFO("[SWS] %s -> %s (adc=%u air=%u water=%u th=%u peak=%u)\r\n",
 			sws_state == MGR_SWS_STATE_UNDERWATER ? "UW" : "SURF",
 			new_state == MGR_SWS_STATE_UNDERWATER ? "UW" : "SURF",
 			last_raw_adc, air_baseline, water_baseline, threshold_current,
@@ -1020,9 +1220,7 @@ void MGR_SWS_task(void)
 		state_changed_flag = true;
 
 		if (new_state == MGR_SWS_STATE_UNDERWATER) {
-			min_adc_during_dive = 0xFFFF;
 			peak_adc_since_underwater = 0;
-			recent_peak = 0;
 			consecutive_raw_drops = 0;
 			drop_reference = 0;
 			trend_buffer_count = 0;
@@ -1073,9 +1271,7 @@ void MGR_SWS_setConfig(const MGR_SWS_Config_t *config)
 		return;
 
 	sws_config = *config;
-	air_baseline = config->initial_air_baseline;
-	if (air_baseline < AIR_BASELINE_FLOOR)
-		air_baseline = AIR_BASELINE_FLOOR;
+	air_baseline = clamp_air_floor(config->initial_air_baseline);
 	water_baseline = config->initial_water_baseline;
 	update_dynamic_threshold();
 
@@ -1101,18 +1297,20 @@ bool MGR_SWS_stateChanged(void)
 uint16_t MGR_SWS_getAirBaseline(void)   { return air_baseline; }
 uint16_t MGR_SWS_getWaterBaseline(void) { return water_baseline; }
 uint16_t MGR_SWS_getObservedPeak(void)  { return observed_peak_adc; }
-uint16_t MGR_SWS_getSampleDelayUs(void) { return sample_delay_us; }
 uint16_t MGR_SWS_getThreshold(void)     { return threshold_current; }
+/* Unwired diagnostic hook: the runtime adaptive sample delay is not
+ * persisted nor surfaced over AT (unlike the baselines above). Kept for a
+ * future AT status readout — has no caller today. */
+uint16_t MGR_SWS_getSampleDelayUs(void) { return sample_delay_us; }
 
 void MGR_SWS_restoreBaselines(uint16_t air, uint16_t water)
 {
 	if (air > 0 && water > air) {
-		if (air < AIR_BASELINE_FLOOR)
-			air = AIR_BASELINE_FLOOR;
+		air = clamp_air_floor(air);
 		air_baseline = air;
 		water_baseline = water;
 		update_dynamic_threshold();
-		MGR_LOG_DEBUG("[SWS] Baselines restored: air=%u water=%u th=%u hyst=%u\r\n",
+		MGR_LOG_INFO("[SWS] Baselines restored: air=%u water=%u th=%u hyst=%u\r\n",
 			air, water, threshold_current, hysteresis_value);
 	}
 }

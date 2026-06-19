@@ -27,6 +27,7 @@
 #include "stm32wlxx_hal.h"
 #include "mgr_log.h"
 #include <string.h>
+#include <stdio.h>
 /* Variables ---------------------------------------------------------*/
 
 /** @note The message counter be stored in a non volatile memory (flash, RTC backup reg, etc.).
@@ -42,8 +43,6 @@
  */
 __attribute__((__section__(".msgCntSectionData")))
 static uint16_t message_counter = 0;
-
-static uint16_t wakeup_counter = 0;
 
 /** The device identifier may be stored in a secured way (encryption, etc.) */
 const uint32_t test_device_id = 123456; // stored in flash
@@ -101,46 +100,120 @@ static uint8_t radioConfZone[16] = {
 
 };
 
-/* Device serial number */
-static const uint8_t device_sn[DEVICE_SN_LENGTH] = { 'S', 'M', 'D', '_', '1', '1', '_', \
-					      '_', '0', '0', '0', '0', '0', '1' };
+/* Device serial number — derived from the factory-programmed 96-bit die ID
+ * (RM0453, UID_BASE 0x1FFF7590): unique per chip, read-only silicon,
+ * survives any flash erase, cannot be reprogrammed.
+ * Layout (14 chars): "SMD" + 3 hex (lot+wafer words folded to 12 bits so no
+ * UID word is ignored) + 8 hex (die X/Y coordinates, kept verbatim). */
 /* Functions -------------------------------------------------------------*/
 
-//enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
-//{
-//	if (!mc_ptr)
-//		return KNS_STATUS_ERROR;
-//
-//	uint64_t full_counter = MCU_FLASH_read_msg_counter();
-//    *mc_ptr = (uint16_t)(full_counter & 0xFFFF);
-//    message_counter = *mc_ptr;
-//    return KNS_STATUS_OK;
-//
-//}
-//
-//enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
-//{
-//	message_counter = mcTmp;
-//
-//	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
-//
-//}
+/* ---- Message Counter: RAM cache + flash high-water mark ----------------
+ *
+ * 9-BIT PROTOCOL LIMIT (load-bearing): the Argos/Kineis MC is a 9-bit field
+ * (0..511). The closed libkineis uses the raw getMC value for the CURRENT
+ * frame, writing it BOTH as a 9-bit header AND as the 16-bit AES-CTR counter
+ * (it only masks & 0x1ff when storing the *next* value). So any MC > 511 makes
+ * the 9-bit header wrap (e.g. 512 -> 0) while the AES counter keeps 512: the
+ * ground segment rebuilds the wrong IV and the whole payload decrypts to
+ * garbage. We therefore clamp to 9 bits at every point the lib can see the MC
+ * (seed / getMC / setMC) so a stray AT+MC > 511 or a restored high-water value
+ * can never ship a corrupt frame. Normal operation cycles 0..511 (a standard
+ * rolling counter) and is unaffected by the mask.
+ *
+ * The closed lib persists the MC with getMC + setMC(mc+1) after EVERY TX,
+ * and the per-sequence MC logic in the app rolls it back with setMC before
+ * every push. MCU_FLASH_set_msg_counter is destructive: it rewrites the
+ * overflow word through MCU_FLASH_write (FULL page erase + reprogram) and
+ * erases the whole wear-leveling area before re-programming every used
+ * slot — 5 page erases per call. At deployment TX rates that consumes the
+ * 10k-cycle flash endurance within weeks.
+ *
+ * Strategy: serve getMC from a RAM cache; treat the flash value as a
+ * HIGH-WATER MARK that only moves forward:
+ *  - small forward move (lib's post-TX +1): one wear-leveling slot program
+ *    via MCU_FLASH_increment_msg_counter — no erase (erase only when the
+ *    8 KB WL area wraps, every 1024 counts).
+ *  - small backward move (per-sequence rollback): RAM only. Flash stays
+ *    ahead by +1, so a reboot mid-sequence starts the next sequence at
+ *    last_used+1 — an MC can never repeat on air after a crash.
+ *  - large jump either way (operator AT+MC=<val>): genuine full rewrite,
+ *    rare by nature.
+ */
+#define MC_SMALL_STEP  64u  /**< |delta| treated as normal TX-flow movement */
+
+static bool     mc_cache_valid = false;
+static uint64_t mc_flash_shadow;  /**< full 64-bit counter known to be in flash */
+
+static void mc_seed_cache(void)
+{
+	if (!mc_cache_valid) {
+		mc_flash_shadow = MCU_FLASH_read_msg_counter();
+		/* Clamp to the 9-bit protocol range: a high-water value > 511 would
+		 * otherwise ship a corrupt first frame after boot (see header note). */
+		message_counter = (uint16_t)(mc_flash_shadow & 0x1FFu);
+		mc_cache_valid = true;
+	}
+}
+
 enum KNS_status_t MCU_NVM_getMC(uint16_t *mc_ptr)
 {
 	if (!mc_ptr)
 		return KNS_STATUS_ERROR;
 
-	uint64_t full_counter = MCU_FLASH_read_msg_counter();
-	*mc_ptr = (uint16_t)(full_counter & 0xFFFF);
-	message_counter = *mc_ptr;
+	mc_seed_cache();
+	/* Defensive 9-bit clamp at the lib boundary: this value goes straight into
+	 * the 9-bit header AND the 16-bit AES counter, so it MUST be <= 511 (see
+	 * header note). No-op during normal 0..511 operation. */
+	*mc_ptr = (uint16_t)(message_counter & 0x1FFu);
 	return KNS_STATUS_OK;
 }
 
 enum KNS_status_t MCU_NVM_setMC(uint16_t mcTmp)
 {
+	/* Clamp every setter to the 9-bit protocol range — lib auto-increment,
+	 * the app per-sequence stomp, and operator AT+MC all converge here, so a
+	 * value > 511 can never reach the frame and corrupt it (see header note).
+	 * The wear-leveling math below then runs on the 9-bit value it expects. */
+	mcTmp = (uint16_t)(mcTmp & 0x1FFu);
+	mc_seed_cache();
 	message_counter = mcTmp;
 
-	return MCU_FLASH_set_msg_counter((uint64_t)mcTmp);
+	/* mc_flash_shadow is a monotonic 64-bit TX count; mcTmp is 9-bit clamped.
+	 * Compare on the 9-bit ring so the 511->0 rolling wrap reads as a normal
+	 * +1 forward step, NOT an operator jump (the old 16-bit compare misfired
+	 * here and forced a destructive page-0 rewrite every 512 TX). Ring
+	 * distance both directions, mod-512. */
+	const uint16_t flash_lo = (uint16_t)(mc_flash_shadow & 0x1FFu);
+	const uint16_t fwd = (uint16_t)((mcTmp - flash_lo) & 0x1FFu);
+
+	if (fwd == 0u)
+		return KNS_STATUS_OK;            /* already persisted */
+
+	if (fwd <= MC_SMALL_STEP) {
+		/* Normal TX flow (incl. the 511->0 wrap): advance the wear-leveled
+		 * counter slot by slot (one 8-byte program each, NO page-0 erase).
+		 * Shadow stays monotonic so a reboot can never replay a used MC. */
+		for (uint16_t i = 0; i < fwd; i++) {
+			enum KNS_status_t st = MCU_FLASH_increment_msg_counter();
+			if (st != KNS_STATUS_OK)
+				return st;
+			mc_flash_shadow++;
+		}
+		return KNS_STATUS_OK;
+	}
+
+	if ((uint16_t)((flash_lo - mcTmp) & 0x1FFu) <= MC_SMALL_STEP) {
+		/* Small rollback (per-sequence MC reuse): RAM only — the flash
+		 * high-water mark stays ahead so a reboot can never replay an
+		 * already-used MC. */
+		return KNS_STATUS_OK;
+	}
+
+	/* Genuine far jump (operator AT+MC to a distant in-ring value): rewrite.
+	 * Realign shadow UP to the next 512-boundary + mcTmp so it stays strictly
+	 * monotonic (never rewinds the high-water) and its 9-bit residue == mcTmp. */
+	mc_flash_shadow = (mc_flash_shadow & ~0x1FFull) + 0x200u + (uint64_t)mcTmp;
+	return MCU_FLASH_set_msg_counter(mc_flash_shadow);
 }
 
 
@@ -157,9 +230,7 @@ enum KNS_status_t MCU_NVM_getWUC(uint16_t *wuc_ptr)
 
 enum KNS_status_t MCU_NVM_setWUC(uint16_t wucTmp)
 {
-	wakeup_counter = wucTmp;
 	return MCU_FLASH_set_wku_counter((uint64_t)wucTmp);
-
 }
 enum KNS_status_t MCU_NVM_getRadioConfZonePtr(void **ConfZonePtr)
 {
@@ -282,12 +353,24 @@ enum KNS_status_t MCU_NVM_setAddr(uint8_t addr[])
 }
 enum KNS_status_t MCU_NVM_getSN(uint8_t sn[])
 {
-    uint16_t i;
+	const uint32_t xy    = *(const volatile uint32_t *)(UID_BASE + 0x00U);
+	const uint32_t wafer = *(const volatile uint32_t *)(UID_BASE + 0x04U);
+	const uint32_t lot   = *(const volatile uint32_t *)(UID_BASE + 0x08U);
 
-    for (i = 0 ; i < DEVICE_SN_LENGTH ; i++)
-        sn[i] = device_sn[i];
+	/* Fold the two lot/wafer words into 12 bits (XOR of all nibbles by
+	 * groups) so every UID bit contributes to the serial. */
+	const uint32_t mix = wafer ^ lot;
+	const uint32_t fold12 = (mix ^ (mix >> 12) ^ (mix >> 24)) & 0xFFFu;
 
-    return KNS_STATUS_OK;
+	char buf[DEVICE_SN_LENGTH + 2];
+	const int n = snprintf(buf, sizeof(buf), "SMD%03lX%08lX",
+			       (unsigned long)fold12, (unsigned long)xy);
+	if (n != DEVICE_SN_LENGTH)
+		return KNS_STATUS_ERROR;
+
+	/* Contract: exactly DEVICE_SN_LENGTH bytes, no NUL (callers append it). */
+	memcpy(sn, buf, DEVICE_SN_LENGTH);
+	return KNS_STATUS_OK;
 }
 
 /**

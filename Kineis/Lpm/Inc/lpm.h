@@ -117,6 +117,81 @@ void LPM_forceMode(enum MgrLpm_LPM_t low_power_mode);
  */
 enum MgrLpm_LPM_t LPM_getMode(void);
 
+/**
+ * @brief Override the LPM mode requested by clients on next LPM_enter
+ *
+ * When set to a value other than LOW_POWER_MODE_NONE, the Kineis stack LPM
+ * client returns this mode instead of computing it from rsrcStatus. The chosen
+ * mode is still masked by lpm_config.allowedLPMbitmap in MGR_LPM_enter, so the
+ * mode must also be enabled in the bitmap to actually be entered.
+ *
+ * @param[in] mode forced mode (LOW_POWER_MODE_NONE clears the override)
+ */
+void LPM_setForcedMode(enum MgrLpm_LPM_t mode);
+
+/**
+ * @brief Get the current forced mode override
+ *
+ * @return Currently forced mode, or LOW_POWER_MODE_NONE if no override active
+ */
+enum MgrLpm_LPM_t LPM_getForcedMode(void);
+
+/**
+ * @brief Enter SHUTDOWN mode with full teardown.
+ *
+ * Runs the same prep sequence as the MGR_LPM aggregator would (deinit ADC,
+ * GPIOs to analog, configure pulls + wake-up pins + RTC alarm, clear PWR
+ * flags), then enters SHUTDOWN. Never returns — on wake, the chip cold-boots.
+ *
+ * Use this from app code that needs to enter SHUTDOWN outside the normal
+ * aggregator flow (e.g. magnet 6 s gesture, boot-loop PERMANENT_OFF) so the
+ * teardown happens once in a single place rather than being duplicated at
+ * every call site.
+ *
+ * @note On SMD_STDALONE this also pulls PWR_LATCH (PB7) LOW which physically
+ * cuts board power via the reed-switch hardware latch.
+ */
+void LPM_shutdownNow(void);
+
+/**
+ * @brief Enter SHUTDOWN with an RTC auto-wake fallback.
+ *
+ * Same as LPM_shutdownNow() but additionally arms the RTC wake-up timer so
+ * the chip cold-boots after at most @p wakeup_seconds even if no other wake
+ * source fires (reed magnet, NRST, etc.).
+ *
+ * Use this for **sealed-deployment** scenarios where the chip cannot be
+ * woken manually (no magnet access, no NRST button). Examples:
+ *   - boot-loop PERMANENT_OFF: chip retries every 24 h instead of staying
+ *     off forever
+ *   - low-battery deep-discharge: chip wakes periodically to re-check the
+ *     battery and resume operation when it recovers
+ *
+ * @param wakeup_seconds  Seconds to sleep before auto-wake. Range
+ *                        1..131 072 (≈ 36 h). Values > 65 536 use the
+ *                        17-bit RTC mode, smaller values use the 16-bit
+ *                        mode. 0 is equivalent to LPM_shutdownNow() (no
+ *                        auto-wake).
+ *
+ * @note On SMD_STDALONE the board's PWR_LATCH circuit cuts main power; the
+ * reed-switch reactivates it on the magnet, and the RTC alarm also asserts
+ * the WKUP3 pin internally to re-activate the latch when the timer fires.
+ */
+void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds);
+
+/**
+ * @brief Snapshot the RTC time right before a STOP/STOP2 entry.
+ *
+ * Pair with LPM_compensateTick() on wake: together they add the real
+ * (RTC-measured) sleep duration to HAL_GetTick, so software timers keep
+ * counting wall-clock time across sleep. SysTick is dead in STOP modes;
+ * without the pair every tick-based timer counts CPU-active time only.
+ */
+void LPM_saveRtcTime(void);
+
+/** @brief Add the RTC-measured time slept since LPM_saveRtcTime() to uwTick. */
+void LPM_compensateTick(void);
+
 #endif /* LPM_KSTK_H */
 
 /**

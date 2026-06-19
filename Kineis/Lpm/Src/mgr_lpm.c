@@ -18,6 +18,7 @@
 #include KINEIS_SW_ASSERT_H
 #include "kns_app_conf.h"  // for STM32 LPM definitions
 #include STM32_HAL_H
+#include "mgr_log.h"
 #ifdef USE_BAREMETAL
 #include "kns_q.h"
 #endif
@@ -59,8 +60,8 @@ enum KNS_status_t MGR_LPM_init(struct MgrLpm_EnvConfig_t env_config)
 		mgrLpmClientTab[i].fpMGR_LPM_LpmReqCb        = NULL;
 		mgrLpmClientTab[i].fpMGR_LPM_LpmNotifEnterCb = NULL;
 		mgrLpmClientTab[i].fpMGR_LPM_LpmNotifExitCb  = NULL;
-		mgrLpmClientNbr = 0;
 	}
+	mgrLpmClientNbr = 0;
 	return KNS_STATUS_OK;
 }
 
@@ -117,6 +118,13 @@ enum KNS_status_t MGR_LPM_enter(struct MgrLpm_EnvConfig_t env_config,
 
 	//> Notify each client with the deepest chosen LPM
 	vMGR_LPM_clientNotifyEnter(deepest_lpm);
+
+	/* Silence the "mode=NONE" spam: it fires every main-loop iteration
+	 * (~10/s) when STOP is disabled, drowning every other trace. Only log
+	 * mode transitions away from NONE which is the interesting case. */
+	if (deepest_lpm != LOW_POWER_MODE_NONE)
+		MGR_LOG_DEBUG("LPM enter: mode=0x%02X (allowed=0x%02X)\r\n",
+			(unsigned int)deepest_lpm, (unsigned int)env_config.allowedLPMbitmap);
 
 	switch (deepest_lpm) {
 	case LOW_POWER_MODE_NONE:
@@ -245,6 +253,29 @@ static void vMGR_LPM_enterStop(struct MgrLpm_EnvConfig_t env_config)
 	if (env_config.fp_stop_enter != NULL)
 		env_config.fp_stop_enter();
 
+	/* Preventive hardening (dormant — STOP is disabled in the production
+	 * MONITORING profile via uw_doppler_lpmReq() returning NONE).
+	 *
+	 * Without these clears, a stale PWR_FLAG_STOPF / WUFI sticky from a
+	 * previous wake makes WFI return immediately on the second STOP entry,
+	 * which is the symptom captured in memory/lpm_stop_known_issue.md
+	 * ("works once, never again on subsequent boots").
+	 *
+	 * STANDBY/SHUTDOWN paths below already do this clear. Adding it here
+	 * means the moment someone re-enables STOP in MONITORING (by flipping
+	 * uw_doppler_lpmReq()) the trap doesn't re-arm. */
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+
+#if defined(STM32WL55xx)
+	/* PWR_C2CR1.LPMS caps the SYSTEM low-power mode (effective mode =
+	 * shallowest of CR1/C2CR1, RM0453 6.5.3) and survives every reset
+	 * except POR. Seen polluted to Stop0 on the bench: every deep-sleep
+	 * request silently degraded (WKUP pins dead, IWDG kept counting).
+	 * CPU2 never boots on this product — force "no floor" before entry. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+#endif
+
 #if defined(STM32L476xx) || defined(STM32WLE5xx) || defined(STM32G491xx)
 #ifdef USE_BAREMETAL
 	if (!KNS_Q_isEvtInSomeQ()) // recheck all queues empty before LPM
@@ -283,6 +314,10 @@ static void vMGR_LPM_enterStandBy(struct MgrLpm_EnvConfig_t env_config)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+#if defined(STM32WL55xx)
+	/* See vMGR_LPM_enterStop: CPU2 LPMS floor must be opened. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+#endif
 	HAL_PWR_EnterSTANDBYMode();
 
 	/* We should never reach this point as standby exit performs a reset of the uC */
@@ -304,6 +339,10 @@ static void vMGR_LPM_enterShutdown(struct MgrLpm_EnvConfig_t env_config)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+#if defined(STM32WL55xx)
+	/* See vMGR_LPM_enterStop: CPU2 LPMS floor must be opened. */
+	MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS, PWR_LOWPOWERMODE_SHUTDOWN);
+#endif
 	HAL_PWREx_EnterSHUTDOWNMode();
 	
 	/* We should never reach this point as standby exit performs a reset of the uC */

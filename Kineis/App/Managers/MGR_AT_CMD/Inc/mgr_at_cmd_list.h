@@ -52,6 +52,10 @@ enum  atcmd_idx_t {
 
 	// MAC commands
 	AT_KMAC,         /**< Index for change profile */
+	AT_KCFG,         /**< v11.1.0: MAC L1 timer bitmap (suspend/resume) */
+	AT_KEVT,         /**< v11.1.0: dump pending MAC events */
+	AT_DL,           /**< v11.1.0: Argos downlink RX (gated BSP_HAS_DOWNLINK) */
+	AT_GNSS,         /**< v11.1.0: GNSS position (gated BSP_HAS_GNSS) */
 
 	// Prepass command
 	AT_PREPASS_EN,        /**< Enable prepass, not implemented */
@@ -70,6 +74,28 @@ enum  atcmd_idx_t {
 	AT_LOG,          /**< Event log dump / clear */
 	AT_SAVE,         /**< Save config to NVM */
 	AT_BATCFG,       /**< Battery protection config */
+	AT_RATECLEAR,    /**< Wipe rate-limiter ring */
+	AT_RATECFG,      /**< Rate-limiter config (window_s, max_tx) */
+	AT_RATE,         /**< Rate-limiter live query */
+	AT_STATUS,       /**< Sprint 2: snapshot of runtime state */
+	AT_DIAG,         /**< Sprint 2: self-test (SWS/LED/REED/BAT) */
+	AT_RESET,        /**< Sprint 2: software reset */
+	AT_SHUTDOWN,     /**< Force HW SHUTDOWN (validation without magnet) */
+	AT_STANDBYTEST,  /**< STANDBY-cycling validation (RTC wake N seconds) */
+	AT_STOPTEST,     /**< STOP2-cycling validation (RTC + reed EXTI wake) */
+	AT_DUTYCFG,      /**< Event-driven LPM duty cycle (uw_s, surf_s, enable) */
+	AT_UARTLOG,      /**< Toggle spontaneous UART log stream (AT responses always emit) */
+	AT_MODE,         /**< Query/change OPERATIONAL/CONFIG/POWER_OFF mode via UART */
+	AT_LOGLVL,       /**< Query/set runtime log severity threshold (TRACE..NONE) */
+	AT_LPMSTAT,      /**< LPM duty-cycle telemetry (uptime/stop2/count/duty) */
+	AT_PAYCFG,       /**< TX payload format + stats sliding window */
+	AT_STATS,        /**< Sliding-window episode statistics */
+	AT_LPMTHR,       /**< Configure event-driven LPM thresholds (spin/sleep/enable) */
+	AT_LBCFG,        /**< Sprint 2: low-battery mode config */
+	AT_LB,           /**< Sprint 2: live LB mode state */
+	AT_TXSTATS,      /**< Sprint 4: persistent TX counters */
+	AT_PMLOG,        /**< Sprint 4: post-mortem flash log */
+	AT_TEST,         /**< Sprint 4: forced TX burst */
 #endif
 
 #ifdef USE_DOPPLER_APP

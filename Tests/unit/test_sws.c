@@ -33,14 +33,16 @@
 #define SURFACE_READINGS_SIZE              10
 #define CALIB_INTERVAL_S                 3600
 
-#define L1_DROP_PERCENT                     5
-#define L2_DROP_PERCENT                     3
-#define L2_MIN_CONSECUTIVE                  2
+/* These MUST mirror the shipping values in mgr_sws.c — a drift here means the
+ * tests validate a different algorithm than the one deployed (audit finding). */
+#define L1_DROP_PERCENT                     4   /* mgr_sws.c:88 */
+#define L2_DROP_PERCENT                     3   /* mgr_sws.c:91 */
+#define L2_MIN_CONSECUTIVE                  2   /* mgr_sws.c:92 */
 #define L3_MIN_CONSECUTIVE                  3
-#define L3_DROP_PERCENT                     5
+#define L3_DROP_PERCENT                     4   /* mgr_sws.c:97 */
 #define TREND_MA_SIZE                       3
-#define L4_DROP_PERCENT                    15
-#define L5_DROP_PERCENT                    15
+#define L4_DROP_PERCENT                    15   /* mgr_sws.c:101 */
+#define L5_DROP_PERCENT                    10   /* mgr_sws.c:104 */
 #define L5_MIN_TIME_SEC                    10
 #define OVERRIDE_MIN_TIME_SEC               1
 #define SURFACE_LOCKOUT_S                  30
@@ -491,7 +493,7 @@ void test_coherence_guard_low_air(void)
  * SURFACE DETECTION LEVEL TESTS
  ******************************************************************************/
 
-/** L1: Drop > 5% from recent peak */
+/** L1: Drop >= 4% from recent peak (shipping L1_DROP_PERCENT) */
 void test_level1_peak_drop(void)
 {
 	uint16_t recent_peak = 1000;
@@ -499,7 +501,7 @@ void test_level1_peak_drop(void)
 	uint16_t drop_pct = (uint16_t)(((uint32_t)(recent_peak - raw) * 100) / recent_peak);
 	ASSERT_TRUE(drop_pct >= L1_DROP_PERCENT);
 
-	raw = 960; /* 4% drop - not enough */
+	raw = 970; /* 3% drop - below the 4% L1 threshold */
 	drop_pct = (uint16_t)(((uint32_t)(recent_peak - raw) * 100) / recent_peak);
 	ASSERT_FALSE(drop_pct >= L1_DROP_PERCENT);
 	TEST_PASS();
@@ -535,19 +537,19 @@ void test_level4_water_drop(void)
 	TEST_PASS();
 }
 
-/** L5: Cumulative drop from dive peak > 15%, time gate */
+/** L5: Cumulative drop from dive peak >= 10% (shipping L5_DROP_PERCENT), time gate */
 void test_level5_dive_peak_drop(void)
 {
 	uint16_t peak = 1000;
-	uint16_t filtered = 840;
+	uint16_t filtered = 880;
 	uint16_t drop_pct = (uint16_t)(((uint32_t)(peak - filtered) * 100) / peak);
-	ASSERT_EQ(16, drop_pct);
-	ASSERT_TRUE(drop_pct >= L5_DROP_PERCENT);
+	ASSERT_EQ(12, drop_pct);
+	ASSERT_TRUE(drop_pct >= L5_DROP_PERCENT);   /* 12% caught — old L5=15% would have missed it */
 
-	filtered = 860;
+	filtered = 920;
 	drop_pct = (uint16_t)(((uint32_t)(peak - filtered) * 100) / peak);
-	ASSERT_EQ(14, drop_pct);
-	ASSERT_FALSE(drop_pct >= L5_DROP_PERCENT);
+	ASSERT_EQ(8, drop_pct);
+	ASSERT_FALSE(drop_pct >= L5_DROP_PERCENT);   /* 8% < 10% */
 	TEST_PASS();
 }
 

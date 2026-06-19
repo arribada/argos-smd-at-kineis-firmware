@@ -189,11 +189,11 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 		isToBeTransmit = false;
 		status = KNS_RFTX_abortRf(NULL);
 		if (status != KNS_STATUS_OK) {
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		}
 		status = KNS_RFTX_powerOff(NULL);
 		if (status != KNS_STATUS_OK) {
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		}
 	}
 
@@ -268,7 +268,7 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 	/** ---- Send frame ---- */
 	status = KNS_RFTX_powerOn(NULL);
 	if (status != KNS_STATUS_OK) {
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 	}
 
 	status = KNS_RFTX_setCfg(&rf_cfg_local);
@@ -276,7 +276,7 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 		isToBeTransmit = false;
 		(void)KNS_RFTX_abortRf(NULL);  /* MISRA Rule 17.7 - Error cleanup, return ignored */
 		(void)KNS_RFTX_powerOff(NULL);
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 	}
 
 	/** Keep pushing a bitstream, even with NULL length for CW */
@@ -286,7 +286,7 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 		isToBeTransmit = false;
 		(void)KNS_RFTX_abortRf(NULL);
 		(void)KNS_RFTX_powerOff(NULL);
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 	}
 
 	/** Do the TCXO wramp for first transmission. No need to do it for next burst as
@@ -300,7 +300,7 @@ static bool MGR_AT_CMD_sendRandomTxData(struct KNS_tx_rf_cfg_t *rf_cfg)
 		isToBeTransmit = false;
 		(void)KNS_RFTX_abortRf(NULL);
 		(void)KNS_RFTX_powerOff(NULL);
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 	}
 
 	MGR_LOG_DEBUG("[%s] TX bitstream: 0x", __func__);
@@ -458,10 +458,10 @@ bool bMGR_AT_CMD_CW_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mo
 			isToBeTransmit = false;
 			status = KNS_RFTX_abortRf(NULL);
 			if (status != KNS_STATUS_OK)
-				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+				return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 			status = KNS_RFTX_powerOff(NULL);
 			if (status != KNS_STATUS_OK)
-				return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+				return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 			else
 				return bMGR_AT_CMD_logSucceedMsg();
 			break;

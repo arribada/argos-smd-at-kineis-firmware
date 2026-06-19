@@ -28,6 +28,21 @@ void MGR_REED_init(void);
 /** @brief Check if magnet is currently present (PB6 = HIGH) */
 bool MGR_REED_isMagnetPresent(void);
 
+/** @brief True iff a magnet-state transition is currently being polled but
+ *  has not yet accumulated enough consecutive samples to confirm. The LPM
+ *  client checks this before entering STOP2 — otherwise the chip can
+ *  re-enter sleep mid-debounce and the magnet edge never gets recognised
+ *  (debouncer accumulates ~1 sample per wake → never reaches the N-sample
+ *  confirmation window). */
+bool MGR_REED_isDebouncing(void);
+
+/** @brief Blank the reed debouncer until @p until_tick (HAL_GetTick units).
+ *  While blanked, no sampling occurs, no events are published and
+ *  isDebouncing() returns false. Used to suppress the SubGHz PA TX-transient
+ *  coupling into the high-impedance reed node. The EXTI STOP2 wake is NOT
+ *  affected — a genuine magnet still wakes the chip on hardware. */
+void MGR_REED_blankUntil(uint32_t until_tick);
+
 /** @brief Get and clear pending reed event (call from main loop)
  *  @return Event type, or MGR_REED_EVT_NONE if no pending event
  */

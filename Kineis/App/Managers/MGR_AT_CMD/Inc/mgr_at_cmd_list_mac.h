@@ -44,6 +44,23 @@
  */
 bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/**
+ * @brief AT+KCFG — set/get the v11.1.0 MAC L1 timer configuration bitmap.
+ *
+ * "AT+KCFG=<bitmap>" → suspend/resume L1 timer (bit0=suspend, bit1=resume).
+ * "AT+KCFG=?"        → return current bitmap as +KCFG=<raw>.
+ */
+bool bMGR_AT_CMD_KCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/**
+ * @brief AT+KEVT — drain and dump pending MAC events from the UL queue.
+ *
+ * "AT+KEVT=?" → emit "+KEVT=<id>,<status>,<app_evt>" per event present in
+ * KNS_Q_UL_MAC2APP, then "+OK". On builds where the MAC stack handles its
+ * own events the queue is normally empty.
+ */
+bool bMGR_AT_CMD_KEVT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_MAC_H */
 /**
  * @}

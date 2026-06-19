@@ -2,6 +2,12 @@
 # Bootloader Makefile for STM32WL55
 ##########################################################################################################################
 
+# Force bash as the shell on Windows (Git Bash). Recipes use bash/Unix syntax.
+ifeq ($(OS),Windows_NT)
+SHELL := C:/Program Files/Git/bin/bash.exe
+.SHELLFLAGS := -c
+endif
+
 ######################################
 # target
 ######################################
@@ -95,7 +101,7 @@ C_DEFS =  \
 # Both UART and SPI are always supported, but the default baudrate changes
 ifeq ($(PROTOCOL), UART)
 C_DEFS += -DBL_PROTOCOL_UART
-$(info Building bootloader for UART mode (9600 baud for UART, SPI still enabled))
+$(info Building bootloader for UART mode (DFU baud=$(BL_UART_BAUD), SPI still enabled))
 else
 C_DEFS += -DBL_PROTOCOL_SPI
 $(info Building bootloader for SPI mode (115200 baud for UART debug))
@@ -103,6 +109,22 @@ endif
 
 ifeq ($(DEBUG), 1)
 C_DEFS += -DDEBUG
+endif
+
+# Optional board activity LED indicator (e.g. SMD_STDALONE RGB on PA1/PB4/PB5).
+# OFF by default so already-deployed bootloaders stay byte-identical.
+# Enable only for a board with free LED pins in UART-DFU: make BL_LED=1
+ifeq ($(BL_LED), 1)
+C_DEFS += -DBL_LED
+$(info Bootloader LED indicator ENABLED (RGB on PA1/PB4/PB5))
+endif
+
+# Optional explicit UART DFU baud override (decouples baud from PROTOCOL).
+# Unset by default -> baud follows PROTOCOL (deployed builds unchanged).
+# UW_DOPPLER board console is 115200: make PROTOCOL=UART BL_UART_BAUD=115200
+ifdef BL_UART_BAUD
+C_DEFS += -DBL_UART_BAUDRATE=$(BL_UART_BAUD)
+$(info Bootloader UART DFU baud forced to $(BL_UART_BAUD))
 endif
 
 # C includes

@@ -17,6 +17,7 @@
 #include "mgr_at_cmd_list_user_data.h"
 #include "mgr_at_cmd_list_previpass.h"
 #include "mgr_at_cmd_list_mac.h"
+#include "mgr_at_cmd_list_v11.h"
 #include "mgr_at_cmd_list_certif.h"
 #ifdef USE_UW_DOPPLER_APP
 #include "mgr_at_cmd_list_uw_doppler.h"
@@ -25,7 +26,7 @@
 #include "mgr_at_cmd_list_doppler.h"
 #endif
 
-const char *atcmd_version = "v0.7";
+const char *atcmd_version = "v0.8.1";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
@@ -59,6 +60,16 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	/**< MAC commands (not functionnal, only to avoid GUI to crash) */
 	{ "AT+KMAC",          7, bMGR_AT_CMD_KMAC_cmd},
 
+	/**< v11.1.0 stack-side additions (KCFG/KEVT) + gated board features (DL/GNSS).
+	 * Longest prefix first; KEVT before KMAC would be wrong here because KMAC is
+	 * still shorter than KEVT/KCFG. The dispatcher does longest-prefix-first so
+	 * relative order among same-length prefixes only matters when one is a
+	 * prefix of another (not the case here). */
+	{ "AT+KCFG",          7, bMGR_AT_CMD_KCFG_cmd},
+	{ "AT+KEVT",          7, bMGR_AT_CMD_KEVT_cmd},
+	{ "AT+GNSS",          7, bMGR_AT_CMD_GNSS_cmd},
+	{ "AT+DL",            5, bMGR_AT_CMD_DL_cmd},
+
 	/**< Prepass command (stub for GUI compatibility) */
 	{ "AT+PREPASS_EN",   13, bMGR_AT_CMD_PREPASS_EN_cmd},
 
@@ -76,6 +87,35 @@ const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {
 	{ "AT+LOG",           6, bMGR_AT_CMD_LOG_cmd},
 	{ "AT+SAVE",          7, bMGR_AT_CMD_SAVE_cmd},
 	{ "AT+BATCFG",        9, bMGR_AT_CMD_BATCFG_cmd},
+	/* Rate limiter — RATECLEAR / RATECFG before RATE to win prefix match */
+	{ "AT+RATECLEAR",    12, bMGR_AT_CMD_RATECLEAR_cmd},
+	{ "AT+RATECFG",      10, bMGR_AT_CMD_RATECFG_cmd},
+	{ "AT+RATE",          7, bMGR_AT_CMD_RATE_cmd},
+	/* Sprint 2 diagnostic / control */
+	{ "AT+STATUS",        9, bMGR_AT_CMD_STATUS_cmd},
+	{ "AT+DIAG",          7, bMGR_AT_CMD_DIAG_cmd},
+	{ "AT+RESET",         8, bMGR_AT_CMD_RESET_cmd},
+	{ "AT+SHUTDOWN",     11, bMGR_AT_CMD_SHUTDOWN_cmd},
+	{ "AT+STANDBYTEST",  14, bMGR_AT_CMD_STANDBYTEST_cmd},
+	{ "AT+STOPTEST",     11, bMGR_AT_CMD_STOPTEST_cmd},
+	{ "AT+DUTYCFG",      10, bMGR_AT_CMD_DUTYCFG_cmd},
+	{ "AT+UARTLOG",      10, bMGR_AT_CMD_UARTLOG_cmd},
+	{ "AT+MODE",          7, bMGR_AT_CMD_MODE_cmd},
+	{ "AT+LOGLVL",        9, bMGR_AT_CMD_LOGLVL_cmd},
+	/* LPMSTAT before LPMTHR: longest shared prefix first */
+	{ "AT+LPMSTAT",      10, bMGR_AT_CMD_LPMSTAT_cmd},
+	{ "AT+PAYCFG",        9, bMGR_AT_CMD_PAYCFG_cmd},
+	/* STATS after STATUS in the table; prefixes differ at char 8 so no
+	 * shadowing either way. */
+	{ "AT+STATS",         8, bMGR_AT_CMD_STATS_cmd},
+	{ "AT+LPMTHR",        9, bMGR_AT_CMD_LPMTHR_cmd},
+	/* LB mode — LBCFG before LB to win prefix match */
+	{ "AT+LBCFG",         8, bMGR_AT_CMD_LBCFG_cmd},
+	{ "AT+LB",            5, bMGR_AT_CMD_LB_cmd},
+	/* Sprint 4 telemetry / post-mortem / test burst */
+	{ "AT+TXSTATS",      10, bMGR_AT_CMD_TXSTATS_cmd},
+	{ "AT+PMLOG",         8, bMGR_AT_CMD_PMLOG_cmd},
+	{ "AT+TEST",          7, bMGR_AT_CMD_TEST_cmd},
 #endif
 
 #ifdef USE_DOPPLER_APP

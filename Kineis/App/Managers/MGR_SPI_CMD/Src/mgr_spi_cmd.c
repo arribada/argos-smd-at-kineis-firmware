@@ -69,10 +69,10 @@ static bool MGR_SPI_CMD_process_cmd(uint8_t cmd)
     bool ret = true;
 
 #ifdef DEBUG
-    /* Direct UART output for DFU_ENTER command (0x3F) */
-    if (cmd == 0x3F) {
+    /* DFU_ENTER trace — TRACE-grade, gated so AT+LOGLVL=4 stays clean. */
+    if (cmd == 0x3F && MGR_LOG_passes(MGR_LOG_LVL_TRACE)) {
         extern UART_HandleTypeDef hlpuart1;
-        const char msg[] = "\r\n>>> PROCESSING CMD 0x3F <<<\r\n";
+        const char msg[] = "\r\n[T] >>> PROCESSING CMD 0x3F <<<\r\n";
         HAL_UART_Transmit(&hlpuart1, (uint8_t*)msg, sizeof(msg)-1, 100);
     }
 #endif
@@ -293,17 +293,40 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
     case (KNS_MAC_TXACK_DONE):
     case (KNS_MAC_TX_TIMEOUT):
     case (KNS_MAC_TXACK_TIMEOUT):
+    case (KNS_MAC_TX_ABORT):  /* v11.1.0 — TX aborted (stop_send_data / FIFO flush) */
     case (KNS_MAC_RX_ERROR):
     case (KNS_MAC_RX_TIMEOUT):
-        spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-            srvcEvt.tx_ctxt.data_bitlen);
+        /* v11.1.0: tx_ctxt no longer carries data/data_bitlen. SPI host
+         * protocol expects 1 TX in flight (master polls MAC_STATUS=TX_DONE
+         * before pushing another), so head-of-FIFO equals the element being
+         * completed in current usage. If we ever enable multi-TX with the
+         * SPI master OR BLIND multi-msg parallel mode, this lookup must be
+         * replaced with a frm_hdlr match (srvcEvt.tx_ctxt.frm_hdlr stored
+         * on the USERDATA element at KNS_MAC_OK reply time).
+         *
+         * Defensive WARN: if more than one element sits in the FIFO at this
+         * point, the head may not be the one that just completed and we
+         * risk freeing the wrong payload. We don't refuse the lookup here
+         * (zero behavioural change vs. tag v3.0) but we log it so a bench
+         * operator sees the misalignment risk.
+         *
+         * TODO (post-bench validation): switch to a hard refusal in
+         * bMGR_SPI_CMD_WRITETX_cmd — return MAC_STATUS_BUSY (or equivalent)
+         * if USERDATA_txFifoGetCount() > 0, forcing the master to wait for
+         * TX_DONE before pushing the next message. Cleanest fix but needs
+         * SPI master verification first since it changes the contract. */
+        if (USERDATA_txFifoGetCount() > 1u) {
+            MGR_LOG_DEBUG("[SPI] multi-TX in FIFO (%u) — head match may "
+                          "misalign on v11 frm_hdlr-less lookup\r\n",
+                          (unsigned)USERDATA_txFifoGetCount());
+        }
+        spUserDataMsg = USERDATA_txFifoGetFirst();
         kns_assert(spUserDataMsg != NULL);
         /* macStatus will be set in the processing switch below */
         break;
     case (KNS_MAC_ERROR):
         if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-            spUserDataMsg = USERDATA_txFifoFindPayload(srvcEvt.tx_ctxt.data,
-                srvcEvt.tx_ctxt.data_bitlen);
+            spUserDataMsg = USERDATA_txFifoGetFirst();
             MCU_MISC_TCXO_Force_State(false);
             MCU_MISC_turn_off_pa();
             kns_assert(spUserDataMsg != NULL);
@@ -413,7 +436,13 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         cbStatus = KNS_STATUS_OK;
         break;
 
-    case (KNS_MAC_DL_BC):
+    /* v11.1.0 split the legacy KNS_MAC_DL_BC into three distinct DL frame
+     * types. We treat all three identically from the MGR_SPI_CMD layer:
+     * downlink received, host notified.
+     */
+    case (KNS_MAC_DL_USERBC):
+    case (KNS_MAC_DL_SYSBC):
+    case (KNS_MAC_DL_ALLCAST):
         MGR_LOG_DEBUG("MGR_SPI_CMD Downlink beacon received\r\n");
         macStatus = MAC_RX_RECEIVED;
         cbStatus = KNS_STATUS_OK;
@@ -444,17 +473,29 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         break;
 
     case (KNS_MAC_RF_ABORTED):
-        MGR_LOG_DEBUG("MGR_SPI_CMD RF operation aborted\r\n");
+    /* v11.1.0 KNS_MAC_TX_ABORT — same telemetry semantics: TX did not
+     * complete due to a controlled abort (host stop or FIFO flush), not
+     * an unexpected MAC error. Map to the same MAC_RF_ABORTED status so
+     * the master sees a well-defined code rather than MAC_ERROR. */
+    case (KNS_MAC_TX_ABORT):
+        MGR_LOG_DEBUG("MGR_SPI_CMD RF operation aborted (evt=%u)\r\n",
+                      (unsigned)srvcEvt.id);
         MCU_MISC_TCXO_Force_State(false);
         MCU_MISC_turn_off_pa();
+        if (spUserDataMsg != NULL && spUserDataMsg->bIsToBeTransmit)
+            USERDATA_txFifoRemoveElt(spUserDataMsg);
         macStatus = MAC_RF_ABORTED;
         cbStatus = KNS_STATUS_OK;
         break;
 
     default:
-        MGR_LOG_DEBUG("MGR_SPI_CMD Unknown MAC event: %d\r\n", srvcEvt.id);
-        macStatus = MAC_ERROR;
-        cbStatus = KNS_STATUS_ERROR;
+        /* Unknown event — could be a v11.1.0+ addition (RX_MODE_TEST /
+         * RUNTIME, POS reply) we don't subscribe to. Log but don't
+         * surface a hard MAC_ERROR to the master to avoid spurious
+         * fault reporting. */
+        MGR_LOG_DEBUG("MGR_SPI_CMD Unhandled MAC event: %u\r\n",
+                      (unsigned)srvcEvt.id);
+        cbStatus = KNS_STATUS_OK;
         break;
     }
 

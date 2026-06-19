@@ -2,10 +2,13 @@
  * Linker script for STM32WL55 Application (with bootloader after app)
  * Application starts at 0x08000000 (for Kineis library compatibility)
  *
- * Memory Layout:
- * 0x08000000 - 0x08032FFF : Application Code (204KB)
+ * Memory Layout (Sprint 4: app shrunk by 4 KB to carve out post-mortem log pages):
+ * 0x08000000 - 0x08031FFF : Application Code (200KB)
+ * 0x08032000 - 0x08032FFF : Flash extension log (4KB = 2 erase pages)
+ *                           - page 0 (2KB @ 0x08032000) : MGR_PMLOG post-mortem
+ *                           - page 1 (2KB @ 0x08032800) : reserved for BAT_LOG
  * 0x08033000 - 0x0803AFFF : Bootloader (32KB)
- * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB) - PRESERVED
+ * 0x0803B000 - 0x0803FFFF : Flash User Data (20KB) - PRESERVED (Kineis lib + NVM)
  */
 
 /* Entry Point */
@@ -23,8 +26,12 @@ _bootloader_addr = 0x08033000;
 /* Memory regions for application */
 MEMORY
 {
-  /* Application code at start of flash (Kineis compatible) */
-  ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 204K      /* 204KB for app */
+  /* Application code at start of flash (Kineis compatible).
+   * Shrunk from 204K to 200K to carve out FLASH_PMLOG below. */
+  ROM         (rx)  : ORIGIN = 0x08000000, LENGTH = 200K
+  /* Flash extension log region — 4KB = 2 erase pages.
+   * Address constants are duplicated in mgr_pmlog.h so they must stay in sync. */
+  FLASH_PMLOG (rw)  : ORIGIN = 0x08032000, LENGTH = 4K
   /* Bootloader region (not used by app, just reserved) */
   /* BL_ROM   (rx)  : ORIGIN = 0x08033000, LENGTH = 32K */
   /* Flash user data - PRESERVED at original location */
@@ -125,15 +132,19 @@ SECTIONS
     . = ALIGN(8);
   } >ROM
 
-  /* RAM2 data (Kineis context - retention) */
+  /* RAM2 data — copy-from-ROM-initialised by Sram2_Init.
+   * Contains Kineis stack context AND application items that *want* their
+   * C initialiser applied on every cold/factory boot (e.g. lpm_config,
+   * user_data FIFO). Items that must SURVIVE all software resets must
+   * instead live in `.retention_noload` below. */
   _sidata2 = LOADADDR(.data2);
 
   .data2 :
   {
     . = ALIGN(4);
     _sdata2 = .;
-    *(.knsCtxtData)
-    *(.retentionRamData)
+    KEEP(*(.knsCtxtData))
+    KEEP(*(.retentionRamData))
     . = ALIGN(4);
     _edata2 = .;
   } >RAM2 AT> ROM
@@ -151,17 +162,38 @@ SECTIONS
     _edata = .;
   } >RAM1 AT> ROM
 
-  /* RAM2 BSS (Kineis context) */
+  /* RAM2 BSS — zeroed by Sram2_Init on every cold/factory boot. */
   . = ALIGN(4);
   .bss2 :
   {
     _sbss2 = .;
     __bss2_start__ = _sbss2;
-    *(.knsCtxtBss)
-    *(.retentionRamBss)
+    KEEP(*(.knsCtxtBss))
+    KEEP(*(.retentionRamBss))
     . = ALIGN(4);
     _ebss2 = .;
     __bss2_end__ = _ebss2;
+  } >RAM2
+
+  /* Application "TRUE retention" RAM — NOLOAD, never touched by Sram2_Init.
+   * Survives every software-class reset (IWDG / SFT / OBL / BOR / PIN) so
+   * crash forensics, boot-loop counter, SWS calibration etc. don't silently
+   * lose their state on the reset paths that re-run Sram2_Init.
+   * Cleared ONLY by power-off (VBAT loss) or by an explicit memset.
+   *
+   * Trade-off: items here get NO C initialiser at boot. They MUST self-
+   * validate via magic + CRC (see boot_retained / sws_retained / crash_info).
+   *
+   * Place items with __attribute__((__section__(".retentionRamNoload"))). */
+  . = ALIGN(8);
+  .retention_noload (NOLOAD) :
+  {
+    _sretention = .;
+    __retention_start__ = _sretention;
+    KEEP(*(.retentionRamNoload))
+    . = ALIGN(8);
+    _eretention = .;
+    __retention_end__ = _eretention;
   } >RAM2
 
   /* RAM1 BSS */

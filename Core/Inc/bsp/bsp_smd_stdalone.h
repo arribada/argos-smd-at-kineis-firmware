@@ -16,6 +16,10 @@
 #define BSP_HAS_REED_SWITCH     1
 #define BSP_HAS_PWR_LATCH       1
 #define BSP_HAS_VBAT_ADC        1
+/* Krd v11.1.0 features — gated by AT handlers, GUI probes at connect */
+#define BSP_HAS_DOWNLINK        0   /* No Argos RX hardware on SMD_STDALONE */
+#define BSP_HAS_GNSS            0   /* No GNSS module */
+#define BSP_HAS_SATDET          0   /* No satellite detection RX path */
 
 /* ---- Debug pins ---- */
 #define JTMS_SWCLK_Pin          GPIO_PIN_14
@@ -59,9 +63,38 @@
 #define LED_BLUE_Pin            GPIO_PIN_5   /* PB5 → LED_B cathode (schematic pin 3) */
 #define LED_BLUE_GPIO_Port      GPIOB
 
-/* ---- Reed switch (active HIGH: HIGH = magnet present) ---- */
+/* ---- Reed switch (active HIGH: HIGH = magnet present) ----
+ * Default wiring: PB6 — EXTI-only, wakes STOP2 but NOT SHUTDOWN (the WL55
+ * only has wake circuitry on the dedicated WKUP pins PA0/PC13/PB3).
+ *
+ * Two HW-mod options for true-SHUTDOWN magnet wake:
+ *  - BSP_REED_ON_WKUP3 (make REED_WKUP3=1): reed MOVED to PB3 — PB3
+ *    becomes REED_MCU (EXTI3 + WKUP3), PB6 abandoned.
+ *  - BSP_REED_WKUP3_PARALLEL (make REED_WKUP3_WIRE=1): ONE wire drives
+ *    BOTH pins — reed stays on PB6 for everything (EXTI, debounce,
+ *    gesture), PB3 is used ONLY as the WKUP3 wake source for SHUTDOWN.
+ *    PB3 is also the SWO debug line on this board: the firmware forces it
+ *    to plain INPUT (no SWO) and the node level is owned by PB6's
+ *    pull-down. */
+#if defined(BSP_REED_ON_WKUP3)
+#define REED_MCU_Pin            GPIO_PIN_3
+#define REED_MCU_GPIO_Port      GPIOB
+#else
 #define REED_MCU_Pin            GPIO_PIN_6
 #define REED_MCU_GPIO_Port      GPIOB
+#endif
+
+/* Third option — BSP_REED_WKUP1_PARALLEL (make REED_WKUP1_WIRE=1): the
+ * parallel wire goes to PA0 = WKUP1 instead of PB3. PREFERRED bench mod:
+ * PA0 is unused on SMD_STDALONE (analog) and has NO debug function — the
+ * PB3/SWO route turned out to be held high by the debug-header pull-up,
+ * which poisoned the whole reed node (no edges, +82 µA through the
+ * shutdown pull-down). */
+#if (defined(BSP_REED_ON_WKUP3) && defined(BSP_REED_WKUP3_PARALLEL)) || \
+    (defined(BSP_REED_ON_WKUP3) && defined(BSP_REED_WKUP1_PARALLEL)) || \
+    (defined(BSP_REED_WKUP3_PARALLEL) && defined(BSP_REED_WKUP1_PARALLEL))
+#error "BSP_REED_ON_WKUP3 / BSP_REED_WKUP3_PARALLEL / BSP_REED_WKUP1_PARALLEL are mutually exclusive"
+#endif
 
 /* ---- Power latch (HIGH = keep board powered) ---- */
 #define PWR_LATCH_Pin           GPIO_PIN_7

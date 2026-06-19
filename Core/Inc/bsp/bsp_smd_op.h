@@ -9,6 +9,10 @@
 /* ---- Board capabilities ---- */
 #define BSP_BOARD_NAME          "SMD_OP"
 #define BSP_HAS_EXTERNAL_PA     1
+/* Krd v11.1.0 features — gated by AT handlers, GUI probes at connect */
+#define BSP_HAS_DOWNLINK        0
+#define BSP_HAS_GNSS            0
+#define BSP_HAS_SATDET          0
 
 /* ---- Debug pins ---- */
 #define JTMS_SWCLK_Pin          GPIO_PIN_14

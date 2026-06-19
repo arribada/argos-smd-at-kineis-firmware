@@ -124,7 +124,7 @@ enum KNS_status_t KNS_Q_pop(enum KNS_Q_handle_t qHandle, void *qItem)
 	uint8_t *qEltPtr, *qItemPtr;
 	struct q_desc_t *q = qPool[qHandle];
 #if (defined(VERBOSE))
-	uint8_t rIdxPrev __attribute__((unused)) = q->rIdx;
+	uint8_t rIdxPrev = q->rIdx;
 #endif
 
 	/** Report current is empty if some event prensent in some higher-priority queues.
@@ -189,7 +189,7 @@ bool KNS_Q_isEvtInSomeQ()
 
 	for (qHandleTmp = 0; qHandleTmp <  KNS_Q_MAX; qHandleTmp++) {
 		q = qPool[qHandleTmp];
-		if (q->rIdx != q->wIdx) {
+		if ((q->isLpmBlocker) && (q->rIdx != q->wIdx)) {
 			MGR_LOG_VERBOSE("[KNS_Q] some-Q check, evt found in q %s\r\n",
 				qIdx2Str[qHandleTmp]);
 			return true;

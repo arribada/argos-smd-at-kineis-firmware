@@ -40,10 +40,18 @@ void MX_LPUART1_UART_Init(void)
 
   /* USER CODE END LPUART1_Init 1 */
   hlpuart1.Instance = LPUART1;
-#if defined(USE_SPI_DRIVER)
-  hlpuart1.Init.BaudRate = 115200;  /* SPI mode: faster debug logs */
+#if defined(USE_SPI_DRIVER) || defined(USE_UW_DOPPLER_APP)
+  /* High-throughput console:
+   *   - SPI mode      : SPI debug logs.
+   *   - UW_DOPPLER    : heartbeat + AT command + crash replay traces are
+   *                     verbose, and at 9600 baud a 120-byte heartbeat
+   *                     takes 125 ms blocking → starves the main loop.
+   * Both use HSI 16 MHz (see HAL_UART_MspInit below) which can sustain
+   * 115200 cleanly. Cost: HSI must be on during transmission (already the
+   * case in MONITORING since LPM=NONE). */
+  hlpuart1.Init.BaudRate = 115200;
 #else
-  hlpuart1.Init.BaudRate = 9600;    /* UART mode: low power */
+  hlpuart1.Init.BaudRate = 9600;    /* UART mode (STDLN/GUI): low power */
 #endif
   hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
   hlpuart1.Init.StopBits = UART_STOPBITS_1;
@@ -92,11 +100,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
   /** Initializes the peripherals clocks
   */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_LPUART1;
-#if defined(USE_SPI_DRIVER)
-    /* SPI mode: use HSI clock (16 MHz) for 115200 baud debug logs */
+#if defined(USE_SPI_DRIVER) || defined(USE_UW_DOPPLER_APP)
+    /* HSI 16 MHz: 115200-capable (SPI debug logs + UW_DOPPLER heartbeat/AT) */
     PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_HSI;
 #else
-    /* UART mode: use LSE clock (32.768 kHz) for low power 9600 baud */
+    /* LSE 32.768 kHz: low-power 9600 baud (STDLN / GUI) */
     PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_LSE;
 #endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
@@ -154,5 +162,75 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+#include <stdbool.h>
+#include "mgr_at_cmd.h"
+#include "stm32wlxx_hal.h"
+
+static bool s_uart_enabled = false;
+
+/* Last HAL tick at which a byte was received on LPUART1. Set by the RX
+ * ISR (mcu_at_console_stm.c) via APP_UART_noteRxActivity(). Used by the
+ * CONFIG-mode LED indicator to show "user is actively connected" vs
+ * "session idle". Aligned uint32_t → single-word atomic on Cortex-M4. */
+static volatile uint32_t s_last_rx_tick = 0;
+
+void APP_UART_noteRxActivity(void)
+{
+  s_last_rx_tick = HAL_GetTick();
+}
+
+uint32_t APP_UART_lastRxTick(void)
+{
+  return s_last_rx_tick;
+}
+
+uint32_t APP_UART_msSinceRx(void)
+{
+  const uint32_t now = HAL_GetTick();
+  const uint32_t last = s_last_rx_tick;
+  if (last == 0u)
+    return 0xFFFFFFFFu;  /* sentinel: no RX ever */
+  return now - last;
+}
+
+void APP_UART_setEnabled(bool enabled)
+{
+  /* Use hlpuart1.gState as the source of truth so this call is safe to
+   * make at any point, including before/after main.c's MX_LPUART1_UART_Init
+   * direct call. Resyncs the cached flag transparently. */
+  bool is_init = (hlpuart1.gState != HAL_UART_STATE_RESET);
+  if (enabled && is_init) {
+    s_uart_enabled = true;
+    return;
+  }
+  if (!enabled && !is_init) {
+    s_uart_enabled = false;
+    return;
+  }
+
+  if (enabled) {
+    MX_LPUART1_UART_Init();
+    /* Re-register the AT command parser hook (MGR_AT_CMD_start records the
+     * console handle the first time, so a second call is safe and binds the
+     * stream callback after re-init). */
+    (void)MGR_AT_CMD_start(&hlpuart1);
+    s_uart_enabled = true;
+  } else {
+    HAL_UART_DeInit(&hlpuart1);
+    /* HAL_UART_MspDeInit (called by HAL_UART_DeInit) puts PA2/PA3 to GPIO
+     * mode (analog reset state). Disables LPUART1 IRQ as well. After this
+     * call, direct-UART traces no-op because hlpuart1.gState == RESET. */
+    s_uart_enabled = false;
+  }
+}
+
+bool APP_UART_isEnabled(void)
+{
+  /* Trust the HAL state field as ground truth. The cached flag may diverge
+   * if other code (e.g. main.c MX_LPUART1_UART_Init) bypasses the setter,
+   * or after an error state. */
+  return (hlpuart1.gState != HAL_UART_STATE_RESET);
+}
 
 /* USER CODE END 1 */

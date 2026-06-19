@@ -423,7 +423,10 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 	HAL_PWREx_EnablePullUpPullDownConfig();
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3);  /* EXT_WKUP */
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_C, PA_PSU_EN_Pin);   /* PA off */
+#if !defined(SMD_STDALONE)
+	/* STDALONE: PC1 = TPS63901 SEL — pull held externally by R11 (10M to VBAT) */
 	HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_C, PA_PSU_SEL_Pin);    /* VSEL high */
+#endif
 
 #if defined(BSP_HAS_PWR_LATCH)
 	HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7);  /* PWR_LATCH off */
@@ -579,7 +582,11 @@ static bool process_mac_events(void)
 			break;
 
 		case KNS_MAC_TX_TIMEOUT:
-			MGR_LOG_DEBUG("[DPL] TX timeout\r\n");
+		/* v11.1.0 KNS_MAC_TX_ABORT — semantically identical here: TX
+		 * did not complete, we move past this sequence slot. */
+		case KNS_MAC_TX_ABORT:
+			MGR_LOG_DEBUG("[DPL] TX %s\r\n",
+				(srvcEvt.id == KNS_MAC_TX_ABORT) ? "abort" : "timeout");
 			MGR_ERR_log(ERR_TX_TIMEOUT);
 			MGR_EVTLOG_log(EVT_TX_TIMEOUT, (uint16_t)tx_index);
 			if (doppler_state == DOPPLER_WAIT_TX_DONE) {

@@ -86,6 +86,8 @@ struct KNS_SATDET_ctxt_t {
 	uint32_t dl_freq;
 	uint32_t dl_rx_det_duration;
 	float dl_rssi;
+	uint32_t satdet_patt_report;
+	uint32_t nb_err_report;
 };
 
 /**
@@ -98,6 +100,7 @@ struct KNS_RX_frm_ctxt_t {
 	uint8_t data[DL_FRM_SZ];
 	uint16_t data_bitlen;
 	float dl_rssi;
+	uint32_t dl_freq;
 };
 
 /**

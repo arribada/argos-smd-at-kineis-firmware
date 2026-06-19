@@ -30,6 +30,43 @@
 
 bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
 {
+#if defined(USE_UW_DOPPLER_APP)
+	/* UW_DOPPLER is locked to MAC profile BASIC at compile time (see the
+	 * compile-time guard at the top of kns_app_uw_doppler.c). The AT
+	 * command runtime path enforces the same rule:
+	 *   - status query → report BASIC + zero-filled context
+	 *   - action with id ∈ {NONE=0, BASIC=1} → ack (id=0 is the rare
+	 *     "reset profile" sequence the GUI sometimes sends, harmless
+	 *     because we don't actually re-init the MAC here)
+	 *   - any other id (BLIND=2, SATDET=3, BLIND_POS=4) → refuse loud,
+	 *     emit a WARN log so the operator knows a non-validated profile
+	 *     was attempted and the request was discarded.
+	 *
+	 * Refusing at the AT layer prevents an operator who's reading stale
+	 * documentation from "trying BLIND to see what happens" — the
+	 * app-side scheduler would conflict with BLIND retx and silently
+	 * waste battery on underwater TX. */
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		MCU_AT_CONSOLE_send("+KMAC=1,0000000000\r\n");
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	int16_t requested_id = -1;
+	if (pu8_cmdParamString != NULL) {
+		(void)sscanf((const char *)pu8_cmdParamString,
+		             "AT+KMAC=%hd", &requested_id);
+	}
+
+	if (requested_id == (int16_t)KNS_MAC_PRFL_NONE ||
+	    requested_id == (int16_t)KNS_MAC_PRFL_BASIC) {
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	MGR_LOG_WARN("[KMAC] Profile %d refused — UW_DOPPLER only "
+	             "validates BASIC. Use a non-UW_DOPPLER build for "
+	             "BLIND/SATDET/BLIND_POS.\r\n", requested_id);
+	return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
+#else
 	int16_t scan_param_res;
 	uint16_t prflCtxtCharNb;
 	enum KNS_status_t status = KNS_STATUS_OK;
@@ -37,7 +74,12 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 	uint8_t *prflCfgPtr;
 	uint16_t idx;
 
-	uint8_t prflCtxtData[13]; // 6 bytes doubled due to sscanf ASCII + end \0
+	/* v11.1.0 BLIND_usrCfg_t grew to 7 bytes (added per_offset field), so the
+	 * ASCII buffer is now 14 hex chars + NUL. Memset to 0 so a GUI still
+	 * sending the legacy 12-char payload yields per_offset=0 (compatible
+	 * with v10 behaviour).
+	 */
+	uint8_t prflCtxtData[15] = {0};
 	struct KNS_MAC_appEvt_t appEvt = {
 		.id = KNS_MAC_INIT,
 		.init_prfl_ctxt = {
@@ -50,8 +92,16 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 		KNS_MAC_getPrflInfo(&prfl_info);
 		prflCfgPtr = &prfl_info.prflCfgPtr;
 		MCU_AT_CONSOLE_send("+KMAC=%d,",prfl_info.id);
-		// log profile context, reduce size by 1 due to `id` field of KNS_MAC_prflInfo_t
-		for (idx = 0; idx < (sizeof(prfl_info) - 1); idx++)
+		/* Output the union member contents. v11.1.0 widened the union to fit
+		 * SATDET (11 bytes) — the legacy `sizeof(prfl_info)-1` would read
+		 * past the end on platforms where `sizeof(enum)` differs from 1, so
+		 * iterate over the actual largest member instead. We cap at the
+		 * BLIND size (7 bytes = 14 hex chars) because that's the maximum
+		 * profile config our AT path accepts on set — emitting more would
+		 * desync the GUI parser without conveying useful data (UW_DOPPLER
+		 * is BASIC-only and other apps don't init SATDET/BLIND_POS). */
+		const size_t cfg_bytes = sizeof(struct KNS_MAC_BLIND_usrCfg_t);
+		for (idx = 0; idx < cfg_bytes; idx++)
 			MCU_AT_CONSOLE_send("%02X", prflCfgPtr[idx]);
 		MCU_AT_CONSOLE_send("\r\n");
 
@@ -61,7 +111,7 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 	{
 		int16_t temp_id = 0;
 		scan_param_res = (int16_t)sscanf((const char *)pu8_cmdParamString,
-				(const char *)"AT+KMAC=%hd,%12[0-9A-Fa-f]",
+				(const char *)"AT+KMAC=%hd,%14[0-9A-Fa-f]",
 				&temp_id,
 				prflCtxtData);
 		appEvt.init_prfl_ctxt.id = (enum KNS_MAC_prflId_t)temp_id;
@@ -92,8 +142,65 @@ bool bMGR_AT_CMD_KMAC_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
 
 	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 	if (status != KNS_STATUS_OK)
-		return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T)status);
+		return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 	return true;
+#endif
+}
+
+#include "kns_cfg.h"
+
+bool bMGR_AT_CMD_KCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
+{
+	if (e_exec_mode == ATCMD_STATUS_MODE) {
+		/* Read-only query — safe in all configurations. The GUI uses this
+		 * to probe whether the L1 timer is currently suspended/resumed. */
+		union KNS_CFG_bitmap_t cfg = KNS_CFG_getCfg();
+		MCU_AT_CONSOLE_send("+KCFG=%lu\r\n", (unsigned long)cfg.raw);
+		return bMGR_AT_CMD_logSucceedMsg();
+	}
+
+	/* Set form refused on this firmware.
+	 *
+	 * Why: KNS_CFG_setCfg() ultimately calls MCU_TIM_suspend / MCU_TIM_resume
+	 * on MCU_TIM_HDLR_TX_PERIOD, which is implemented via
+	 * HAL_RTCEx_DeactivateWakeUpTimer / HAL_RTCEx_SetWakeUpTimer_IT on the
+	 * single RTC wake-up timer the chip exposes. Our application already
+	 * owns that resource for the LPM scheduler:
+	 *  - UW_DOPPLER : MGR_LPM_UW_enterStop2Timed arms the RTC WUT to wake
+	 *    the chip out of STOP2 every sleep_s seconds (see mgr_lpm_uw.c)
+	 *  - other apps : LPM_shutdownWithAutoWake uses the same RTC WUT for
+	 *    SHUTDOWN auto-wake (see lpm.c)
+	 *
+	 * Letting the GUI write KCFG would silently disarm the LPM wake (the
+	 * exact symptom an operator already reported: "auto sleep timer
+	 * cassé"). Until a coordinated owner abstraction is built, refuse the
+	 * write loudly so the GUI can decide whether to grey out the control.
+	 */
+	(void)pu8_cmdParamString;
+	return bMGR_AT_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE);
+}
+
+bool bMGR_AT_CMD_KEVT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode)
+{
+	(void)pu8_cmdParamString;
+	if (e_exec_mode != ATCMD_STATUS_MODE)
+		return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
+
+	/* Best-effort drain of the MAC-to-APP queue. On UW_DOPPLER builds the
+	 * app's own scheduler is already consuming the queue, so this almost
+	 * always emits zero events — that's fine. The GUI uses this for diag. */
+	struct KNS_MAC_srvcEvt_t evt;
+	unsigned count = 0;
+	while (KNS_Q_pop(KNS_Q_UL_MAC2APP, (void *)&evt) == KNS_STATUS_OK) {
+		MCU_AT_CONSOLE_send("+KEVT=%u,%u,%u\r\n",
+		                    (unsigned)evt.id, (unsigned)evt.status,
+		                    (unsigned)evt.app_evt);
+		count++;
+		if (count >= 32u) /* safety bound */
+			break;
+	}
+	MCU_AT_CONSOLE_send("+KEVT=count,%u\r\n", count);
+	return bMGR_AT_CMD_logSucceedMsg();
 }
 
 /**

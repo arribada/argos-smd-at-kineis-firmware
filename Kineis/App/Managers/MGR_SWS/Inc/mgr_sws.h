@@ -6,7 +6,7 @@
  * - L1: Instant drop from previous raw (4%, 1 sample)
  * - L2: Consecutive 2-sample raw drops (3% cumulative, each step >=2%)
  * - L3: MA3 trend (3+ decreases, 4% total)
- * - L4: Absolute water baseline drop (8%)
+ * - L4: Absolute water baseline drop (15%)
  * - L5: Dive peak safety net (10%, >10s gate)
  * - Proximity guard adaptive (95% normal / 99% biofouling)
  * - Dynamic threshold ratio, 4% hysteresis, AIR_BASELINE_FLOOR
@@ -43,7 +43,7 @@ typedef enum {
 
 typedef struct {
 	uint16_t threshold_min;              /**< Min valid ADC value (default 0) */
-	uint16_t threshold_max;              /**< Max valid ADC value (default 2000 = 8000/4) */
+	uint16_t threshold_max;              /**< Max valid ADC value (default 4095 = full scale, linkit-v4 ref) */
 	uint16_t initial_air_baseline;       /**< Initial air baseline (default 50 = 200/4) */
 	uint16_t initial_water_baseline;     /**< Initial water baseline (default 750 = 3000/4) */
 	uint32_t test_interval_surface_ms;   /**< Measurement interval at SURFACE (default 5000) */
@@ -51,7 +51,7 @@ typedef struct {
 	uint32_t max_dive_time_s;            /**< Max dive time before forced surface (default 7200) */
 	uint32_t min_surface_time_s;         /**< Min surface time before re-submersion (default 10) */
 	uint16_t sample_delay_min_us;        /**< Adaptive RC charge delay floor (default 200) */
-	uint16_t sample_delay_max_us;        /**< Adaptive RC charge delay ceiling (default 5000) */
+	uint16_t sample_delay_max_us;        /**< Adaptive RC charge delay ceiling (default 10000, linkit-v4 ref) */
 	uint16_t sample_delay_default_us;    /**< Starting RC charge delay (default 1000) */
 	bool     enabled;                    /**< SWS detection enabled */
 } MGR_SWS_Config_t;
@@ -75,6 +75,18 @@ MGR_SWS_Config_t MGR_SWS_getConfig(void);
 
 /** @brief Set detection config */
 void MGR_SWS_setConfig(const MGR_SWS_Config_t *config);
+
+/** @brief Get the configured sampling interval (ms) for SURFACE state.
+ *  The event-driven LPM scheduler uses this to compute the next wake. */
+uint32_t MGR_SWS_getSurfIntervalMs(void);
+
+/** @brief Get the configured sampling interval (ms) for UNDERWATER state. */
+uint32_t MGR_SWS_getUWIntervalMs(void);
+
+/** @brief Milliseconds until the next SWS sample is due (0 = due now,
+ *  UINT32_MAX = SWS disabled, no deadline). Deadline source for the
+ *  event-driven LPM scheduler. */
+uint32_t MGR_SWS_msUntilNextSample(void);
 
 /** @brief Force immediate measurement (bypass interval timer) */
 void MGR_SWS_forceMeasurement(void);
@@ -119,6 +131,20 @@ void MGR_SWS_enterLowPower(void);
 
 /** @brief Restore SWS GPIO after STOP mode wakeup */
 void MGR_SWS_exitLowPower(void);
+
+/* ---- Sensor fault detection (Sprint 3) ----------------------------------- */
+
+/** Bitfield of detected SWS sensor faults. 0 = healthy. */
+#define MGR_SWS_FAULT_NONE          0x00u
+#define MGR_SWS_FAULT_STUCK         0x01u  /**< Same ADC value for N consecutive reads */
+#define MGR_SWS_FAULT_OUT_OF_RANGE  0x02u  /**< ADC rails low (<5) or high (>4090) */
+#define MGR_SWS_FAULT_NO_VARIANCE   0x04u  /**< Variance over window too low (dead sensor) */
+
+/**
+ * @brief Get the OR'ed bitfield of currently detected sensor faults.
+ * @return One of MGR_SWS_FAULT_* (NONE if all checks pass).
+ */
+uint8_t MGR_SWS_getFault(void);
 
 #ifdef __cplusplus
 }

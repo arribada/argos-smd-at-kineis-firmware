@@ -80,4 +80,238 @@ bool bMGR_AT_CMD_SAVE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_
  */
 bool bMGR_AT_CMD_BATCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
 
+/** @brief AT+RATECFG: Get/Set persistent TX rate limiter (sliding window)
+ *
+ * Status: +RATECFG=<window_s>,<max_tx>
+ * Action: AT+RATECFG=<window_s>,<max_tx>
+ *   window_s : 60 .. 604800 (1 minute .. 7 days)
+ *   max_tx   : 1  .. 256
+ * Persisted to NVM via AT+SAVE.
+ */
+bool bMGR_AT_CMD_RATECFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+RATE: Query live rate-limiter state (read-only)
+ *
+ * Status: +RATE=<current_count>,<max_tx>,<window_s>,<blocked>,<retry_in_s>
+ *   blocked    : 0 if a TX is allowed right now, 1 if rate-limited
+ *   retry_in_s : 0 unless blocked, else seconds until the oldest entry expires
+ */
+bool bMGR_AT_CMD_RATE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+RATECLEAR: Wipe the rate limiter ring buffer
+ *
+ * Action only. Doesn't reset configuration. Use after a deliberate event
+ * (deployment, recovery, RTC resync) where past TX timestamps no longer
+ * reflect real budget consumption.
+ */
+bool bMGR_AT_CMD_RATECLEAR_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+STATUS: One-shot snapshot of every interesting runtime value.
+ *
+ * Status only. Format (single line, comma-separated, machine-parseable):
+ *  +STATUS=<state>,<uptime_s>,<reset_count>,<crash_count>,
+ *          <last_err>,<sws_state>,<sws_adc>,<bat_mV>,<deploy>,
+ *          <tx_session>,<rate_count>,<rate_max>,<rate_blocked>
+ */
+bool bMGR_AT_CMD_STATUS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+DIAG: Quick self-test of subsystems.
+ *
+ * Action only. Triggers fresh measurements (SWS, BAT) and a short LED cycle
+ * (R,G,B 200ms each). Returns:
+ *  +DIAG=<sws_ok>,<sws_adc>,<bat_ok>,<bat_mV>,<reed_present>,<led_ok>
+ */
+bool bMGR_AT_CMD_DIAG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+RESET: Force a software reset.
+ *
+ * Action only. NVIC_SystemReset() with a tiny pre-delay so the +OK reply
+ * physically leaves the UART. No confirmation required (per design choice).
+ */
+bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LBCFG: Low-battery mode configuration.
+ *
+ * Status: +LBCFG=<enter_mV>,<exit_mV>,<lb_interval_s>,<lb_max_s>,<lb_max_count>
+ * Action: AT+LBCFG=<enter_mV>,<exit_mV>,<lb_interval_s>,<lb_max_s>,<lb_max_count>
+ *   enter_mV=0  → disable LB mode entirely
+ *   exit_mV    must be > enter_mV (hysteresis)
+ * Persisted to NVM via AT+SAVE.
+ */
+bool bMGR_AT_CMD_LBCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LB: Query live LB mode state (read-only).
+ *
+ * +LB=<active>,<current_mV>,<enter_mV>,<exit_mV>
+ */
+bool bMGR_AT_CMD_LB_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+TXSTATS: persistent TX counters (Sprint 4).
+ *
+ * Status: +TXSTATS=<attempts>,<done>,<timeouts>,<errors>,<consec_fail>,<worst_consec>
+ * Action: AT+TXSTATS  → clear all counters
+ */
+bool bMGR_AT_CMD_TXSTATS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+PMLOG: post-mortem flash log (Sprint 4).
+ *
+ * Status: dumps every valid entry, oldest first:
+ *   +PMLOG=<count>
+ *   #NNN s=SEV t=TYPE st=STATE d=DATA tk=TICK_S seq=SEQ
+ * Action: erases the entire log page.
+ */
+bool bMGR_AT_CMD_PMLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+TEST=<count>: trigger a forced TX burst for radio validation (Sprint 4).
+ *
+ * Action only. count clamped to [1..10].
+ *   +TEST=<queued_count>
+ * Bypasses rate limiter / cooldown / backoff / deploy mode / surface check.
+ * Each TX still respects the 5 s MIN_INTER_TX_INTERVAL safety floor.
+ */
+bool bMGR_AT_CMD_TEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+SHUTDOWN: Force chip into SHUTDOWN mode (HW power off).
+ *
+ * Action only. Same code path as the magnet-6 s gesture: NVM_save +
+ * releasePower + LPM_shutdownNow. Used for HW validation when a magnet
+ * isn't available. Board cuts power; wake via reed switch magnet.
+ *
+ * @warning irreversible from firmware — only reed-switch HW circuit can wake.
+ */
+bool bMGR_AT_CMD_SHUTDOWN_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+STANDBYTEST=<seconds>: STANDBY-cycling validation (for 12-mo work).
+ *
+ * Enters STM32WL55 STANDBY mode for <seconds>. PWR_LATCH is held HIGH via
+ * the PWR controller pull-up so the STDALONE regulator stays alive; RTC
+ * is armed to fire after <seconds> which wakes the chip into a cold boot.
+ * Range: 1..60 s for safety (longer durations are too risky to test
+ * blindly — if RTC arming silently fails, the chip is brick until VBAT
+ * is physically disconnected).
+ *
+ * On success: device replies `+STANDBYTEST=<seconds>` + `+OK`, then
+ * disappears for <seconds>, then cold-boots (visible in BOOT trace).
+ * On failure: chip stays asleep indefinitely. Recovery: NRST or battery
+ * removal.
+ *
+ * @warning HW validation only — DO NOT use in deployment until the
+ *          wake path is proven on the bench. The 12-month battery target
+ *          relies on a STANDBY-cycling architecture that this command
+ *          exercises in isolation.
+ */
+bool bMGR_AT_CMD_STANDBYTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+STOPTEST=<seconds>: direct STOP2 entry for N seconds (1..65535).
+ *
+ * Bypasses the auto-cycle gates so the path can be exercised even when the
+ * state machine has flags (surface_tx_pending, etc.) that would normally
+ * prevent it. Returns from STOP2 after the RTC fires (or earlier on EXTI,
+ * e.g. reed-magnet event) and the chip stays in MONITORING — no cold-boot,
+ * no MAC re-init.
+ */
+bool bMGR_AT_CMD_STOPTEST_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+UARTLOG: toggle the spontaneous UART log stream.
+ *
+ * Status: `+UARTLOG=<0|1>` — 0 means quiet (no [SWS] / [MODE] / [LED] /
+ *         [KNS_Q] etc. spontaneous lines), 1 means verbose.
+ * Action: `AT+UARTLOG=<0|1>`
+ *
+ * AT command responses (+OK, +ERROR, +CMD=...) always emit regardless of
+ * this flag — they go through MCU_AT_CONSOLE_send / direct HAL_UART
+ * transmits that bypass the gated MGR_LOG ring.
+ *
+ * Persisted in retention NOLOAD so it survives STOP2/STANDBY cycles and
+ * IWDG/software resets, but defaults back to "enabled" on VBAT loss.
+ */
+bool bMGR_AT_CMD_UARTLOG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+MODE: query / change the operational mode via UART.
+ *
+ * Status: `+MODE=<n>` where n is the current MGR_GESTURE_Mode_t value
+ *   1 = OPERATIONAL (TX enabled, SWS sampling, UART torn down in prod)
+ *   2 = CONFIG      (TX disabled, UART always up, SWS paused)
+ *
+ * Action: `AT+MODE=<n>` with n in {0, 1, 2}
+ *   0 → request HW SHUTDOWN (equivalent to AT+SHUTDOWN, magnet-wake only)
+ *   1 → switch to OPERATIONAL (the GUI loses UART in production builds)
+ *   2 → switch to CONFIG      (force UART up, mute TX)
+ *
+ * Implementation note: routed through MGR_GESTURE_requestMode so the
+ * app loop applies the same UART/SWS/LED side effects as a magnet-driven
+ * transition. The +OK response is sent before any UART teardown.
+ */
+bool bMGR_AT_CMD_MODE_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LOGLVL: query / set the runtime log severity threshold.
+ *
+ * Status: `+LOGLVL=<n>` where n in {0..4}:
+ *   0=TRACE   (hb, [SWS] every sample, [KNS_Q] internals — very chatty)
+ *   1=INFO    (state transitions, modes, TX lifecycle)
+ *   2=WARNING (rate limit, low-battery, backoff, recovered errors)
+ *   3=ERROR   (TX timeouts, HW faults, IWDG forensics)
+ *   4=NONE    (silence — direct-UART traces still emit when level<=ERROR)
+ *
+ * Action: `AT+LOGLVL=<n>` where n in {0..4}. Persisted in retention NOLOAD
+ * so it survives every soft reset; VBAT loss reverts to the build-time
+ * default (LOG_DEFAULT_LEVEL — TRACE in DEBUG=1, INFO in DEBUG=0).
+ *
+ * Compile-time override: `make ... LOG_LEVEL=<n>` sets the boot default.
+ */
+bool bMGR_AT_CMD_LOGLVL_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LPMTHR: configure the event-driven LPM thresholds.
+ *
+ * Status: `+LPMTHR=<spin_ms>,<sleep_ms>,<enabled>`
+ * Action: `AT+LPMTHR=<spin_ms>,<sleep_ms>,<enabled>` (3 params, all required)
+ *
+ * Semantics — at every main-loop idle the firmware computes the delay
+ * until the next scheduled task and picks LPM depth from that delta:
+ *   - delta < spin_ms             → spin (no LPM entry)
+ *   - spin_ms ≤ delta < sleep_ms  → SLEEP (light, ~100 µA)
+ *   - delta ≥ sleep_ms            → STOP2 (deep, ~3 µA)
+ *
+ * enabled=0 disables LPM entirely (~5 mA continuous — bench / commissioning).
+ *
+ * Persisted in retention NOLOAD; cleared by VBAT loss. Save to flash via
+ * AT+SAVE for cold-boot persistence too. Default: 10,500,1. */
+bool bMGR_AT_CMD_LPMTHR_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+LPMSTAT=? — LPM duty-cycle telemetry.
+ *
+ * `+LPMSTAT=<uptime_ms>,<stop2_ms>,<stop2_count>,<awake_duty_x1000>`
+ * uptime is the RTC-compensated wall-clock tick; awake = uptime - stop2.
+ * On-target measured duty cycle for the energy budget (no ammeter needed). */
+/** AT+PAYCFG: TX payload format + stats window.
+ *  Status: +PAYCFG=<format>,<window_h>
+ *  Action: AT+PAYCFG=<format 0|1>,<window_h 1..48>
+ *  format 0 = legacy 128-bit frame, 1 = minimal 24-bit frame (battery +
+ *  sliding-window average UW/surface durations, 2-minute resolution). */
+bool bMGR_AT_CMD_PAYCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** AT+STATS=? — sliding-window episode statistics:
+ *  +STATS=<avg_uw_min>,<avg_surf_min>,<n_uw>,<n_surf>,<window_h> */
+bool bMGR_AT_CMD_STATS_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+bool bMGR_AT_CMD_LPMSTAT_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
+/** @brief AT+DUTYCFG: event-driven LPM auto-cycle config.
+ *
+ * Status: `+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>,<shutdown_thr_s>`
+ * Action: `AT+DUTYCFG=<uw_sleep_s>,<surf_sleep_s>,<enabled>[,<shutdown_thr_s>]`
+ *   uw_sleep_s     : STANDBY duration while underwater (1..65535 s).
+ *   surf_sleep_s   : STANDBY duration while surface idle (1..65535 s).
+ *   enabled        : 0 = off (chip stays active), 1 = on (auto-cycle).
+ *   shutdown_thr_s : (optional) sleep_s ≥ this value picks SHUTDOWN+RTC
+ *                    over STANDBY for the lowest possible draw (<1µA vs
+ *                    ~2µA). 0 = always STANDBY. Default 300 s (5 min).
+ *                    Omit to keep the previously-saved value.
+ *
+ * Defaults: 1800, 60, 0, 300. Enable at runtime once the wake path is
+ * validated via AT+STANDBYTEST. Lives in .retentionRamNoload across
+ * STANDBY cold-boots; commit to flash via AT+SAVE.
+ */
+bool bMGR_AT_CMD_DUTYCFG_cmd(uint8_t *pu8_cmdParamString, enum atcmd_type_t e_exec_mode);
+
 #endif /* __MGR_AT_CMD_LIST_UW_DOPPLER_H */

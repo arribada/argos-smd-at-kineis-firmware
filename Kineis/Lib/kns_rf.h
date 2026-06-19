@@ -141,6 +141,8 @@ struct KNS_RF_ctxt_sat_detected_t {
 	uint32_t dl_freq;
 	uint32_t dl_rx_det_duration;
 	float dl_mean_iq_mag;
+	uint32_t satdet_patt_report;
+	uint32_t nb_err_report;
 };
 
 /**

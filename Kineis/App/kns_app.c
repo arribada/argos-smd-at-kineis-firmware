@@ -269,16 +269,14 @@ void KNS_APP_stdln_loop(void)
 				switch (srvcEvt.id) {
 				case (KNS_MAC_OK):
 					if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-						MGR_LOG_DEBUG("[%s] OK to send 0x", __func__);
-						MGR_LOG_array(srvcEvt.tx_ctxt.data,
-//							(srvcEvt.tx_ctxt.data_bitlen+7)>>3);
-							4); // limit to 4 bytes for real-time
+						/* v11.1.0 dropped tx_ctxt.data — only frm_hdlr left. */
+						MGR_LOG_DEBUG("[%s] OK to send hdlr=%d\r\n",
+							__func__, srvcEvt.tx_ctxt.frm_hdlr);
 					}
 					break;
 				case (KNS_MAC_TX_DONE):
-					MGR_LOG_DEBUG("[%s] TX done for 0x", __func__);
-					MGR_LOG_array(srvcEvt.tx_ctxt.data,
-						(srvcEvt.tx_ctxt.data_bitlen+7)>>3);
+					MGR_LOG_DEBUG("[%s] TX done hdlr=%d\r\n",
+						__func__, srvcEvt.tx_ctxt.frm_hdlr);
 					TEST_PASS();
 					/** Exit MAC as test succedded. It should reply OK at next
 					 * step
@@ -287,9 +285,14 @@ void KNS_APP_stdln_loop(void)
 					state++;
 					break;
 				case (KNS_MAC_TX_TIMEOUT):
-					MGR_LOG_DEBUG("[%s] TX timeout for 0x", __func__);
-					MGR_LOG_array(srvcEvt.tx_ctxt.data,
-						(srvcEvt.tx_ctxt.data_bitlen+7)>>3);
+					MGR_LOG_DEBUG("[%s] TX timeout hdlr=%d\r\n",
+						__func__, srvcEvt.tx_ctxt.frm_hdlr);
+					TEST_FAIL();
+					state++;
+					break;
+				case (KNS_MAC_TX_ABORT):  /* v11.1.0 — TX aborted, treat as fail */
+					MGR_LOG_DEBUG("[%s] TX abort hdlr=%d\r\n",
+						__func__, srvcEvt.tx_ctxt.frm_hdlr);
 					TEST_FAIL();
 					state++;
 					break;
@@ -298,10 +301,8 @@ void KNS_APP_stdln_loop(void)
 					 * this application
 					 */
 					if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
-						MGR_LOG_DEBUG("[%s] error %d, cannot send 0x", __func__, srvcEvt.status);
-						MGR_LOG_array(srvcEvt.tx_ctxt.data,
-//							(srvcEvt.tx_ctxt.data_bitlen+7)>>3);
-							4); // limit to 4 bytes for real-time
+						MGR_LOG_DEBUG("[%s] error %d cannot send hdlr=%d\r\n",
+							__func__, srvcEvt.status, srvcEvt.tx_ctxt.frm_hdlr);
 					} else {
 						MGR_LOG_DEBUG("[%s] MAC error: %d\r\n", __func__, srvcEvt.status);
 					}

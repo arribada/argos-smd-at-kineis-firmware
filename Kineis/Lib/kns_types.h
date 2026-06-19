@@ -35,9 +35,10 @@ enum KNS_status_t {
 	KNS_STATUS_ERROR,                /**< status generic ERROR, when other one does not fit */
 	KNS_STATUS_DISABLED,             /**< module/feature is disabled (transceiver, bus, ... */
 	KNS_STATUS_BUSY,                 /**< module is busy (transceiver, bus, ... */
-	KNS_STATUS_TIMEOUT,              /**< some TX, RX, timeout reached */
+	KNS_STATUS_TIMEOUT,              /**< some SATDET, TX, RX, timeout reached */
 	KNS_STATUS_BAD_LEN,              /**< TX data frame length error */
 	KNS_STATUS_BAD_SETTING,          /**< wrong settings: unknown event, static cfg overflow, ... */
+	KNS_STATUS_ABORT,                /**< some SATDET, TX, RX, abort reached (e.g. FIFO flush) */
 
 	// RF errors
 	KNS_STATUS_RF_ERR         = 100, /**< Error on transceiver (TX, RX, SPI/A2S/... error) */
@@ -50,6 +51,11 @@ enum KNS_status_t {
 	// Internal erros
 	KNS_STATUS_INTERNAL_1_ERR = 200, /**< Kineis stack internal#1 error */
 	KNS_STATUS_INTERNAL_2_ERR,       /**< Kineis stack internal#2 error */
+	KNS_STATUS_INTERNAL_3_ERR,       /**< Kineis stack internal#3 error */
+	KNS_STATUS_INTERNAL_4_ERR,       /**< Kineis stack internal#4 error */
+	KNS_STATUS_INTERNAL_5_ERR,       /**< Kineis stack internal#5 error */
+	KNS_STATUS_INTERNAL_6_ERR,       /**< Kineis stack internal#6 error */
+	KNS_STATUS_INTERNAL_7_ERR,       /**< Kineis stack internal#7 error */
 
 	// config errors
 	KNS_STATUS_RADIO_CONF_BAD = 250, /**< radio configuration is wrong */
@@ -74,8 +80,9 @@ enum KNS_status_t {
 
 	KNS_STATUS_MCU_TIM_ERR    = 650, /**< for timer wrapper if existing */
 
-	KNS_STATUS_FLASH_ERR      = 700, /**< Error with FLASH usage */
-
+	KNS_STATUS_FLASH_ERR      = 700, /**< Error with FLASH usage (Arribada local addition,
+					  *  preserved across v11.1.0 to keep existing AT
+					  *  +ERROR=700 responses stable for the GUI). */
 
 	KNS_STATUS_MAX            = 1000, /**< Max limit for kineis status enum, DO NOT EXCEED */
 };

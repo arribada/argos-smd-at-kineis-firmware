@@ -48,6 +48,18 @@ static uint8_t uartRxBuf[RXBUF_SIZE];
 
 static bool (*rxEvtCb)(uint8_t *pu8_RxBuffer, int16_t *pi16_nbRxValidChar);
 
+/* Diagnostic counters for the AT RX pipeline. Used by the heartbeat trace
+ * in kns_app_uw_doppler.c to localise where a missing AT response breaks:
+ *   isr_bytes   = bytes pulled out of LPUART1 RDR by KINEIS_RxISR_8BIT
+ *   parse_calls = times parseStreamCb was invoked from the ISR
+ *   cb_null     = times we entered the ISR but rxEvtCb was NULL
+ * If isr_bytes increments when you type but parse_calls doesn't → ISR runs
+ * but never reaches the callback. If parse_calls increments but no AT
+ * response → parser ate the command (see mgr_at_cmd.c). */
+volatile uint32_t g_at_isr_bytes   = 0;
+volatile uint32_t g_at_parse_calls = 0;
+volatile uint32_t g_at_cb_null     = 0;
+
 /* Private function prototypes -----------------------------------------------*/
 
 // Functions that could be used to (potentially) remove string.h :
@@ -113,6 +125,12 @@ static void KINEIS_RxISR_8BIT(UART_HandleTypeDef *huart)
 		while ((READ_REG(huart->Instance->ISR) & USART_ISR_RXNE) != 0U) {
 			uhdata = (uint16_t) READ_REG(huart->Instance->RDR);
 			*huart->pRxBuffPtr = (uint8_t)(uhdata & (uint8_t)uhMask);
+			g_at_isr_bytes++;
+			/* Track UART activity for CONFIG-mode LED indicator
+			 * ("session active" vs "session idle"). Lazy include to
+			 * avoid forcing usart.h on the non-LPUART1 path. */
+			extern void APP_UART_noteRxActivity(void);
+			APP_UART_noteRxActivity();
 
 			/* In case of overflow, force writing from the beginning of the buffer
 			 */
@@ -135,12 +153,15 @@ static void KINEIS_RxISR_8BIT(UART_HandleTypeDef *huart)
 			i16_nbRxValidChar = huart->RxXferSize - huart->RxXferCount;
 			pu8_RxBuffer = huart->pRxBuffPtr - i16_nbRxValidChar;
 			//< pu8_RxBuffer points to the 1st element of the RX array
+			g_at_parse_calls++;
 			while (rxEvtCb(pu8_RxBuffer, &i16_nbRxValidChar) == true) {
 				// empty loop
 			};
 			//< realign huart to the beginning of found AT cmd
 			huart->pRxBuffPtr = pu8_RxBuffer + i16_nbRxValidChar;
 			huart->RxXferCount = huart->RxXferSize - i16_nbRxValidChar;
+		} else {
+			g_at_cb_null++;
 		}
 	} else {
 		/* Clear RXNE interrupt flag */

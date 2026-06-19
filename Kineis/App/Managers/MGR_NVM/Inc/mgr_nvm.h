@@ -11,6 +11,9 @@
  *   v3: + jitter_percent (TX), split surface/underwater intervals (SWS),
  *        adaptive sample delay bounds (SWS),
  *        adapted air/water baselines + observed peak (SWS calibration runtime)
+ *   v4: + rate_window_s + rate_max_tx (persistent TX rate limiter config)
+ *   v5: + lb_enter_mV/lb_exit_mV/lb_tx_interval_s/lb_tx_max_s/lb_tx_max_count
+ *       (low-battery mode config — hysteretic switch to slower TX cadence)
  */
 
 #ifndef MGR_NVM_H
@@ -20,11 +23,14 @@
 #include <stdbool.h>
 #include "kns_app_uw_doppler.h"
 #include "mgr_sws.h"
-#include "mgr_led.h"
 #include "mgr_bat.h"
+/* led_mode is stored as a raw uint8_t (the enum value cast) so we don't need to
+ * include mgr_led.h here; the .c file pulls it in conditionally on BSP_HAS_LED_RGB.
+ * Skipping the include unlocks UW_DOPPLER on SMD_PA / SMD_NOPA / SMD_OP boards
+ * where mgr_led is compiled out. */
 
 #define NVM_MAGIC   0x434F4E46UL  /* "CONF" */
-#define NVM_VERSION 3
+#define NVM_VERSION 8
 
 /**
  * @brief NVM config structure stored in flash (v3)
@@ -38,13 +44,15 @@ typedef struct {
 	uint8_t  deploy_mode;
 	uint8_t  led_mode;
 	uint8_t  _pad0;
-	/* TX config (8 bytes) */
+	/* TX config (12 bytes) */
 	uint16_t tx_initial_interval_s;
 	uint8_t  tx_growth_percent;
 	uint8_t  tx_max_count;
 	uint16_t tx_max_interval_s;
 	uint8_t  tx_jitter_percent;       /**< v3: random +/- % on TX intervals (0=off) */
 	uint8_t  _pad1;
+	uint16_t tx_cooldown_s;           /**< v4: global post-TX quiet time (s, 0=off) */
+	uint8_t  _pad1b[2];
 	/* SWS config (28 bytes) */
 	uint16_t sws_threshold_min;
 	uint16_t sws_threshold_max;
@@ -67,6 +75,39 @@ typedef struct {
 	/* Battery config */
 	uint16_t bat_min_tx_mV;
 	uint8_t  _pad4[2];
+	/* v4: Rate limiter persistent config (8 bytes) */
+	uint32_t rate_window_s;
+	uint16_t rate_max_tx;
+	uint8_t  _pad5[2];
+	/* v5: Low-battery mode config (12 bytes) */
+	uint16_t lb_enter_mV;
+	uint16_t lb_exit_mV;
+	uint16_t lb_tx_interval_s;
+	uint16_t lb_tx_max_s;
+	uint8_t  lb_tx_max_count;
+	uint8_t  _pad6[3];
+	/* v6: Event-driven LPM thresholds (8 bytes incl. pad).
+	 * Drives MGR_LPM_UW_idleTick — spin if delta_ms < lpm_spin_ms, SLEEP
+	 * until lpm_sleep_ms, STOP2 above. lpm_enabled is the master
+	 * kill-switch. */
+	uint16_t lpm_spin_ms;
+	uint16_t lpm_sleep_ms;
+	uint8_t  lpm_enabled;
+	uint8_t  _pad7[3];
+	/* v7: Surface sequence-restart timer (4 bytes incl. pad).
+	 * Auto-restarts a TX sequence tx_seq_restart_s seconds after the last
+	 * TX of a capped sequence (tx_max_count > 0) when still at SURFACE.
+	 * 0 = disabled (legacy behaviour — only UW→SURFACE / cold-boot wake
+	 * starts a new sequence). */
+	uint16_t tx_seq_restart_s;
+	uint8_t  _pad8[2];
+	/* v8: minimal-payload config (4 bytes incl. pad).
+	 * payload_format: 0 = legacy 128-bit UW frame, 1 = minimal 24-bit
+	 * frame (battery + sliding-window average UW/surface durations).
+	 * stat_window_h: sliding stats window in hours (1..48, 0 = default 24). */
+	uint8_t  payload_format;
+	uint8_t  stat_window_h;
+	uint8_t  _pad9[2];
 	uint32_t crc32;    /**< CRC32 of all bytes before this field (CRC-32/MPEG-2) */
 } NVM_Config_t;
 

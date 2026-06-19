@@ -121,6 +121,11 @@
 #endif
 #include "lpm.h"
 #include "mgr_log.h"
+#if defined(BSP_HAS_LED_RGB)
+/* MGR_LED API is also used outside the UW_DOPPLER/DOPPLER blocks (e.g. to
+ * keep LED pins in a defined OFF state for GUI/STDLN on STDALONE board). */
+#include "mgr_led.h"
+#endif
 
 /** Assembly function used to initialize SRAM2 .bss and .data sections. It is based on the same
  * model as the Reset_Handler (cf startup_*.s file) regarding the whole RAM memory
@@ -273,11 +278,13 @@ static void IDLE_task(void)
 
   if (lpm_config.allowedLPMbitmap & (LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN))
   {
-    /** wait wakeup pin to turn low (unplug debugger or by user) */
-    while(HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET) {
-      if (KNS_Q_isEvtInSomeQ() || MGR_AT_CMD_isPendingAt())
-        return;
-    }
+    /** Don't enter STANDBY/SHUTDOWN while the wakeup pin is already asserted
+     *  HIGH — would cause immediate spurious wake. Yield back to the OS so
+     *  other tasks (notably the SPI command handler) keep running until the
+     *  master de-asserts PB3. The previous version busy-waited here, which
+     *  starved the APP task and broke SPI traffic. */
+    if (HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET)
+      return;
     /** Debounce + grace period for pending SPI/UART events before entering LPM */
     HAL_Delay(50);
   }
@@ -302,7 +309,8 @@ static void IDLE_task(void)
   }
 #else // end of USE_BAREMETAL
   if (lpm_config.allowedLPMbitmap & (LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN))
-    while(HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET);
+    if (HAL_GPIO_ReadPin(EXT_WKUP_BUTTON_GPIO_Port, EXT_WKUP_BUTTON_Pin) == GPIO_PIN_SET)
+      return;
 
   /** Enter low power mode has there is no event preempting */
   LPM_enter();
@@ -428,12 +436,37 @@ static void IDLE_task(void)
  *        - 0: SRAM1/SRAM2 erased on system reset (default!)
  *        - 1: SRAM preserved on system reset
  */
+/* True if VDD has enough headroom to safely program the option bytes. An OB
+ * flash program on a sagging supply risks corrupting the option-byte area
+ * (an OB-class brick with no software recovery). These OB writes only ever
+ * fire on a fresh-chip commissioning boot, but gating them behind the PVD
+ * protects the corner case of commissioning (or a stray re-trigger) on a weak
+ * cell. The PVD is left disabled afterwards (no lasting effect). */
+static bool vdd_safe_for_ob_program(void)
+{
+    PWR_PVDTypeDef pvd = {0};
+    pvd.PVDLevel = PWR_PVDLEVEL_3;        /* ~2.5 V — well above the 1.71 V flash floor */
+    pvd.Mode     = PWR_PVD_MODE_NORMAL;   /* comparator + flag only, no EXTI */
+    HAL_PWR_ConfigPVD(&pvd);
+    HAL_PWR_EnablePVD();
+    for (volatile uint32_t i = 0; i < 4000u; i++) { __NOP(); }   /* comparator settle */
+    bool vdd_low = (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != 0U);     /* PVDO=1 => VDD below level */
+    HAL_PWR_DisablePVD();
+    return !vdd_low;
+}
+
 static void ensure_sram_preserved_on_reset(void)
 {
     uint32_t optr = FLASH->OPTR;
 
     /* Check if SRAM_RST bit is set (bit 25 = 0x02000000) */
     if ((optr & FLASH_OPTR_SRAM_RST) == 0) {
+        /* Defer the OB program if VDD is marginal — never risk an OB write on
+         * a sagging supply. The next boot with adequate VDD retries (this is
+         * idempotent: it only runs while SRAM_RST is unset). */
+        if (!vdd_safe_for_ob_program()) {
+            return;
+        }
         /* SRAM will be erased on reset - need to fix this! */
         /* Unlock FLASH */
         if ((FLASH->CR & FLASH_CR_LOCK) != 0U) {
@@ -648,6 +681,17 @@ void request_dfu_mode(uint32_t protocol)
   * @brief  The application entry point.
   * @retval int
   */
+/* Raw RCC_CSR captured at the very start of main() so app-level code can
+ * read the true reset cause AFTER __HAL_RCC_CLEAR_RESET_FLAGS() wipes it. */
+uint32_t g_boot_rcc_csr_raw = 0;
+
+/* Raw PWR_SR1 + EXTSCR captured at boot so app code can detect a
+ * wake-from-STANDBY (EXTSCR.C1SBF = bit 8) after HAL clears the sticky
+ * flags. Lets MGR_LPM_UW / the app decide whether to skip lazy work
+ * that is only needed on a true cold boot. */
+uint32_t g_boot_pwr_sr1_raw = 0;
+uint32_t g_boot_pwr_extscr_raw = 0;
+
 int main(void)
 {
   /* USER CODE BEGIN 1 */
@@ -660,6 +704,46 @@ int main(void)
   check_dfu_request();
 
   mspFillup();
+
+  /* Capture the raw RCC_CSR BEFORE the PINRST clear below wipes the flags.
+   * boot_loop_handle() reads this to distinguish a user-triggered clean
+   * reset (BOR / PIN) from a fault-triggered one (IWDG / SW) so that NRST
+   * does not accumulate "failures". */
+  g_boot_rcc_csr_raw = RCC->CSR;
+  /* PWR_EXTSCR captured here too — the SBF flag is cleared by HAL later
+   * in the wake-up switch, so we need it before that. */
+  g_boot_pwr_extscr_raw = PWR->EXTSCR;
+
+#if defined(SMD_STDALONE)
+  /* If the previous STANDBY entry installed a PWR pull-down on PC1 (VSEL
+   * held LOW = 1V8 regulator mode), clear it now so the GPIO push-pull
+   * output configured by MX_GPIO_Init() drives PC1 HIGH cleanly without
+   * fighting the 50 kΩ PWR pull-down. The PB7 pull-up (PWR_LATCH anchor)
+   * is intentionally NOT cleared — losing it would float PWR_LATCH and
+   * power-cycle the board. */
+  PWR->PDCRC &= ~(1UL << 1);  /* clear PC1 pull-down */
+
+  /* Purge any PB7 (PWR_LATCH) PWR pull-down a previous power-off left
+   * armed. PWR_PDCRx survives NRST/SFT resets (VDD-domain): a stale
+   * pull-down fights the external latch pull-up (~25 µA forever) and can
+   * hold the latch node low enough that "power off then on" appears
+   * stuck in shutdown. The pull-up anchor (PUCRB7) is kept. */
+  PWR->PDCRB &= ~(1UL << 7);  /* clear PB7 pull-down */
+
+  /* Robustness for the 1V8 STANDBY path: drive PC1 HIGH bare-metal here,
+   * BEFORE SystemClock_Config configures PLL and BEFORE any peripheral
+   * touches an ADC. That way SystemClock_Config runs at 3V3 instead of
+   * 1V8 (avoids edge-of-spec PLL lock margin), and any later ADC sample
+   * sees the 3V3 reference the SWS / BAT calibrations were tuned for.
+   * MX_GPIO_Init() re-applies the same drive HIGH later — both are
+   * idempotent. The transition VSEL low->high takes a few ms; we let
+   * the ramp continue during SystemClock_Config (HSI16 = 1V8-safe). */
+  RCC->AHB2ENR |= RCC_AHB2ENR_GPIOCEN;
+  (void)RCC->AHB2ENR;  /* dsb-equivalent: ensure clock enable is visible */
+  GPIOC->BSRR = (1UL << 1);                       /* drive PC1 = 1 */
+  GPIOC->MODER = (GPIOC->MODER & ~(3UL << (1 * 2))) | (1UL << (1 * 2)); /* output */
+  GPIOC->OTYPER &= ~(1UL << 1);                   /* push-pull */
+#endif
 
   /** Check if reset was triggered by nRST external pin
    *
@@ -726,6 +810,25 @@ int main(void)
   MX_SUBGHZ_Init();
   MX_TIM16_Init();
   MX_RTC_Init();
+
+  /* Disarm any RTC wake-up timer left armed by a previous firmware image
+   * AND zero out the stale callback table that lives in the RTC backup
+   * registers. mcu_tim.c stores `timer[].isr_cb` in `.lpmSection` (RTC
+   * backup) so it survives STANDBY/SHUTDOWN — and ALSO survives a flash
+   * erase + reflash, which leaves the old firmware's function pointers
+   * dangling. If a HAL_TIM / HAL_RTCEx callback fires before the lib
+   * gets to re-init those handlers, it dispatches into invalid code
+   * → immediate HardFault (observed on every first boot after flash).
+   *
+   * Two-step recovery:
+   *   1. Stop the HW wake source so no spurious interrupt is queued.
+   *   2. Clear the callback table so even if an IRQ does fire later
+   *      (before lib MCU_TIM_init), the dispatcher sees a NULL cb and
+   *      skips the indirect call. */
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUFI);
+  MCU_TIM_resetState();
 #if defined(USE_SPI_DRIVER)
   MX_SPI1_Init();
 #endif
@@ -783,13 +886,51 @@ int main(void)
     break;
   }
 
+  /** Capture wake-source flags before they get cleared by HAL.
+   * Tagged unused so release builds (where MGR_LOG_DEBUG compiles out)
+   * don't trip -Werror=unused-variable. */
+  uint32_t boot_pwr_sr1 __attribute__((unused)) = PWR->SR1;
+  uint32_t boot_rcc_csr __attribute__((unused)) = RCC->CSR;
+  /* Mirror into the global so MGR_LPM_UW (and any app-level code) can
+   * read it after HAL_PWREx wipes the sticky flags later in init. */
+  g_boot_pwr_sr1_raw = boot_pwr_sr1;
+
+#ifdef DEBUG
+  /* BOOT trace: INFO-grade. Gated so AT+LOGLVL=4 stays clean — external
+   * apps (GUI / parsers) depend on a bare AT response stream.
+   * Reset-cause letters: L=LPWR W=WWDG I=IWDG S=SFT B=BOR P=PIN O=OBL ?=none */
+  if (MGR_LOG_passes(MGR_LOG_LVL_INFO)) {
+    extern UART_HandleTypeDef hlpuart1;
+    static char _bt[88];
+    char fl[16] = {0};
+    int idx = 0;
+    if (g_boot_rcc_csr_raw & RCC_CSR_LPWRRSTF) fl[idx++] = 'L';
+    if (g_boot_rcc_csr_raw & RCC_CSR_WWDGRSTF) fl[idx++] = 'W';
+    if (g_boot_rcc_csr_raw & RCC_CSR_IWDGRSTF) fl[idx++] = 'I';
+    if (g_boot_rcc_csr_raw & RCC_CSR_SFTRSTF)  fl[idx++] = 'S';
+    if (g_boot_rcc_csr_raw & RCC_CSR_BORRSTF)  fl[idx++] = 'B';
+    if (g_boot_rcc_csr_raw & RCC_CSR_PINRSTF)  fl[idx++] = 'P';
+    if (g_boot_rcc_csr_raw & RCC_CSR_OBLRSTF)  fl[idx++] = 'O';
+    if (idx == 0) fl[idx++] = '?';
+    fl[idx] = 0;
+    int n = snprintf(_bt, sizeof(_bt),
+        "\r\n%s==== BOOT cause=[%s] CSR=0x%08lX SR1=0x%08lX ====\r\n",
+        MGR_LOG_levelTag(MGR_LOG_LVL_INFO),
+        fl, (unsigned long)g_boot_rcc_csr_raw, (unsigned long)boot_pwr_sr1);
+    if (n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)_bt, (uint16_t)n, 100);
+  }
+#endif
+
   /** Logging purpose only, mention which LPM exited */
   switch (LPM_getMode()) {
   case LOW_POWER_MODE_SHUTDOWN:
-    MGR_LOG_DEBUG("==== WAKEUP from SHUTDOWN ====\r\n");
+    MGR_LOG_DEBUG("==== WAKEUP from SHUTDOWN ==== PWR_SR1=0x%08lX RCC_CSR=0x%08lX\r\n",
+      (unsigned long)boot_pwr_sr1, (unsigned long)boot_rcc_csr);
     break;
   case LOW_POWER_MODE_STANDBY:
-    MGR_LOG_DEBUG("==== WAKEUP from STANDBY ====\r\n");
+    MGR_LOG_DEBUG("==== WAKEUP from STANDBY ==== PWR_SR1=0x%08lX RCC_CSR=0x%08lX\r\n",
+      (unsigned long)boot_pwr_sr1, (unsigned long)boot_rcc_csr);
     break;
   case LOW_POWER_MODE_STOP:
     MGR_LOG_DEBUG("==== WAKEUP from STOP MODE ====\r\n");
@@ -799,9 +940,11 @@ int main(void)
     break;
   default:
     if (bIsWakeUpFromReset)
-      MGR_LOG_DEBUG("==== WAKEUP from RESET ====\r\n");
+      MGR_LOG_DEBUG("==== WAKEUP from RESET ==== RCC_CSR=0x%08lX\r\n",
+        (unsigned long)boot_rcc_csr);
     else
-      MGR_LOG_DEBUG("==== WAKEUP from POWER OFF ====\r\n");
+      MGR_LOG_DEBUG("==== WAKEUP from POWER OFF ==== RCC_CSR=0x%08lX\r\n",
+        (unsigned long)boot_rcc_csr);
     MGR_LOG_DEBUG("Running build, versions:\r\n");
     MGR_LOG_DEBUG("- FW            %s\r\n", uc_fw_vers_commit_id);
     MGR_LOG_DEBUG("- libkineis.a   %s\r\n", libkineis_info);
@@ -833,9 +976,21 @@ int main(void)
    * @note The Idle task is required to call the low power mode managment only
    * */
 #if defined(USE_STDALONE_APP)
+#if defined(BSP_HAS_LED_RGB)
+  /* Keep LED pins in a defined OFF state on boards that have RGB LED (e.g.
+   * SMD_STDALONE) so they don't glow from GPIO leakage. STDLN doesn't drive
+   * the LED autonomously — this is purely a clean-init for HW. */
+  MGR_LED_init();
+#endif
   assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_stdln_loop) == KNS_STATUS_OK);
   //assert_param(KNS_OS_registerTask(KNS_OS_TASK_APP, KNS_APP_stdalone_stressTest) == KNS_STATUS_OK);
 #elif defined (USE_GUI_APP)
+
+#if defined(BSP_HAS_LED_RGB)
+  /* Defined LED OFF state on boards with RGB LED. GUI is AT-command driven
+   * and doesn't drive LED autonomously, but AT+LED can control it. */
+  MGR_LED_init();
+#endif
 
 #if defined(USE_SPI_DRIVER)
   #if defined(DEBUG) && defined(VERBOSE)
@@ -867,6 +1022,10 @@ int main(void)
 #endif
 #if defined(BSP_HAS_LED_RGB)
   MGR_LED_init();
+  /* HW sanity: cycle R, G, B, WHITE for 400ms each (blocking, ~1.6s).
+   * Bypasses led_mode check so it always runs — proves the GPIO/LED chain
+   * works independently of NVM-loaded led_mode and the blink state machine. */
+  MGR_LED_bootTest();
 #endif
   /* Initialize AT command parser for UW_DOPPLER AT commands (SWS, TXCFG, LED, etc.) */
 #if defined(USE_UART_DRIVER)
@@ -943,6 +1102,26 @@ int main(void)
   /* USER CODE END 3 */
 }
 
+/* Set when the LSE 32 kHz crystal fails to start and the RTC falls back to LSI.
+ * Read by rtc.c (HAL_RTC_MspInit) to pick the RTC clock source. Degraded-LSE
+ * survival mode: a dead crystal must NOT brick a sealed unit (see #2 audit). */
+volatile uint8_t g_rtc_use_lsi = 0;
+
+/* Runtime LSE-death latch. Survives a system reset (SRAM2 NOLOAD, magic-
+ * validated against random SRAM on a true cold boot). The RTC-liveness gate in
+ * the STOP2/SHUTDOWN path sets this before an ERR_RTC_DEAD reset; the next boot
+ * then forces LSI directly instead of retrying a MARGINAL LSE — one that starts
+ * fine at boot temperature but dies in cold STOP2 — which would otherwise
+ * reset-loop forever. Cleared only by a true power-cycle (VBAT loss wipes
+ * SRAM2). A false latch costs only the ±5% LSI timing, never function. */
+#define RTC_FORCE_LSI_MAGIC  0x4C534931u   /* "LSI1" */
+__attribute__((__section__(".retentionRamNoload"))) static volatile uint32_t g_rtc_force_lsi;
+
+void SystemClock_armLsiFallback(void)
+{
+	g_rtc_force_lsi = RTC_FORCE_LSI_MAGIC;
+}
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -961,10 +1140,13 @@ void SystemClock_Config(void)
   */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** Initializes the CPU, AHB and APB buses clocks
+  /** Initializes the CPU, AHB and APB buses clocks.
+   * HSI + PLL only here — a failure of the core clock is genuinely
+   * unrecoverable so Error_Handler/reset stays correct. LSE is configured
+   * SEPARATELY below so a dead 32 kHz crystal degrades the RTC to LSI instead
+   * of bricking the boot in an Error_Handler reset loop (sealed-deploy audit #2).
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -994,6 +1176,30 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /* RTC reference clock: LSE 32.768 kHz preferred, LSI fallback if the crystal
+   * does not start (solder fracture / aging in a sealed capsule). A degraded
+   * RTC on LSI (~32 kHz, ±5 %) still drives every duty-cycle and SHUTDOWN
+   * auto-wake, so the device keeps transmitting instead of reset-looping
+   * forever at boot. This block is the ONLY clock path allowed to continue on
+   * failure — the core HSI/PLL above is not. */
+  {
+    /* Skip the LSE entirely if the runtime gate latched a prior RTC death:
+     * a marginal crystal that re-starts at boot would otherwise be chosen
+     * again and die at the next cold STOP2 -> reset loop. */
+    bool force_lsi = (g_rtc_force_lsi == RTC_FORCE_LSI_MAGIC);
+    RCC_OscInitTypeDef lse_cfg = {0};
+    lse_cfg.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+    lse_cfg.LSEState = RCC_LSE_ON;
+    if (force_lsi || HAL_RCC_OscConfig(&lse_cfg) != HAL_OK)
+    {
+      RCC_OscInitTypeDef lsi_cfg = {0};
+      lsi_cfg.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+      lsi_cfg.LSIState = RCC_LSI_ON;
+      (void)HAL_RCC_OscConfig(&lsi_cfg);   /* on-chip, effectively always ready */
+      g_rtc_use_lsi = 1;
+    }
+  }
 }
 
 /* USER CODE BEGIN 4 */
@@ -1008,10 +1214,32 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  MGR_LOG_DEBUG("Error_Handler\r\n");
+#if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
+  extern volatile uint32_t g_uw_doppler_state_for_err;
+  extern UART_HandleTypeDef hlpuart1;
+  /* Fatal forensic — ERROR-grade. Gated at LOGLVL=NONE so a GUI parser
+   * sees a clean stream; everything ≤ ERROR still surfaces the fault.
+   * Direct synchronous UART so it physically leaves the chip before the
+   * potential NVIC_SystemReset() further down. */
+  if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+    static char err_buf[104];
+    int err_n = snprintf(err_buf, sizeof(err_buf),
+      "\r\n%s!!! Error_Handler: state=%lu tick=%lu !!!\r\n",
+      MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+      (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
+    if (err_n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)err_buf, (uint16_t)err_n, 200);
+  }
+  MGR_LOG_ERR("!!! Error_Handler: state=%lu tick=%lu\r\n",
+    (unsigned long)g_uw_doppler_state_for_err, (unsigned long)HAL_GetTick());
+#else
+  MGR_LOG_ERR("Error_Handler\r\n");
+#endif
 
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
-  /* Tracker must ALWAYS reset, even in DEBUG — device must never be stuck */
+  /* Tracker must ALWAYS reset, even in DEBUG — device must never be stuck.
+   * MGR_ERR_logAndReset() flushes the log ring buffer before resetting so
+   * the assert/file/line lines above actually reach the host UART. */
   MGR_ERR_logAndReset(ERR_ASSERT);
   /* Never reaches here */
 
@@ -1055,9 +1283,19 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  MGR_LOG_DEBUG("ASSERT FAIL: %lu %s\r\n", line, file);
+  /* Fatal forensic — gated at LOGLVL=NONE only. Direct synchronous UART
+   * so file/line reach the host before the reset chained by Error_Handler. */
+  if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
+    extern UART_HandleTypeDef hlpuart1;
+    static char af_buf[168];
+    int af_n = snprintf(af_buf, sizeof(af_buf),
+      "\r\n%s!!! HAL_ASSERT %s:%lu !!!\r\n",
+      MGR_LOG_levelTag(MGR_LOG_LVL_ERROR),
+      (file ? (const char *)file : "(null)"), (unsigned long)line);
+    if (af_n > 0)
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)af_buf, (uint16_t)af_n, 200);
+  }
+  MGR_LOG_ERR("ASSERT FAIL: %lu %s\r\n", line, file);
   Error_Handler();
   /* USER CODE END 6 */
 }

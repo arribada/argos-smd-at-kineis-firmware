@@ -10,6 +10,49 @@
 #   2015-07-22 - first version
 # ------------------------------------------------
 
+#######################################
+# Host platform detection + shell setup
+#######################################
+# This Makefile uses bash-only syntax (if !(...), command -v, mkdir -p, cygpath,
+# single-quoted sed). On Linux/macOS the default /bin/sh works fine. On Windows
+# we must point SHELL at a real bash, and the path MUST NOT contain spaces —
+# otherwise make splits on whitespace and fails with
+#   `make: C:/Program: No such file or directory`.
+# We therefore use 8.3 short paths (PROGRA~1 = Program Files,
+# PROGRA~2 = Program Files (x86)) and probe common Git/MSYS2/Cygwin locations.
+ifeq ($(OS),Windows_NT)
+    HOST_OS := Windows
+    ifneq ($(wildcard C:/PROGRA~1/Git/usr/bin/bash.exe),)
+        SHELL := C:/PROGRA~1/Git/usr/bin/bash.exe
+    else ifneq ($(wildcard C:/PROGRA~2/Git/usr/bin/bash.exe),)
+        SHELL := C:/PROGRA~2/Git/usr/bin/bash.exe
+    else ifneq ($(wildcard C:/PROGRA~1/Git/bin/bash.exe),)
+        SHELL := C:/PROGRA~1/Git/bin/bash.exe
+    else ifneq ($(wildcard C:/PROGRA~2/Git/bin/bash.exe),)
+        SHELL := C:/PROGRA~2/Git/bin/bash.exe
+    else ifneq ($(wildcard C:/msys64/usr/bin/bash.exe),)
+        SHELL := C:/msys64/usr/bin/bash.exe
+    else ifneq ($(wildcard C:/cygwin64/bin/bash.exe),)
+        SHELL := C:/cygwin64/bin/bash.exe
+    else
+        $(warning No bash.exe found. Install Git for Windows or MSYS2, or run make from Git Bash.)
+    endif
+    .SHELLFLAGS := -c
+    export SHELL
+
+    # $(MAKE) gets auto-resolved to make's own binary path. With MSYS-style
+    # make (Chocolatey/MSYS2 build), that path is `/usr/bin/make` — a POSIX
+    # path interpreted in *make's* mount table, NOT in Git Bash's. So when a
+    # recipe does `$(MAKE) -C subdir`, Git Bash tries to spawn `/usr/bin/make`
+    # and fails with `No such file or directory`. Forcing a bare `make` makes
+    # the shell look it up via PATH (which already finds it, since the user
+    # was able to invoke make in the first place).
+    MAKE := make
+else
+    HOST_OS := $(shell uname -s)
+    # Default /bin/sh is fine on Linux/macOS.
+endif
+
 current_makefile := $(firstword $(MAKEFILE_LIST))
 current_repo_status := $(shell  if !(git status --porcelain); then echo ''; fi)
 current_repo_commit := $(shell  if !(git log -1 --format="%h"); then echo 'unknow'; fi)
@@ -28,8 +71,12 @@ DEBUG = 1
 VERBOSE = 1
 USE_BAREMETAL = 1
 
-# Python executable (auto-detect python3 on Linux/WSL)
-ifeq ($(shell command -v python3 2>/dev/null),)
+# Python executable
+# On Windows, `python3` is usually the Microsoft Store stub (exits 9009 with a
+# "install from Store" message), so prefer `python`. On Linux/macOS use python3.
+ifeq ($(OS),Windows_NT)
+PYTHON ?= python
+else ifeq ($(shell command -v python3 2>/dev/null),)
 PYTHON ?= python
 else
 PYTHON ?= python3
@@ -57,7 +104,16 @@ MAC_PRFL = BASIC
 
 # LPM: deepest low power mode supported can be:
 # NONE, SLEEP, STOP, STANDBY, SHUTDOWN
-LPM = NONE
+# Default = SHUTDOWN so every build ships with the full LPM ladder compiled
+# in (sleep / stop / standby / shutdown). The runtime can still cap the
+# active level via AT+LPM=<bitmap>; we only pay extra flash for the unused
+# callbacks (about 2-3 KB). Capping at STOP at compile time used to be a
+# common foot-gun: UW_DOPPLER's MGR_LPM_UW_enterShutdownReed silently fell
+# back to NVIC_SystemReset (a soft reset) when LPM_SHUTDOWN_ENABLED was
+# off, defeating the whole point of the sealed end-of-mission path.
+# DOPPLER on SMD_NOPA / SMD_OP also required LPM=SHUTDOWN at build time
+# (MCU_DONE pin missing) — that constraint is now satisfied by default.
+LPM = SHUTDOWN
 
 # * Board type: choose between: SMD_PA, SMD_NOPA, SMD_STDALONE, SMD_OP
 BOARD = SMD_PA
@@ -100,7 +156,7 @@ $(KINEIS_DIR)/Lib/libkineis_info.c \
 $(KINEIS_DIR)/Lib/libknsrf_wl_info.c
 
 #LIB_VERSIONS := $(foreach file, $(LIB_INFO_SOURCES), $(shell   if !(cat $(file) | grep "$(notdir $(file:.c=))\[\]" | sed  's/.*"\(.*\)".*/\1/'); then echo 'serach_$(notdir $(file:.c=))_variable'; fi))
-LIB_VERSIONS := $(foreach file, $(LIB_INFO_SOURCES), $(shell cat $(file) | grep "$(notdir $(file:.c=))\[\]" | sed  's/.*"\(.*\)".*/\1/'))
+LIB_VERSIONS := $(foreach file, $(LIB_INFO_SOURCES), $(shell cat $(file) | grep -F "$(notdir $(file:.c=))[]" | sed  's/.*"\(.*\)".*/\1/'))
 LIB_VERSIONS := $(shell echo $(LIB_VERSIONS)  | sed  's/ /,/g')
 
 #######################################
@@ -156,6 +212,7 @@ $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_flash.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_aes.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/aes.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_nvm.c \
+$(KINEIS_DIR)/Extdep/Mcu/Src/mcu_nvm_blind_pos.c \
 $(KINEIS_DIR)/Extdep/Mcu/Src/mcu_tim.c \
 $(KINEIS_DIR)/App/Mcu/Src/mcu_at_console.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd.c \
@@ -164,6 +221,7 @@ $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_user_data.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_general.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_mac.c \
+$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_v11.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_certif.c \
 $(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_previpass.c \
 $(KINEIS_DIR)/App/Kineis_os/KNS_Q/Src/kns_q.c \
@@ -268,20 +326,28 @@ endif
 ifeq ($(APP),UW_DOPPLER)
 	C_DEFS +=  \
 	-DUSE_UW_DOPPLER_APP \
-	-DHAL_ADC_MODULE_ENABLED
+	-DHAL_ADC_MODULE_ENABLED \
+	-DHAL_LPTIM_MODULE_ENABLED
 
 	C_SOURCES += \
 	Core/Src/adc.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_adc_ex.c \
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
+	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_lptim.c \
 	$(KINEIS_DIR)/App/Managers/MGR_SWS/Src/mgr_sws.c \
 	$(KINEIS_DIR)/App/Managers/MGR_NVM/Src/mgr_nvm.c \
 	$(KINEIS_DIR)/App/Managers/MGR_BAT/Src/mgr_bat.c \
 	$(KINEIS_DIR)/App/Managers/MGR_ERR/Src/mgr_err.c \
 	$(KINEIS_DIR)/App/Managers/MGR_WDG/Src/mgr_wdg.c \
 	$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Src/mgr_evtlog.c \
+	$(KINEIS_DIR)/App/Managers/MGR_RATE/Src/mgr_rate.c \
+	$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Src/mgr_txstats.c \
+	$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Src/mgr_pmlog.c \
+	$(KINEIS_DIR)/App/Managers/MGR_CRED/Src/mgr_cred.c \
 	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
+	$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Src/mgr_gesture.c \
+	$(KINEIS_DIR)/App/Managers/MGR_LPM_UW/Src/mgr_lpm_uw.c \
 	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
 endif
 
@@ -308,6 +374,25 @@ ifeq ($(BOARD),SMD_STDALONE)
 	Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_ll_adc.c \
 	$(KINEIS_DIR)/App/Managers/MGR_BAT/Src/mgr_bat.c
 endif
+endif
+
+# Reed switch rewired to PB3 = WKUP3 (bench HW mod): power-off uses true
+# SHUTDOWN with magnet wake instead of the STOP2 soft-off loop.
+ifeq ($(REED_WKUP3),1)
+	C_DEFS += -DBSP_REED_ON_WKUP3
+endif
+
+# Reed wired to BOTH PB6 and PB3 with one wire: reed logic stays on PB6,
+# PB3 used only as the WKUP3 wake source for true SHUTDOWN.
+ifeq ($(REED_WKUP3_WIRE),1)
+	C_DEFS += -DBSP_REED_WKUP3_PARALLEL
+endif
+
+# Reed wired to BOTH PB6 and PA0 (WKUP1) — preferred: PA0 is unused and
+# carries no debug function (PB3/SWO has a header pull-up that poisons
+# the reed node).
+ifeq ($(REED_WKUP1_WIRE),1)
+	C_DEFS += -DBSP_REED_WKUP1_PARALLEL
 endif
 
 ifeq ($(MAC_PRFL), BASIC)
@@ -452,6 +537,12 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_ERR/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_WDG/Inc
 C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_EVTLOG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_RATE/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_CRED/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Inc
+C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_LPM_UW/Inc
 endif
 
 ifeq ($(APP),DOPPLER)
@@ -466,14 +557,17 @@ C_INCLUDES += -I$(KINEIS_DIR)/App/Managers/MGR_BAT/Inc
 endif
 endif
 
-# Board-specific drivers
+# Board-specific drivers. Sources are only compiled on boards with the matching
+# hardware (LED RGB + reed switch on SMD_STDALONE), but the public headers are
+# always exposed so dependent modules (MGR_GESTURE / MGR_NVM) can include them
+# and gate the calls with BSP_HAS_LED_RGB / BSP_HAS_REED at the call site.
+C_INCLUDES += \
+-I$(KINEIS_DIR)/App/Managers/MGR_LED/Inc \
+-I$(KINEIS_DIR)/App/Managers/MGR_REED/Inc
 ifeq ($(BOARD),SMD_STDALONE)
 C_SOURCES += \
 $(KINEIS_DIR)/App/Managers/MGR_LED/Src/mgr_led.c \
 $(KINEIS_DIR)/App/Managers/MGR_REED/Src/mgr_reed.c
-C_INCLUDES += \
--I$(KINEIS_DIR)/App/Managers/MGR_LED/Inc \
--I$(KINEIS_DIR)/App/Managers/MGR_REED/Inc
 endif
 
 # Note: COMM UART/SPI defines already set above (line 314)
@@ -482,6 +576,22 @@ endif
 ASFLAGS += $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
 
 CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -pipe -Wall -Wextra -Werror -Wno-unused-but-set-variable -Wno-enum-conversion -Wno-unused-parameter -Wimplicit-fallthrough=1 -Wtype-limits -fdata-sections -Wwrite-strings -ffunction-sections -fstack-usage
+
+# EXTRA_CFLAGS passthrough: production builds use this to override defaults
+# (e.g. `make ... EXTRA_CFLAGS="-DUW_DOPPLER_KEEP_UART_ALIVE=0 -DUW_DOPPLER_VERBOSE_TRACE=0"`).
+CFLAGS += $(EXTRA_CFLAGS)
+
+# LOG_LEVEL passthrough — boot-time default severity threshold for the
+# MGR_LOG ring. Accepts 0..4:
+#   0 = TRACE   (everything — hb, [SWS], [KNS_Q]…)
+#   1 = INFO    (state transitions, modes, TX lifecycle)
+#   2 = WARNING (rate limit, low-battery, backoff)
+#   3 = ERROR   (TX timeouts, HW faults, IWDG forensics)
+#   4 = NONE    (silent)
+# Unset → header picks TRACE for DEBUG=1 builds, INFO for DEBUG=0.
+ifdef LOG_LEVEL
+CFLAGS += -DLOG_DEFAULT_LEVEL=$(LOG_LEVEL)
+endif
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
@@ -595,10 +705,12 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 #######################################
 # DFU binary generation
 #######################################
-# DFU file contains:
-# - Application header at 0x08008000 (256 bytes)
-# - Application code at 0x08008100 (~183KB max)
-# FLASH_USER section (0x0803B000+) is preserved during DFU update
+# DFU file contains (app-first layout):
+# - Application header at 0x08000200 (256 bytes, APP_HEADER_ADDR)
+# - Application vector table + code at 0x08000000 (APP_FLASH_BASE, ~200KB max)
+# FLASH_USER section (0x0803B000+) is preserved during DFU update.
+# (The bootloader lives at 0x08033000; do NOT confuse with the pre-flip
+#  bootloader-first 0x08008000/0x08008100 addresses.)
 
 DFU_SCRIPT = Tools/create_dfu.py
 DFU_OUTPUT = $(BUILD_DIR)/$(TARGET)_dfu.bin
@@ -609,14 +721,14 @@ $(DFU_OUTPUT): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary with header --"
 	$(PYTHON) $(DFU_SCRIPT) $< $@ --build-date "$(BUILD_DATE)" --git-commit "$(current_repo_commit)" --info
 	@echo "DFU file: $@"
-	@echo "Flash address: 0x08008000 (header + code)"
+	@echo "Flash address: 0x08000000 (vector table + code; header @ 0x08000200)"
 
 # DFU without header (legacy mode - for testing)
 $(DFU_LEGACY): $(BUILD_DIR)/$(TARGET).elf $(DFU_SCRIPT) | $(BUILD_DIR)
 	@echo "-- Generating DFU binary (legacy mode, no header) --"
 	$(PYTHON) $(DFU_SCRIPT) $< $@ --no-header
 	@echo "DFU file: $@"
-	@echo "Flash address: 0x08008100 (code only)"
+	@echo "Flash address: 0x08000000 (code only, no header)"
 
 # Main DFU target
 dfu: $(DFU_OUTPUT)
@@ -646,10 +758,34 @@ BOOTLOADER_BUILD = $(BOOTLOADER_DIR)/build
 BOOTLOADER_HEX = $(BOOTLOADER_BUILD)/bootloader.hex
 BOOTLOADER_BIN = $(BOOTLOADER_BUILD)/bootloader.bin
 
+# The bootloader UART-DFU baud MUST match the app console baud (usart.c:
+# UW_DOPPLER or COMM=SPI -> 115200, else 9600), otherwise AT+DFU=PING lands at
+# the wrong speed and the bootloader stays silent. Auto-derive it from APP/COMM
+# so DFU just works; override with BL_UART_BAUD=<n>, add BL_LED=1 for the
+# STDALONE activity LED. (BL_UART_BAUD / BL_LED are Bootloader/Makefile flags
+# and were previously NOT forwarded by this sub-make — passing them to the top
+# Makefile did nothing.)
+# SMD_STDALONE board defaults: it carries the RGB activity LED and never drives
+# the SPI bus (UART-DFU only), so default the bootloader to BL_LED on + 115200
+# baud. ?= keeps both overridable on the command line (BL_LED=0 / BL_UART_BAUD=9600).
+ifeq ($(BOARD),SMD_STDALONE)
+BL_LED ?= 1
+BL_UART_BAUD ?= 115200
+endif
+
+ifeq ($(APP),UW_DOPPLER)
+APP_CONSOLE_BAUD := 115200
+else ifeq ($(COMM),SPI)
+APP_CONSOLE_BAUD := 115200
+else
+APP_CONSOLE_BAUD := 9600
+endif
+BL_UART_BAUD ?= $(APP_CONSOLE_BAUD)
+
 # Build bootloader only
 bootloader:
-	@echo "=== Building Bootloader ==="
-	$(MAKE) -C $(BOOTLOADER_DIR) PROTOCOL=$(COMM)
+	@echo "=== Building Bootloader (UART-DFU @ $(BL_UART_BAUD) baud) ==="
+	$(MAKE) -C $(BOOTLOADER_DIR) PROTOCOL=$(COMM) BL_UART_BAUD=$(BL_UART_BAUD) $(if $(BL_LED),BL_LED=$(BL_LED))
 	@if [ ! -f $(BOOTLOADER_BIN) ]; then \
 		echo "ERROR: Bootloader build failed - $(BOOTLOADER_BIN) not found"; \
 		exit 1; \
@@ -709,12 +845,38 @@ $(BOOTLOADER_BIN): bootloader
 #######################################
 # Flash targets
 #######################################
-# JLink executable - uses JLinkExe from PATH (install J-Link software)
-# JLink executable - auto-detect: Linux JLinkExe or Windows via WSL
-ifeq ($(shell command -v JLinkExe 2>/dev/null),)
-JLINK_EXE ?= "C:/Program Files/SEGGER/JLink_V876/JLink.exe"
+# JLink executable - auto-detect:
+#   Linux/macOS : JLinkExe from PATH
+#   Windows     : JLink.exe — uses 8.3 short paths (PROGRA~1 / PROGRA~2) to
+#                 avoid the "C:/Program Files" space which breaks shell quoting
+#                 under Git Bash / MSYS. Probes stable install dir first, then
+#                 falls back to the newest versioned dir (JLink_V*).
+# Override on cmdline: `make JLINK_EXE=/path/to/JLink.exe ...`
+# NOTE: under MSYS2/Git-Bash make, $(OS) is often EMPTY so HOST_OS holds
+# `uname -s` (MINGW64_NT-...) — match those as Windows too, otherwise the
+# detection silently falls through to the Linux `JLinkExe` default.
+ifneq (,$(filter Windows MINGW% MSYS% CYGWIN%,$(HOST_OS)))
+    # Stable install path (preferred — survives JLink updates)
+    ifneq ($(wildcard C:/PROGRA~1/SEGGER/JLink/JLink.exe),)
+        JLINK_EXE ?= C:/PROGRA~1/SEGGER/JLink/JLink.exe
+    else ifneq ($(wildcard C:/PROGRA~2/SEGGER/JLink/JLink.exe),)
+        JLINK_EXE ?= C:/PROGRA~2/SEGGER/JLink/JLink.exe
+    else
+        # Versioned fallback: take the newest JLink_V* directory found
+        JLINK_VERSIONED := $(lastword $(sort \
+            $(wildcard C:/PROGRA~1/SEGGER/JLink_V*/JLink.exe) \
+            $(wildcard C:/PROGRA~2/SEGGER/JLink_V*/JLink.exe)))
+        ifneq ($(JLINK_VERSIONED),)
+            JLINK_EXE ?= $(JLINK_VERSIONED)
+        else
+            # Last resort: assume JLink.exe is on PATH
+            JLINK_EXE ?= JLink.exe
+            $(warning JLink not found under C:/Program Files/SEGGER/ — relying on PATH)
+        endif
+    endif
 else
-JLINK_EXE ?= JLinkExe
+    # Linux / macOS — JLinkExe must be installed and on PATH
+    JLINK_EXE ?= JLinkExe
 endif
 JLINK_SERIAL ?=
 JLINK_SPEED ?= 4000
@@ -727,8 +889,17 @@ else
 JLINK_SERIAL_OPT =
 endif
 
+# Flash targets deliberately do NOT depend on build artifacts: a bare
+# `make flash-*` would otherwise rebuild/relink with the DEFAULT flags
+# (APP=GUI BOARD=SMD_PA) and silently flash the wrong image. Build first
+# with the canonical command line (see `make help`), then flash.
+define REQUIRE_FILE
+	@test -f $(1) || { echo "ERROR: $(1) missing - build it first (see 'make help')"; exit 1; }
+endef
+
 # Flash app only (assumes bootloader already present)
-flash-app: $(BUILD_DIR)/$(TARGET).hex
+flash-app:
+	$(call REQUIRE_FILE,$(BUILD_DIR)/$(TARGET).hex)
 	@echo "Flashing application to 0x08000000..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08000000 0x08033000" >> $(JLINK_SCRIPT)
@@ -739,7 +910,8 @@ flash-app: $(BUILD_DIR)/$(TARGET).hex
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
 # Flash bootloader only
-flash-bl: $(BOOTLOADER_HEX)
+flash-bl:
+	$(call REQUIRE_FILE,$(BOOTLOADER_HEX))
 	@echo "Flashing bootloader to 0x08033000..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08033000 0x0803B000" >> $(JLINK_SCRIPT)
@@ -749,9 +921,10 @@ flash-bl: $(BOOTLOADER_HEX)
 	@echo "exit" >> $(JLINK_SCRIPT)
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
 
-# Flash combined firmware (app + bootloader)
-# Depends on COMBINED_BIN which triggers the merge script that creates both BIN and HEX
-flash-full: $(COMBINED_BIN)
+# Flash combined firmware (app + bootloader). Build the image first:
+#   make <canonical flags> && make <canonical flags> full
+flash-full:
+	$(call REQUIRE_FILE,$(COMBINED_HEX))
 	@echo "Flashing full firmware (App + Bootloader)..."
 	@echo "h" > $(JLINK_SCRIPT)
 	@echo "erase 0x08000000 0x0803B000" >> $(JLINK_SCRIPT)
@@ -760,6 +933,91 @@ flash-full: $(COMBINED_BIN)
 	@echo "g" >> $(JLINK_SCRIPT)
 	@echo "exit" >> $(JLINK_SCRIPT)
 	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
+
+# Default flash intent = full image
+flash: flash-full
+
+# Flash via hardware NRST pulse (r0/r1) — the ONLY reliable path when the
+# chip sits in STOP2/soft-off and a plain SWD attach fails ("Failed to
+# initialize DAP" / hang). Loads the APP hex only; bootloader region kept.
+flash-recover:
+	$(call REQUIRE_FILE,$(BUILD_DIR)/$(TARGET).hex)
+	@echo "NRST-pulse recovery flash (app only, bootloader preserved)..."
+	@echo "si SWD" > $(JLINK_SCRIPT)
+	@echo "speed 1000" >> $(JLINK_SCRIPT)
+	@echo "r0" >> $(JLINK_SCRIPT)
+	@echo "sleep 400" >> $(JLINK_SCRIPT)
+	@echo "r1" >> $(JLINK_SCRIPT)
+	@echo "sleep 20" >> $(JLINK_SCRIPT)
+	@echo "connect" >> $(JLINK_SCRIPT)
+	@echo "h" >> $(JLINK_SCRIPT)
+	@echo "erase 0x08000000 0x08033000" >> $(JLINK_SCRIPT)
+	@echo "loadfile $(BUILD_DIR)/$(TARGET).hex" >> $(JLINK_SCRIPT)
+	@echo "r" >> $(JLINK_SCRIPT)
+	@echo "g" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed 1000 -autoconnect 1 -nogui 1 -CommanderScript $(JLINK_SCRIPT)
+
+# Hardware reset only (NRST pulse) — wakes a deaf board without reflashing
+reset:
+	@echo "si SWD" > $(JLINK_SCRIPT)
+	@echo "speed 1000" >> $(JLINK_SCRIPT)
+	@echo "r0" >> $(JLINK_SCRIPT)
+	@echo "sleep 300" >> $(JLINK_SCRIPT)
+	@echo "r1" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed 1000 -autoconnect 1 -nogui 1 -CommanderScript $(JLINK_SCRIPT)
+
+# Erase app + bootloader, PRESERVES FLASH_USER (credentials, radio conf, NVM)
+erase:
+	@echo "Erasing app+bootloader (FLASH_USER preserved)..."
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase 0x08000000 0x0803B000" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
+
+# Full chip erase INCLUDING FLASH_USER — wipes ID/ADDR/SECKEY/RCONF/NVM/MC!
+erase-all:
+	@echo "WARNING: erasing the WHOLE flash incl. credentials and NVM config"
+	@echo "h" > $(JLINK_SCRIPT)
+	@echo "erase" >> $(JLINK_SCRIPT)
+	@echo "exit" >> $(JLINK_SCRIPT)
+	$(JLINK_EXE) -device STM32WL55JC -if SWD -speed $(JLINK_SPEED) $(JLINK_SERIAL_OPT) -CommanderScript $(JLINK_SCRIPT)
+
+#######################################
+# help
+#######################################
+help:
+	@echo "Canonical builds (ALWAYS 'make clean' first when changing any flag below):"
+	@echo "  Bench   : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=1 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20 full"
+	@echo "  Release : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=0 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20 full"
+	@echo "            then: make flash-full   (app + bootloader, FLASH_USER preserved)"
+	@echo ""
+	@echo "DEBUG=1: console always on, logs INFO  | DEBUG=0: UART torn down ~2s after"
+	@echo "boot (sealed tag), logs ERROR-only; console re-entry = 3s magnet -> CONFIG."
+	@echo ""
+	@echo "Flags: BOARD=SMD_PA|SMD_NOPA|SMD_STDALONE|SMD_OP  APP=GUI|STDLN|DOPPLER|UW_DOPPLER"
+	@echo "       REED_WKUP3=1 (reed moved to PB3) | REED_WKUP3_WIRE=1 (PB6+PB3 parallel,"
+	@echo "       the SMD_STDALONE wiring) | REED_WKUP1_WIRE=1 (PA0 - NOT wired on this HW)"
+	@echo "       LOG_LEVEL=0..4  JLINK_SPEED=<kHz>  JLINK_SERIAL=<sn>"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all (default)   build app -> build/$(TARGET).{elf,hex,bin}"
+	@echo "  full            merge app + bootloader -> $(TARGET)_full.{bin,hex}"
+	@echo "  bootloader      build the DFU bootloader"
+	@echo "  dfu             package a DFU update image"
+	@echo "  flash           = flash-full (app + bootloader)"
+	@echo "  NOTE: flash-* targets never rebuild - they flash the EXISTING build/"
+	@echo "        artifacts. Build first with the canonical flags, then flash."
+	@echo "  flash-app       app only (bootloader preserved)"
+	@echo "  flash-bl        bootloader only"
+	@echo "  flash-recover   NRST-pulse attach + app flash (deaf/STOP2-stuck board)"
+	@echo "  reset           NRST pulse only (wake a deaf board)"
+	@echo "  erase           wipe app+bootloader, FLASH_USER preserved"
+	@echo "  erase-all       wipe EVERYTHING incl. credentials/NVM (dangerous)"
+	@echo "  clean           remove build artifacts (mandatory on flag change)"
+	@echo ""
+	@echo "Tests: cd Tests && ./scripts/run_tests.sh   (31 suites)"
 
 #######################################
 # clean up
@@ -780,7 +1038,7 @@ doc_clean:
 #######################################
 -include $(wildcard $(BUILD_DIR)/*.d)
 
-.PHONY: all clean doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash-app flash-bl flash-full clean-all check-app check-bootloader
+.PHONY: all clean doc doc_clean dfu dfu-legacy bootloader bootloader-clean full flash flash-app flash-bl flash-full flash-recover reset erase erase-all help clean-all check-app check-bootloader
 
 #######################################
 # force empty target

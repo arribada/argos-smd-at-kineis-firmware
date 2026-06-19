@@ -616,8 +616,11 @@ bool bMGR_SPI_CMD_READLPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	HAL_StatusTypeDef ret = HAL_OK;
 
+	/* Response payload: [bitmap, forced_mode]. Old masters that read only
+	 * byte 0 get the bitmap as before. */
 	tx->data[0] = lpm_config.allowedLPMbitmap;
-	tx->next_req = 1;
+	tx->data[1] = (uint8_t)LPM_getForcedMode();
+	tx->next_req = 2;
 	rx->next_req = 1;
 	ret = bMGR_SPI_DRIVER_writeread();
 
@@ -665,6 +668,18 @@ bool bMGR_SPI_CMD_WRITELPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
 	}
 	lpm_config.allowedLPMbitmap = lpm;
+
+	/* Optional second payload byte: forced mode override.
+	 * rx->size = command byte (1) + payload bytes. A legacy master sending
+	 * only the bitmap byte has rx->size == 2 -> clear the forced mode.
+	 * A new master sending [bitmap, forced] has rx->size >= 3. */
+	if (rx->size >= 3) {
+		uint8_t forced = rx->data[2];
+		/* LPM_setForcedMode silently ignores invalid values */
+		LPM_setForcedMode((enum MgrLpm_LPM_t)forced);
+	} else {
+		LPM_setForcedMode(LOW_POWER_MODE_NONE);
+	}
 
 	/* Send success response */
 	tx->data[0] = 1;

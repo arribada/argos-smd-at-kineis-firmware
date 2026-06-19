@@ -30,6 +30,7 @@
 
 #include "mgr_wdg.h"
 #include "stm32wlxx.h"
+#include "stm32wlxx_hal.h"
 #include "mgr_log.h"
 
 /* IWDG key values */
@@ -41,8 +42,96 @@
 #define IWDG_PRESCALER     6U
 #define IWDG_RELOAD        2000U
 
+/* VDD headroom gate for the (commissioning-time) IWDG_STOP option-byte write —
+ * never risk an OB program on a sagging supply (OB-class brick). PVD left
+ * disabled afterwards. Mirrors the gate in main.c:ensure_sram_preserved_on_reset. */
+static bool wdg_vdd_safe_for_ob(void)
+{
+	PWR_PVDTypeDef pvd = {0};
+	pvd.PVDLevel = PWR_PVDLEVEL_3;        /* ~2.5 V — well above the 1.71 V flash floor */
+	pvd.Mode     = PWR_PVD_MODE_NORMAL;
+	HAL_PWR_ConfigPVD(&pvd);
+	HAL_PWR_EnablePVD();
+	for (volatile uint32_t i = 0; i < 4000u; i++) { __NOP(); }
+	bool vdd_low = (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != 0U);
+	HAL_PWR_DisablePVD();
+	return !vdd_low;
+}
+
+bool MGR_WDG_ensureIwdgStopOptionByte(void)
+{
+	/* WL55 OPTR.IWDG_STOP semantics (RM0453 §3.4.1 + stm32wlxx_hal_flash.h):
+	 *   bit 17 = 0  → OB_IWDG_STOP_FREEZE: IWDG counter is FROZEN in STOP
+	 *   bit 17 = 1  → OB_IWDG_STOP_RUN: IWDG keeps counting in STOP
+	 *
+	 * We want FREEZE (bit cleared). Skip flash write only when already
+	 * cleared. The previous logic was inverted and silently skipped the
+	 * programming on a fresh chip — the IWDG kept counting in STOP2 and
+	 * fired after ~16 s, cold-booting the device during every long sleep. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U) {
+		return false;
+	}
+
+	/* Defer the OB program if VDD is marginal — the next adequate-VDD boot
+	 * retries (idempotent while the bit is still set). */
+	if (!wdg_vdd_safe_for_ob()) {
+		MGR_LOG_WARN("[WDG] VDD low — deferring IWDG_STOP OB program\r\n");
+		return false;
+	}
+
+	MGR_LOG_INFO("[WDG] IWDG_STOP option byte not frozen — programming FREEZE...\r\n");
+
+	/* Unlock FLASH for option-byte access. Order matters: FLASH first,
+	 * then option-byte. Both must succeed before any HAL_FLASHEx_OBProgram. */
+	if (HAL_FLASH_Unlock() != HAL_OK) {
+		MGR_LOG_ERR("[WDG] FLASH unlock failed\r\n");
+		return false;
+	}
+	if (HAL_FLASH_OB_Unlock() != HAL_OK) {
+		MGR_LOG_ERR("[WDG] OB unlock failed\r\n");
+		HAL_FLASH_Lock();
+		return false;
+	}
+
+	FLASH_OBProgramInitTypeDef obInit = {0};
+	obInit.OptionType = OPTIONBYTE_USER;
+	obInit.UserType   = OB_USER_IWDG_STOP;
+	obInit.UserConfig = OB_IWDG_STOP_FREEZE;  /* 0 = bit cleared = IWDG frozen during STOP */
+
+	if (HAL_FLASHEx_OBProgram(&obInit) != HAL_OK) {
+		MGR_LOG_ERR("[WDG] OB program failed\r\n");
+		HAL_FLASH_OB_Lock();
+		HAL_FLASH_Lock();
+		return false;
+	}
+
+	/* Launch: reload the option bytes. This call triggers a SYSTEM RESET
+	 * — it does not return. On the next boot the bit will be set and this
+	 * function will see it and skip the entire path. */
+	(void)HAL_FLASH_OB_Launch();
+
+	/* If we somehow reach here (Launch did not reset), best effort cleanup. */
+	HAL_FLASH_OB_Lock();
+	HAL_FLASH_Lock();
+	return false;
+}
+
 void MGR_WDG_init(void)
 {
+	/* Do NOT arm the IWDG until OPTR.IWDG_STOP is FREEZE (bit 17 == 0). On a
+	 * fresh chip the bit is 1 (RUN), and MGR_WDG_ensureIwdgStopOptionByte() (run
+	 * just before us) may have DEFERRED the OB program on a marginal supply
+	 * (the VDD gate). Arming an unfrozen IWDG would let it RUN in STOP2 and
+	 * reset the unit on every sleep > 16 s — a commissioning reboot loop that
+	 * drains the very weak pack the VDD gate exists to protect. Skip arming for
+	 * this one degraded boot; the OB program retries on the next adequate-VDD
+	 * boot, after which FREEZE is committed and the IWDG arms normally. The
+	 * IWDG cannot be stopped once started, so this gate must precede the enable. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) != 0U) {
+		MGR_LOG_WARN("[WDG] IWDG_STOP not frozen yet — IWDG NOT armed this boot\r\n");
+		return;
+	}
+
 	/* Start the IWDG first — activates LSI clock automatically.
 	 * Must be done BEFORE unlock per RM0461 and HAL reference.
 	 * Cannot be stopped after this!
@@ -64,23 +153,42 @@ void MGR_WDG_init(void)
 		/* SR bits PVU and RVU clear when update is done */
 	}
 	if (timeout == 0U)
-		MGR_LOG_DEBUG("[WDG] WARNING: IWDG SR update timeout\r\n");
+		MGR_LOG_WARN("[WDG] IWDG SR update timeout\r\n");
 
 	/* First refresh */
 	IWDG->KR = IWDG_KEY_REFRESH;
 
-	/* Verify IWDG_STOP option byte is set (IWDG frozen during STOP mode).
-	 * If not set, IWDG would keep running during STOP and reset the device
-	 * during long sleep intervals. FLASH_OPTR bit 17 = IWDG_STOP (1=frozen). */
-	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) == 0U)
-		MGR_LOG_DEBUG("[WDG] WARNING: IWDG_STOP not set in option bytes!\r\n");
+	/* Verify the IWDG freezes in Stop mode. RM0453 FLASH_OPTR bit 17
+	 * (IWDG_STOP): 0 = counter FROZEN in Stop, 1 = counter RUNNING in
+	 * Stop. Running-in-Stop would reset the device during any STOP2
+	 * sleep longer than the 16 s timeout. The previous check had the
+	 * polarity inverted and warned on the correct (frozen) setting. */
+	if ((FLASH->OPTR & FLASH_OPTR_IWDG_STOP) != 0U)
+		MGR_LOG_WARN("[WDG] OPTR.IWDG_STOP=1: IWDG runs in STOP2 — "
+			"sleeps >16s will reset!\r\n");
 
-	MGR_LOG_DEBUG("[WDG] IWDG started (timeout ~16s)\r\n");
+	MGR_LOG_INFO("[WDG] IWDG started (timeout ~16s)\r\n");
 }
 
 void MGR_WDG_refresh(void)
 {
 	IWDG->KR = IWDG_KEY_REFRESH;
+}
+
+void MGR_WDG_delayWithKick(uint32_t total_ms)
+{
+	/* Kick before starting so we have the full IWDG window for the first chunk
+	 * even if the caller hadn't kicked recently. */
+	IWDG->KR = IWDG_KEY_REFRESH;
+
+	uint32_t start = HAL_GetTick();
+	while ((HAL_GetTick() - start) < total_ms) {
+		uint32_t elapsed = HAL_GetTick() - start;
+		uint32_t remaining = (elapsed < total_ms) ? (total_ms - elapsed) : 0;
+		uint32_t chunk = remaining > 1000 ? 1000 : remaining;
+		HAL_Delay(chunk);
+		IWDG->KR = IWDG_KEY_REFRESH;
+	}
 }
 
 /**

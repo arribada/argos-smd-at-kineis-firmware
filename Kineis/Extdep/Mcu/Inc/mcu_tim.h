@@ -82,6 +82,19 @@ enum mcu_tim_status_t MCU_TIM_init(enum mcu_tim_hdlr hdlr, enum KNS_status_t (*e
 enum mcu_tim_status_t MCU_TIM_deinit(enum mcu_tim_hdlr hdlr);
 
 /**
+ * @brief Force-reset the internal timer[] callback table.
+ *
+ * timer[] is stored in `.lpmSection` (RTC backup registers), which is
+ * NOT initialised by the C runtime. After a flash erase + reflash the
+ * old firmware's function-pointer values persist in those backup cells
+ * and a stale HAL_TIM_*_Callback dispatches into invalid code → HardFault.
+ *
+ * Call this from main.c at boot, right after MX_RTC_Init and BEFORE the
+ * lib has a chance to arm any HW timer. Safe to call multiple times.
+ */
+void MCU_TIM_resetState(void);
+
+/**
  * @brief Function used to start the timer for a specific delay.
  *
  * Most of the timer, it is assumed there is actually a non-blocking mechanism starting behing this
@@ -114,6 +127,34 @@ enum mcu_tim_status_t MCU_TIM_getCount(enum mcu_tim_hdlr hdlr, uint32_t *elapsed
  * @return  MCU_TIM_STATUS_OK if success. Error status otherwise.
  */
 enum mcu_tim_status_t MCU_TIM_stop(enum mcu_tim_hdlr hdlr);
+
+/**
+ * @brief Function used to suspend timer.
+ *
+ * Depending on the application, the suspend/resume mechanism may entirely disable/re-enable the
+ * timer or simply just postpone its internal tick
+ *
+ * @param[in] hdlr timer handler
+ * @param[in] ctxt pointer to some potentiel context or configuration which may impact the behaviour
+ * of suspend resume
+ *
+ * @return  MCU_TIM_STATUS_OK if success. Error status otherwise.
+ */
+enum mcu_tim_status_t MCU_TIM_suspend(enum mcu_tim_hdlr hdlr, void *ctxt);
+
+/**
+ * @brief Function used to restart the timer.
+ *
+ * Depending on the application, the suspend/resume mechanism may entirely disable/re-enable the
+ * timer or simply just postpone its internal tick
+ *
+ * @param[in] hdlr timer handler
+ * @param[in] ctxt pointer to some potentiel context or configuration which may impact the behaviour
+ * of suspend resume
+ *
+ * @return  MCU_TIM_STATUS_OK if success. Error status otherwise.
+ */
+enum mcu_tim_status_t MCU_TIM_resume(enum mcu_tim_hdlr hdlr, void *ctxt);
 
 #endif /* MCU_TIM_H_ */
 

@@ -28,6 +28,9 @@
 #include "lpm.h" // used for AT+LPM command all is hardcoded so far
 #include "build_info.h"
 #include "mgr_log.h"
+#if defined(USE_UW_DOPPLER_APP)
+#include "kns_app_uw_doppler.h"  /* KNS_APP_uw_doppler_setSessionMC */
+#endif
 #include "mcu_nvm.h"
 #include "mcu_aes.h"
 #include "mcu_flash.h"
@@ -131,7 +134,7 @@ bool bMGR_AT_CMD_ADDR_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getAddr(dev_addr);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		MCU_AT_CONSOLE_send("+ADDR=%02x%02x%02x%02x\r\n", dev_addr[0], dev_addr[1],
 								  dev_addr[2], dev_addr[3]);
 
@@ -174,7 +177,7 @@ bool bMGR_AT_CMD_ID_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getId(&dev_id);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		/* ID is printed as a number, with decimal representation.
 		 * ID is stored in memory in little endian format.
 		 */
@@ -227,7 +230,7 @@ bool bMGR_AT_CMD_SN_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getSN(dev_sn);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		dev_sn[DEVICE_SN_LENGTH] = '\0';
 		MCU_AT_CONSOLE_send("+SN=%s\r\n", dev_sn);
 
@@ -251,7 +254,7 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getRadioInfo(&radio_cfg);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		if (radio_cfg.modulation == KNS_TX_MOD_LDA2)
 			strcpy((char*)modulation, "LDA2");
 		else if (radio_cfg.modulation == KNS_TX_MOD_LDA2L)
@@ -294,7 +297,7 @@ bool bMGR_AT_CMD_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 
 		status = KNS_CFG_setRadioInfo(pu8_cmdParamString + 9);
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
@@ -307,7 +310,7 @@ bool bMGR_AT_CMD_SAVE_RCONF_cmd(uint8_t *pu8_cmdParamString __attribute__((unuse
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 		status = KNS_CFG_saveRadioInfo();
 		if (status != KNS_STATUS_OK)
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	return bMGR_AT_CMD_logFailedMsg(ERROR_UNKNOWN_AT_CMD);
@@ -320,19 +323,56 @@ bool bMGR_AT_CMD_LPM_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	uint16_t lpm; /** @todo PRODEV-88:need to keep uint16_t remove compilation error.
 	 	       * leads to hardfault error if using uint8_t
 	 	       */
+	uint16_t forced;
+	enum MgrLpm_LPM_t forced_cur;
 
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
-		MCU_AT_CONSOLE_send("+LPM=0x%X\r\n", lpm_config.allowedLPMbitmap);
+		forced_cur = LPM_getForcedMode();
+		if (forced_cur != LOW_POWER_MODE_NONE)
+			MCU_AT_CONSOLE_send("+LPM=0x%X,0x%X\r\n",
+				lpm_config.allowedLPMbitmap, (unsigned int)forced_cur);
+		else
+			MCU_AT_CONSOLE_send("+LPM=0x%X\r\n", lpm_config.allowedLPMbitmap);
 		return bMGR_AT_CMD_logSucceedMsg();
 	}
 	if (e_exec_mode == ATCMD_ACTION_MODE) {
 
-		/** Extract USER DATA from pu8_cmdParamString */
-		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString, (const char *)"AT+LPM=0x%hX", &lpm);
+		/** Two accepted forms:
+		 *   AT+LPM=0xXX          -> set allowed bitmap, clear forced mode
+		 *   AT+LPM=0xXX,0xYY     -> set bitmap AND force mode (YY=0 clears)
+		 */
+		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString,
+			(const char *)"AT+LPM=0x%hX,0x%hX", &lpm, &forced);
+		if (scanParamRes == 2) {
+			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
+				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
+#if !defined(LPM_SHUTDOWN_ENABLED)
+			/* Defense in depth: lpm.c registers fp_shutdown_enter=NULL
+			 * when SHUTDOWN isn't compiled in, so a forced SHUTDOWN
+			 * (or a bitmap allowing it) would dispatch to a NULL
+			 * callback and crash. The Makefile default ships SHUTDOWN
+			 * since v3.0.2 — this branch only fires if someone built
+			 * with LPM=STOP or LPM=STANDBY explicitly. */
+			if ((forced & LOW_POWER_MODE_SHUTDOWN) != 0u ||
+			    (lpm & LOW_POWER_MODE_SHUTDOWN) != 0u)
+				return bMGR_AT_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE);
+#endif
+			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
+			LPM_setForcedMode((enum MgrLpm_LPM_t)forced);
+			return bMGR_AT_CMD_logSucceedMsg();
+		}
+
+		scanParamRes = (int16_t)sscanf((const char *)pu8_cmdParamString,
+			(const char *)"AT+LPM=0x%hX", &lpm);
 		if (scanParamRes == 1) {
 			lpm &= LOW_POWER_MODE_NONE | LOW_POWER_MODE_SLEEP | LOW_POWER_MODE_STOP |
 				LOW_POWER_MODE_STANDBY | LOW_POWER_MODE_SHUTDOWN;
+#if !defined(LPM_SHUTDOWN_ENABLED)
+			if ((lpm & LOW_POWER_MODE_SHUTDOWN) != 0u)
+				return bMGR_AT_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE);
+#endif
 			lpm_config.allowedLPMbitmap = (uint8_t)lpm;
+			LPM_setForcedMode(LOW_POWER_MODE_NONE);
 			return bMGR_AT_CMD_logSucceedMsg();
 		}
 		return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
@@ -350,20 +390,38 @@ bool bMGR_AT_CMD_MC_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 	if (e_exec_mode == ATCMD_STATUS_MODE) {
 		status = KNS_CFG_getMC(&mc);
 		if (status != KNS_STATUS_OK) {
-			return bMGR_AT_CMD_logFailedMsg((enum ERROR_RETURN_T) status);
+			return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
 		}
 		
 		MCU_AT_CONSOLE_send("+MC=%d\r\n", mc);
 		return bMGR_AT_CMD_logSucceedMsg();
 	} else if(e_exec_mode == ATCMD_ACTION_MODE) {
-		if (sscanf((char*)pu8_cmdParamString, "%*[^=]= %hu", &mc) != 1)
+		/* Parse into a signed long so "-1" is rejected instead of being
+		 * wrapped by %hu into 65535 (caught by fuzzing). */
+		long mc_in;
+		if (sscanf((char*)pu8_cmdParamString, "%*[^=]= %ld", &mc_in) != 1)
 		{
 			MGR_LOG_DEBUG("Missing parameter: AT+MC=VALUE\r\n");
 			return bMGR_AT_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT);
+		} else if (mc_in < 0 || mc_in > 0xFFFF) {
+			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);
 		} else {
+			/* The MC is a 9-bit protocol field (0..511). Fold any larger
+			 * operator value back into range (mod 512) so the stored MC, the
+			 * +MC echo and every frame agree: a raw value > 511 wraps in the
+			 * 9-bit header but NOT in the 16-bit AES counter, which corrupts
+			 * the frame. MCU_NVM_setMC re-clamps as defence in depth. */
+			mc = (uint16_t)(mc_in % 512);
 			if (KNS_CFG_setMC(mc) == KNS_STATUS_OK)
 			{
 				MGR_LOG_DEBUG("+MC=%u\r\n", mc);
+#if defined(USE_UW_DOPPLER_APP)
+				/* UW_DOPPLER caches the MC per surface sequence in
+				 * retention NOLOAD. Sync the cache so the next TX uses
+				 * the new value the operator just set rather than the
+				 * pre-existing session value. */
+				KNS_APP_uw_doppler_setSessionMC(mc);
+#endif
 				return bMGR_AT_CMD_logSucceedMsg();
 			} else {
 				MGR_LOG_DEBUG("Failed to update MC=%u\r\n", mc);

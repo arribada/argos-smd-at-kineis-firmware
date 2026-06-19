@@ -65,6 +65,17 @@ bool bMGR_AT_CMD_logSucceedMsg(void);
  */
 bool bMGR_AT_CMD_logFailedMsg(enum ERROR_RETURN_T eErrorType);
 
+/** @brief Translate a KNS_status_t to the ERROR_RETURN_T value sent over UART.
+ *
+ * v11.1.0 inserted KNS_STATUS_ABORT=7 inside the [0..99] band — a value that
+ * was undefined in v10 and that legacy GUI parsers therefore don't recognise.
+ * This helper folds ABORT into KNS_STATUS_ERROR (=1, the generic error code
+ * the GUI has always understood) and passes any other code through. Use it
+ * everywhere we forward `srvcEvt.status` or a MAC return code into
+ * `bMGR_AT_CMD_logFailedMsg` to keep the +ERROR=N surface stable.
+ */
+enum ERROR_RETURN_T MGR_AT_CMD_mapKnsStatusToError(enum KNS_status_t s);
+
 /** @brief : This function writes in UART the response of specific command
  *
  * @param[in] atcmd_response_type : enum ATCMD_RESPONSE_TYPE_T: the type of response
