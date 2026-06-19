@@ -2457,6 +2457,12 @@ void KNS_APP_uw_doppler_loop(void)
 					should_tx = false;
 				}
 			}
+			/* Defer the first TX while a magnet gesture is still showing its
+			 * confirm blink (e.g. CONFIG->OPERATIONAL green): the TX path stomps
+			 * the LED. A 2-3 s defer is invisible in the field (no operator) and
+			 * lets the operator actually see the OPERATIONAL confirm before sealing. */
+			if (should_tx && MGR_GESTURE_isInteracting())
+				should_tx = false;
 			if (should_tx) {
 				UWDPL_TRACE("TX should=yes");
 				LAT_TRACE("SURF_TX");  /* T1: enter SURFACE_TX state */

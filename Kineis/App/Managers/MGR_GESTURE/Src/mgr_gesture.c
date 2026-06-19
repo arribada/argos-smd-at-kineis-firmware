@@ -204,7 +204,14 @@ static void led_show_phase(HoldPhase_t phase)
 static void led_show_confirm(MGR_GESTURE_Mode_t target, bool is_shutdown)
 {
 	const MGR_LED_Color_t c = target_color(target, is_shutdown);
-	MGR_LED_blinkForced(c, 3u,
+	/* OPERATIONAL is a one-shot: the LED goes dark right after (deployment),
+	 * unlike CONFIG which then stays solid blue — and the surface/TX activity
+	 * that resumes immediately tends to stomp a short confirm. Give OPERATIONAL
+	 * a longer 5-blink GREEN so the operator can't miss the "back to OPERATIONAL"
+	 * signal before sealing. */
+	const uint8_t count =
+	    (!is_shutdown && target == MGR_GESTURE_MODE_OPERATIONAL) ? 5u : 3u;
+	MGR_LED_blinkForced(c, count,
 	                    MGR_GESTURE_BLINK_SLOW_ON_MS,
 	                    MGR_GESTURE_BLINK_SLOW_OFF_MS);
 }

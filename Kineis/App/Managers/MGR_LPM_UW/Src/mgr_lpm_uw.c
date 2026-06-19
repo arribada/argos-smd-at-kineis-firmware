@@ -161,7 +161,7 @@ extern void MGR_SWS_exitLowPower(void);
  * before any radio/MAC work. Currently DISABLED while we diagnose
  * the immediate-wake bug from STANDBY (cycle observed ~22 ms regardless
  * of configured sleep_s — needs root cause before re-enabling). */
-/* #define LPM_UW_STANDBY_LOW_VOLTAGE 1 */
+/* #define LPM_UW_STANDBY_LOW_VOLTAGE 1 */  /* needs HW: RCFG3=0R for VO(1)=1.8V */
 
 #if defined(BSP_HAS_PWR_LATCH)
 
