@@ -88,6 +88,16 @@ static uint8_t  s_debounce_counter = 0;
 static bool     s_confirmed_state  = false;  /**< false = no magnet */
 static bool     s_candidate_state  = false;
 
+/* TX-transient blanking window. While active, reed_poll() freezes the
+ * debouncer (no sampling, no events, isDebouncing()==false). The SubGHz PA
+ * on/off transient couples into the high-impedance reed node (PB6 pull-down +
+ * parallel PB3/WKUP3 wire) and would otherwise fake magnet chatter — which
+ * burns surface awake-time AND can walk the gesture FSM to a spurious
+ * power-off. The EXTI STOP2 wake stays armed, so a genuine magnet still wakes
+ * the chip on hardware; only the software debounce is blanked. */
+static volatile uint32_t s_blank_until_tick = 0;
+static volatile bool     s_blank_active     = false;
+
 /* EXTI vector follows the reed pin: PB3 (WKUP3 bench mod) is on the
  * dedicated EXTI3 line, default PB6 shares EXTI9_5. */
 #if defined(BSP_REED_ON_WKUP3)
@@ -163,6 +173,19 @@ void MGR_REED_init(void)
 static void reed_poll(void)
 {
 	const uint32_t now = HAL_GetTick();
+
+	/* TX-transient blanking: freeze the debouncer until the window expires so
+	 * a coupled glitch is never latched as a candidate. Runs every call (cheap)
+	 * ahead of the rate-limit so no spurious sample slips through. */
+	if (s_blank_active) {
+		if ((int32_t)(s_blank_until_tick - now) > 0) {
+			s_candidate_state  = s_confirmed_state;
+			s_debounce_counter = 0;
+			return;
+		}
+		s_blank_active = false;  /* window expired — resume normal polling */
+	}
+
 	if ((uint32_t)(now - s_last_poll_tick) < REED_POLL_INTERVAL_MS)
 		return;
 	s_last_poll_tick = now;
@@ -233,6 +256,12 @@ bool MGR_REED_isDebouncing(void)
 	 * accumulates ~1 sample per wake, so the magnet edge never confirms
 	 * → no MAGNET_ON event → gesture LED never fires). */
 	return s_candidate_state != s_confirmed_state;
+}
+
+void MGR_REED_blankUntil(uint32_t until_tick)
+{
+	s_blank_until_tick = until_tick;
+	s_blank_active     = true;
 }
 
 MGR_REED_Event_t MGR_REED_getEvent(void)

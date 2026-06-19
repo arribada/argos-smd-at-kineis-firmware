@@ -237,6 +237,109 @@ static void test_debounce_budget_tick_wrap_safe(void)
 	TEST_PASS();
 }
 
+/* ---- TX-transient reed blanking (mirror of mgr_reed.c reed_poll) ----
+ * The SubGHz PA on/off transient couples into the floating reed node and
+ * fakes magnet chatter that (a) burns surface awake-time via the debounce
+ * budget above and (b) can walk the gesture FSM to a spurious power-off.
+ * MGR_REED_blankUntil() freezes the debouncer for the TX window + settle
+ * tail: no candidate flip, no published events, isDebouncing()==false. The
+ * EXTI STOP2 wake (not modelled here) is untouched. */
+
+static bool     rb_confirmed;
+static bool     rb_candidate;
+static uint8_t  rb_counter;
+static int      rb_events;        /* published MAGNET_ON/OFF count */
+static uint32_t rb_blank_until;
+static bool     rb_blank_active;
+
+static void rb_reset(bool confirmed)
+{
+	rb_confirmed = confirmed;
+	rb_candidate = confirmed;
+	rb_counter = 0;
+	rb_events = 0;
+	rb_blank_active = false;
+	rb_blank_until = 0;
+}
+
+static void rb_blank(uint32_t until_tick)
+{
+	rb_blank_until = until_tick;
+	rb_blank_active = true;
+}
+
+/* Mirror of reed_poll(): honour blank window first, then debounce. */
+static void rb_poll(uint32_t now, bool raw)
+{
+	if (rb_blank_active) {
+		if ((int32_t)(rb_blank_until - now) > 0) {
+			rb_candidate = rb_confirmed;   /* freeze: no chatter latched */
+			rb_counter = 0;
+			return;
+		}
+		rb_blank_active = false;
+	}
+	if (raw == rb_confirmed) { rb_candidate = raw; rb_counter = 0; return; }
+	if (raw != rb_candidate) { rb_candidate = raw; rb_counter = 1; return; }
+	rb_counter++;
+	uint8_t needed = raw ? 5u : 20u;    /* ON 50ms / OFF 200ms @10ms poll */
+	if (rb_counter < needed) return;
+	rb_confirmed = raw;
+	rb_counter = 0;
+	rb_events++;
+}
+
+static bool rb_is_debouncing(void) { return rb_candidate != rb_confirmed; }
+
+static void test_blank_suppresses_tx_glitch_chatter(void)
+{
+	rb_reset(false);                 /* no magnet */
+	rb_blank(10500u);                /* blank a 500ms TX window */
+	for (uint32_t t = 10000u; t < 10500u; t += 10u) {
+		rb_poll(t, (t / 10u) & 1u);  /* raw oscillates HIGH/LOW (PA coupling) */
+		ASSERT_FALSE(rb_is_debouncing());  /* never reports chatter */
+	}
+	ASSERT_EQ(0, rb_events);         /* no spurious MAGNET_ON/OFF published */
+	TEST_PASS();
+}
+
+static void test_blank_expiry_resumes_sampling(void)
+{
+	rb_reset(false);
+	rb_blank(10500u);
+	rb_poll(10600u, true);           /* first poll past the window, raw HIGH */
+	ASSERT_TRUE(rb_is_debouncing()); /* normal debounce resumes */
+	for (uint32_t t = 10610u; t <= 10650u; t += 10u)
+		rb_poll(t, true);            /* sustain HIGH -> confirm ON (5 samples) */
+	ASSERT_TRUE(rb_confirmed);
+	ASSERT_EQ(1, rb_events);
+	TEST_PASS();
+}
+
+static void test_blank_preserves_confirmed_magnet(void)
+{
+	rb_reset(true);                  /* magnet already confirmed before TX */
+	rb_blank(20500u);
+	for (uint32_t t = 20000u; t < 20500u; t += 10u) {
+		rb_poll(t, false);           /* TX-coupled LOW dips during the hold */
+		ASSERT_TRUE(rb_confirmed);   /* no false MAGNET_OFF mid-gesture */
+	}
+	ASSERT_EQ(0, rb_events);
+	TEST_PASS();
+}
+
+static void test_blank_wrap_safe(void)
+{
+	rb_reset(false);
+	uint32_t base = 0xFFFFFFFFu - 100u;
+	rb_blank(base + 300u);           /* deadline wraps past 0 */
+	rb_poll(base + 50u, true);       /* before deadline (despite wrap) */
+	ASSERT_FALSE(rb_is_debouncing());
+	rb_poll(base + 400u, true);      /* past deadline -> sampling resumes */
+	ASSERT_TRUE(rb_is_debouncing());
+	TEST_PASS();
+}
+
 int main(void)
 {
 	TEST_SUITE_START("UW_DOPPLER LPM client gating");
@@ -252,6 +355,10 @@ int main(void)
 	RUN_TEST(test_debounce_budget_real_press_keeps_awake);
 	RUN_TEST(test_debounce_budget_chatter_sleeps_after_500ms);
 	RUN_TEST(test_debounce_budget_tick_wrap_safe);
+	RUN_TEST(test_blank_suppresses_tx_glitch_chatter);
+	RUN_TEST(test_blank_expiry_resumes_sampling);
+	RUN_TEST(test_blank_preserves_confirmed_magnet);
+	RUN_TEST(test_blank_wrap_safe);
 	TEST_SUITE_END();
 	return tests_failed ? 1 : 0;
 }

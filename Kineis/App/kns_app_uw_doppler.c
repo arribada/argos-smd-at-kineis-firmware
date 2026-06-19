@@ -1873,6 +1873,17 @@ void KNS_APP_uw_doppler_loop(void)
 	 *   - Override: build with -DUW_DOPPLER_KEEP_UART_ALIVE=1 to keep UART
 	 *     on forever (debug builds, factory test). */
 #if defined(UW_DOPPLER_HAS_GESTURE)
+	/* Suppress TX-coupled reed chatter: the SubGHz PA on/off transient is the
+	 * sole coupling source into the high-impedance reed node (PB6 pull-down +
+	 * parallel PB3/WKUP3 wire). Blank the reed driver while a TX is in flight
+	 * and for a short settle tail after, so a coupled glitch can neither burn
+	 * surface awake-time (idleTick debounce budget) nor walk the gesture FSM to
+	 * a spurious power-off. The EXTI STOP2 wake stays armed — a genuine magnet
+	 * still wakes the chip. */
+	if (uw_doppler_state == UW_DOPPLER_SURFACE_TX ||
+	    uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE) {
+		MGR_REED_blankUntil(HAL_GetTick() + 500u);  /* ~500 ms PA-settle tail */
+	}
 	MGR_GESTURE_task();
 
 	/* Apply UART state from persisted mode after a one-shot grace period. */
