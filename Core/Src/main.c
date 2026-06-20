@@ -869,10 +869,15 @@ int main(void)
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_STOP);
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_STOP2);
-    /** Initialize retention RAM2 only on true cold boot (power-on/brownout).
-     *  On IWDG/software/pin resets, SRAM2 is preserved (SRAM_RST option byte set)
-     *  so we keep it intact to retain the event log and other retention data.
-     */
+    /** Re-init RAM2 (.data2/.bss2). INTENT: skip on IWDG/SW resets to keep the
+     *  event log + retention data. BUT RCC_CSR was already cleared by the RMVF at
+     *  the PINRST check above (internal IWDG/SW resets co-assert PINRSTF with the
+     *  default bidirectional NRST), so `csr` reads NONE here and Sram2_Init runs
+     *  on EVERY reset — RAM2 retention across fault resets is currently OFF. That
+     *  is the conservative behaviour (clean RAM each boot); it is kept as-is until
+     *  the snapshot-based gate (g_boot_rcc_csr_raw, captured pre-RMVF) is bench-
+     *  validated (see audit 2026-06-20 task). The .retentionRamNoload section
+     *  (brick-fix latches) survives regardless of this. */
     {
       uint32_t csr = RCC->CSR;
       if (!(csr & (RCC_CSR_IWDGRSTF | RCC_CSR_SFTRSTF)))

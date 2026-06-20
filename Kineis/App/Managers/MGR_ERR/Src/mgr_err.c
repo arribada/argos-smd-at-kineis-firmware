@@ -84,8 +84,15 @@ void MGR_ERR_init(void)
 	uint32_t prev_state __attribute__((unused)) = ERR_BKP_STATE;
 	uint32_t prev_tick  = ERR_BKP_TICK;
 
-	/* Read current reset cause from RCC_CSR */
+	/* Read current reset cause from RCC_CSR. NOTE: main.c clears RCC_CSR (RMVF) on
+	 * every reset where PINRSTF co-asserts — internal IWDG/SW resets do, with the
+	 * default bidirectional NRST — so `csr` reads NONE for those. Crash counting
+	 * and the Sram2 gate intentionally stay on this (conservative) value until the
+	 * snapshot-based behaviour is bench-validated. The pre-RMVF snapshot is used
+	 * for OBSERVABILITY only, so a silent IWDG hang is visible at the bench. */
 	uint32_t csr = RCC->CSR;
+	extern uint32_t g_boot_rcc_csr_raw;       /* captured in main() before RMVF */
+	uint32_t true_csr = g_boot_rcc_csr_raw;
 
 	/* If THIS boot was caused by IWDG but the previous session never logged
 	 * an error code, the previous boot hung silently — surface that as
@@ -107,6 +114,16 @@ void MGR_ERR_init(void)
 		err_code_str(prev_err),
 		prev_state,
 		prev_tick);
+
+	/* OBSERVABILITY (audit 2026-06-20, no behaviour change): if the true pre-RMVF
+	 * cause shows an internal reset that the cleared `csr` masks, surface it. This
+	 * is the silent-IWDG / SW-reset the crash counter currently does NOT count —
+	 * read this WARN at the bench to decide whether to move counting onto the
+	 * snapshot (see task). Functional path above stays on `csr`. */
+	if ((true_csr & (RCC_CSR_IWDGRSTF | RCC_CSR_SFTRSTF)) &&
+	    !(csr & (RCC_CSR_IWDGRSTF | RCC_CSR_SFTRSTF)))
+		MGR_LOG_WARN("[ERR] true reset cause masked by RMVF: %s (not counted)\r\n",
+			reset_cause_str(true_csr));
 
 	/* Crash loop detection: check if previous boot was short-lived */
 	uint32_t prev_crash = ERR_BKP_CRASH;
