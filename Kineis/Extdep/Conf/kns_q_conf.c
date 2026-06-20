@@ -108,7 +108,7 @@ const char *qIdx2Str[KNS_Q_MAX] = {
 	/** @attention keep below queue handlers for proper bahaviour of kineis stack
 	 * @attention align this enum wit hcontent of qPool declared in kns_q_conf.c
 	 */
-	"KNS_Q_UL_MAC2APP_EVT_LIST"
+	"KNS_Q_UL_MAC2APP_EVT_LIST",
 	"KNS_Q_DL_APP2MAC",
 	"KNS_Q_UL_MAC2APP",
 	"KNS_Q_UL_INFRA2MAC",
