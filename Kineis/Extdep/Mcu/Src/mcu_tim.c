@@ -18,6 +18,7 @@
 #include "mcu_tim.h"
 #include "tim.h"
 #include "rtc.h"
+#include "mcu_misc.h"   /* MCU_MISC_TCXO_get_warmup for the TX-timeout headroom log */
 
 //#undef VERBOSE // TIM verbose log disabled by default as too verbose.
 #include "mgr_log.h"
@@ -261,6 +262,32 @@ enum mcu_tim_status_t MCU_TIM_start(enum mcu_tim_hdlr hdlr, uint32_t timeout_ms)
 			return MCU_TIM_STATUS_ERROR;
 		MGR_LOG_VERBOSE("start timer %d for %d ms, cnt=%d, cnt_max=%d\r\n",
 				hdlr, timeout_ms, cnt_val, cnt_val_max);
+
+		/* Diagnostic (audit 2026-06-20, NOT a behaviour change): surface the
+		 * EFFECTIVE TX-timeout vs the TCXO warmup so the warmup+TX headroom is
+		 * readable on the bench. TIM16's prescaler is a 1 ms tick while this
+		 * arming math (cnt = ms*2-1) is written for a 500 us tick, so the
+		 * effective fire time is ~2x the requested ms. This 2x is kept on purpose
+		 * (generous headroom over warmup + ~1.7 s TX). Logged once and on any
+		 * change of (req, warmup) only — no per-TX spam, no timing impact. */
+		{
+			static uint32_t s_last_req = 0xFFFFFFFFu;
+			static uint32_t s_last_wu  = 0xFFFFFFFFu;
+			uint32_t wu_ms = 0;
+			uint32_t eff_ms = (uint32_t)cnt_val + 1u;   /* (ARR+1) ticks * 1 ms */
+			MCU_MISC_TCXO_get_warmup(&wu_ms);
+			if (timeout_ms != s_last_req || wu_ms != s_last_wu) {
+				s_last_req = timeout_ms;
+				s_last_wu  = wu_ms;
+				MGR_LOG_INFO("[TIM] TX_TIMEOUT req=%lums eff=%lums (1ms tick) TCXO_warmup=%lums\r\n",
+					(unsigned long)timeout_ms, (unsigned long)eff_ms, (unsigned long)wu_ms);
+				/* CHECK: the effective timeout must clear warmup + a max TX (~1.7 s)
+				 * with margin, else a legit TX could be aborted. Warn only. */
+				if (eff_ms < wu_ms + 1700u + 500u)
+					MGR_LOG_WARN("[TIM] TX_TIMEOUT eff=%lums TIGHT vs warmup+TX (~%lums)\r\n",
+						(unsigned long)eff_ms, (unsigned long)(wu_ms + 1700u));
+			}
+		}
 
 		timer[hdlr].timeout_ms = timeout_ms;
 		__HAL_TIM_CLEAR_FLAG(htim, TIM_IT_UPDATE);
