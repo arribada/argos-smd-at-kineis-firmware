@@ -858,3 +858,24 @@ mgr_pmlog torn-slot holes (forensics dump); mcu_flash PRIMASK save/restore + wea
 mgr_led ISR colour glitch; gpio VSEL invariant comment; kns_q_baremetal redundant mutex spin;
 mcu_nvm setWUC 16-bit wrap; bootloader bl_spi oversize-frame; spi.c LED-pin collision (SPI-on-STDALONE);
 mgr_at_cmd_list_doppler 64-bit print; AT+KEVT queue-drain; mgr_spi_cmd_common 250-byte clamp.
+
+---
+
+# Per-fix decisions on the 3 deferred items (integrator review, retro-compat-first)
+
+Constraint: no bench access -> only apply changes provable behaviour-preserving on the
+WORKING paths; UW_DOPPLER is the sealed sea tracker (others are different products).
+
+- **#1 TX-timeout 2x — RESOLVED (9f020a3, 7b9a315).** Kept the effective ~20 s (deliberate 2x
+  safety over TCXO warmup + ~1.7 s TX); made the code coherent (explicit 2x, prescaler locked,
+  dead getCount /2 removed) + an on-change log of req/eff/TCXO_warmup with a tight-headroom WARN.
+  Live arming byte-identical. NOT "fixed" to 1x (would halve the margin and risk aborting a TX).
+- **#2 reset-cause / Sram2 gate — OBSERVABILITY + COHERENCE (ee6eb15), functional DEFERRED.**
+  MGR_ERR now logs the true pre-RMVF cause + a WARN when an IWDG/SW reset is masked; main.c gate
+  comment corrected. Crash-counting + RAM2 behaviour byte-identical (the conservative always-wipe).
+  Bench task: read the WARN; if silent IWDG hangs occur, move counting onto the snapshot (part A,
+  independent of part B since the counter is in TAMP).
+- **#3 LSE->LSI — RECLASSIFIED benign, NO change.** Normal ops (LSE alive) byte-identical. The
+  rare LSE-death recovery is the designed one (latch in NOLOAD survives; the lpm_ctxt wipe triggers
+  the intended re-init; HAL restores BDCR). A lossless fix is complex, untestable and could break
+  the recovery. Phase-1 over-rated this as "high".
