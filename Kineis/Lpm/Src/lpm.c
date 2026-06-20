@@ -388,21 +388,24 @@ static void LPM_stop_exit() {
 	/* Compensate HAL tick for time spent in STOP mode */
 	LPM_compensateTick();
 
+#if defined(USE_SPI_DRIVER)
+	/* Re-arm SPI BEFORE the UART-recovery delay below, so the slave is
+	 * listening as soon as possible after the NSS-EXTI wake — this is what
+	 * minimizes the window in which the host's retry frame is dropped. NSS was
+	 * reconfigured as EXTI in stop_enter; restore it as SPI AF and re-arm the
+	 * slave DMA so the next master transaction is captured (MX_SPI1_Init alone
+	 * leaves the peripheral idle with no DMA armed). The frame that triggered
+	 * the wake is inherently lost — the host must retry after wakeup. */
+	HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
+	MX_SPI1_Init();
+	MCU_SPI_DRIVER_read();
+#endif
+
 	HAL_UARTEx_DisableStopMode(&hlpuart1);
 	HAL_Delay(100); /** So far need to add some delay at exit before being able to receive a new
 			 * AT command from UART link.
 			 * @note same delay used in STM32 examples
 			 */
-
-#if defined(USE_SPI_DRIVER)
-	/* Re-init SPI after STOP mode wakeup.
-	 * NSS was reconfigured as EXTI in stop_enter, restore it as SPI AF.
-	 * Re-arm the slave DMA so the next master transaction is captured —
-	 * MX_SPI1_Init() alone leaves the peripheral idle with no DMA armed. */
-	HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
-	MX_SPI1_Init();
-	MCU_SPI_DRIVER_read();
-#endif
 
 #if defined(USE_UW_DOPPLER_APP)
 	/* Re-init ADC after STOP mode */
