@@ -459,6 +459,10 @@ static void apply_config(const NVM_Config_t *cfg)
 	if (sws_cfg.sample_delay_max_us == 1000u ||
 	    sws_cfg.sample_delay_max_us == 5000u)
 		sws_cfg.sample_delay_max_us = 10000u;
+	/* max_dive_time_s 0 disables the stuck-underwater backstop -> a sealed unit
+	 * could go permanently TX-silent. Heal a persisted/legacy 0 to the default. */
+	if (sws_cfg.max_dive_time_s == 0u)
+		sws_cfg.max_dive_time_s = 7200u;
 	MGR_SWS_setConfig(&sws_cfg);
 
 	/* SWS runtime calibration */

@@ -1271,6 +1271,11 @@ void MGR_SWS_setConfig(const MGR_SWS_Config_t *config)
 		return;
 
 	sws_config = *config;
+	/* The dive-timeout backstop (the only escape from a stuck-underwater
+	 * detector on a sealed unit) is gated on max_dive_time_s > 0. Never let it
+	 * be disabled: heal a 0 to the default so the backstop is always armed. */
+	if (sws_config.max_dive_time_s == 0u)
+		sws_config.max_dive_time_s = 7200u;
 	air_baseline = clamp_air_floor(config->initial_air_baseline);
 	water_baseline = config->initial_water_baseline;
 	update_dynamic_threshold();

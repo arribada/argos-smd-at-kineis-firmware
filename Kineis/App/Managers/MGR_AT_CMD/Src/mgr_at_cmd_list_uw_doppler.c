@@ -135,6 +135,7 @@ bool bMGR_AT_CMD_SWSCFG_cmd(uint8_t *pu8_cmdParamString,
 		if (thr_min > 4095 || thr_max > 4095 || thr_min >= thr_max ||
 		    water_init <= air_init ||
 		    int_surf_ms == 0 || int_uw_ms == 0 ||
+		    max_dive_s == 0 ||   /* 0 disables the stuck-underwater backstop */
 		    delay_min_us == 0 || delay_max_us < delay_min_us ||
 		    delay_min_us > 65535 || delay_max_us > 65535) {
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INCOMPATIBLE_VALUE);

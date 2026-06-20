@@ -21,12 +21,14 @@
 typedef struct {
 	uint16_t threshold_max;
 	uint16_t sample_delay_max_us;
+	uint32_t max_dive_time_s;
 } sws_slice_t;
 
 /* stored-config inputs that feed the heals */
 typedef struct {
 	uint16_t sws_threshold_max;
 	uint16_t sws_sample_delay_max_us;
+	uint32_t sws_max_dive_time_s;
 } nvm_slice_t;
 
 /* Replicates the fixed apply_config ordering: zero-init, assign, THEN heal.
@@ -43,13 +45,17 @@ static sws_slice_t apply_sws_slice(const nvm_slice_t *cfg, int buggy_order)
 			s.sample_delay_max_us = 10000u;
 		s.threshold_max       = cfg->sws_threshold_max;
 		s.sample_delay_max_us = cfg->sws_sample_delay_max_us;
+		s.max_dive_time_s     = cfg->sws_max_dive_time_s;
 	} else {
 		/* FIXED: assign, then heal against assigned values. */
 		s.threshold_max       = cfg->sws_threshold_max;
 		s.sample_delay_max_us = cfg->sws_sample_delay_max_us;
+		s.max_dive_time_s     = cfg->sws_max_dive_time_s;
 		if (s.threshold_max == 2000u) s.threshold_max = 4095u;
 		if (s.sample_delay_max_us == 1000u || s.sample_delay_max_us == 5000u)
 			s.sample_delay_max_us = 10000u;
+		/* 0 disables the stuck-underwater backstop -> heal to default. */
+		if (s.max_dive_time_s == 0u) s.max_dive_time_s = 7200u;
 	}
 	return s;
 }
@@ -93,6 +99,28 @@ static void test_heal_threshold_4095_no_double_heal(void)
 	nvm_slice_t cfg = { .sws_threshold_max = 4095, .sws_sample_delay_max_us = 10000 };
 	sws_slice_t s = apply_sws_slice(&cfg, 0);
 	ASSERT_EQ(4095, s.threshold_max);
+	TEST_PASS();
+}
+
+/* A persisted/legacy max_dive_time_s of 0 disables the stuck-underwater
+ * backstop (mgr_sws.c:1019 gate is > 0) and would let a sealed unit go
+ * permanently TX-silent. apply_config heals it to the default. */
+static void test_heal_max_dive_zero_to_default(void)
+{
+	nvm_slice_t cfg = { .sws_threshold_max = 4095, .sws_sample_delay_max_us = 10000,
+			    .sws_max_dive_time_s = 0 };
+	sws_slice_t s = apply_sws_slice(&cfg, 0);
+	ASSERT_EQ(7200, s.max_dive_time_s);
+	TEST_PASS();
+}
+
+static void test_heal_preserves_operator_max_dive(void)
+{
+	/* A deliberate non-zero operator value must survive un-healed. */
+	nvm_slice_t cfg = { .sws_threshold_max = 4095, .sws_sample_delay_max_us = 10000,
+			    .sws_max_dive_time_s = 300 };
+	sws_slice_t s = apply_sws_slice(&cfg, 0);
+	ASSERT_EQ(300, s.max_dive_time_s);
 	TEST_PASS();
 }
 
@@ -171,6 +199,8 @@ int main(void)
 	RUN_TEST(test_heal_preserves_operator_sample_delay);
 	RUN_TEST(test_heal_threshold_2000_to_4095);
 	RUN_TEST(test_heal_threshold_4095_no_double_heal);
+	RUN_TEST(test_heal_max_dive_zero_to_default);
+	RUN_TEST(test_heal_preserves_operator_max_dive);
 	RUN_TEST(test_heal_ordering_matters);
 	RUN_TEST(test_migrate_v7_to_v8_defaults_new_fields);
 	RUN_TEST(test_validate_payload_bounds);
