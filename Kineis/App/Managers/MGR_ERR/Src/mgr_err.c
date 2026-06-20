@@ -216,17 +216,22 @@ bool MGR_ERR_checkCrashLoop(void)
 	RTC->SCR = RTC_SCR_CWUTF;
 	RTC->CR |= RTC_CR_WUTE | RTC_CR_WUTIE;
 
-	/* Enable RTC wakeup as EXTI line 17 (internal, rising edge only) */
-	EXTI->IMR1 |= EXTI_IMR1_IM17;
-	EXTI->RTSR1 |= (1UL << 17);
-	EXTI->FTSR1 &= ~(1UL << 17);
+	/* The RTC wakeup timer drives STOP2 exit through the PWR internal wake-up
+	 * line (EXTI line 20 on WL55), NOT the alarm line (17). The previous code
+	 * armed IM17 (RTC alarm) and never enabled the internal wake-up line, so the
+	 * RTC fired WUTF but the core never left STOP2 — turning the crash-loop
+	 * backstop into a permanent brick. Mirror the proven STOP2 path in
+	 * mgr_lpm_uw.c (HAL_PWREx_*InternalWakeUpLine). */
+	HAL_PWREx_DisableInternalWakeUpLine();
+	HAL_PWREx_EnableInternalWakeUpLine();
 
 	/* Enter STOP2 mode (lowest power with SRAM retention) */
 	__disable_irq();
 	HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
 	__enable_irq();
 
-	/* Woke up - disable wakeup timer, then re-lock RTC write protection */
+	/* Woke up - disable wakeup timer + internal wake line, re-lock RTC WP */
+	HAL_PWREx_DisableInternalWakeUpLine();
 	RTC->CR &= ~(RTC_CR_WUTE | RTC_CR_WUTIE);
 	RTC->SCR = RTC_SCR_CWUTF;
 	RTC->WPR = 0xFFU;
