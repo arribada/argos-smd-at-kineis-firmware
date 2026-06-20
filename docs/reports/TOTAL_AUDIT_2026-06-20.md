@@ -879,3 +879,22 @@ WORKING paths; UW_DOPPLER is the sealed sea tracker (others are different produc
   rare LSE-death recovery is the designed one (latch in NOLOAD survives; the lpm_ctxt wipe triggers
   the intended re-init; HAL restores BDCR). A lossless fix is complex, untestable and could break
   the recovery. Phase-1 over-rated this as "high".
+
+---
+
+# Backward-compatibility: main -> v2 (pre-production)
+
+main and v2 diverged from base 66c223b. v2 = base + 197 commits (our work); main has 1 commit
+not in v2 (d725755). Verdict: **v2 is a clean backward-compatible superset of main.**
+- Credentials: same FLASH_USER layout (0x0803B000, ID/ADDR/SECKEY offsets identical) -> preserved
+  across a main->v2 reflash.
+- AT commands: v2 is a STRICT SUPERSET — all 17 main commands present (none removed) + ~40 added.
+- Radio/MAC/Argos: same closed libkineis -> TX frames compatible. AT+MC now clamps to 9 bits
+  (a fix; behaviour differs only for the previously-corrupting MC>511 case).
+- SPI driver: the 1 main-only commit d725755 ("SPI v2 robust retry", 2025-12-19) is OLDER than v2's
+  SPI driver (newest c721a09 "Fix GUI blocked mode", 2026-04-13). They are different architectures:
+  d725755 = blocking abort+busy-wait+retry(3); v2 = non-blocking DMA + busy-pattern + error-callback
+  clear-and-continue + re-arm. v2 SUPERSEDES d725755 (no indefinite blocking by design). DO NOT
+  back-port d725755 — it would regress. No SPI robustness regression in v2.
+- main has no in-app bootloader; main->v2 update is a full SWD reflash (creds preserved). v2 adds
+  the DFU bootloader + MGR_NVM config persistence (NVM_VERSION) — additive, invisible to main users.
