@@ -160,10 +160,16 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 		kns_assert(pu8UserDataBuf != NULL);
 
 
-		/** Extract USER DATA from pu8_cmdParamString */
+		/** Extract USER DATA from pu8_cmdParamString.
+		 * The pattern's attribute field is "0x%hX", whose 'h' modifier makes
+		 * sscanf write an unsigned short (2 bytes). Scan into a 2-byte local and
+		 * narrow to the 1-byte union — writing &u8UserDataAttr.u8_raw directly
+		 * overflowed the 1-byte union by 1 byte. */
+		unsigned short u16Attr = 0;
 		i16_scan_param_res = (int16_t)sscanf((const char *)pu8_cmdParamString, pcAtCmdPattern,
 					    pu8UserDataBuf,
-					    &u8UserDataAttr.u8_raw);
+					    &u16Attr);
+		u8UserDataAttr.u8_raw = (uint8_t)u16Attr;
 		u16UserDataCharNb = (uint16_t)strlen((const char *)pu8UserDataBuf);
 		MGR_LOG_VERBOSE("[%s %d] %d %d\r\n", __func__, __LINE__, i16_scan_param_res, u16UserDataCharNb);
 

@@ -36,7 +36,7 @@
 /* Private variables --------------------------------------------------------------------------- */
 
 static uint32_t prim[PRIM_ARRAY_SIZE];
-uint8_t idx = 0;
+volatile uint8_t idx = 0;  /* shared main/ISR nesting depth — volatile */
 
 /* Function ------------------------------------------------------------------------------------ */
 
@@ -50,6 +50,12 @@ void KNS_CS_enter()
 
 void KNS_CS_exit()
 {
+	/* Guard against an unbalanced exit: without this, idx-- at idx==0 wraps to
+	 * 255, reads a stale prim[7] and can spuriously __enable_irq inside an outer
+	 * critical section (torn flash write / missed wake-arm). */
+	if (idx == 0) {
+		return;
+	}
 	idx--; // decrement idx in a way to point on last valid data
 	if (!prim[idx % PRIM_ARRAY_SIZE]) {
 		__enable_irq();

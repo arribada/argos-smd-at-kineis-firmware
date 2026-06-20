@@ -107,14 +107,11 @@ void MX_SUBGHZ_Init(void)
     uint8_t standby_cfg = STDBY_RC;
     HAL_SUBGHZ_ExecSetCmd(&hsubghz, RADIO_SET_STANDBY, &standby_cfg, 1);
 
-    /* Enable SubGHz interrupt */
+    /* Enable SubGHz interrupt (SUBGHZ_Radio_IRQn = 50, enabled by HAL above). */
     HAL_NVIC_SetPriority(SUBGHZ_Radio_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(SUBGHZ_Radio_IRQn);
-
-    /* Direct NVIC register write to ensure IRQ is enabled */
-    NVIC->ISER[1] = (1UL << 12);  /* Direct write for IRQ 44 */
-    __DSB();
-    __ISB();
+    /* NB: a stray `NVIC->ISER[1] = (1<<12)` here used to enable IRQ 44
+     * (SUBGHZSPI), NOT the radio IRQ — removed; it armed an unhandled IRQ. */
   }
   /* USER CODE END SUBGHZ_Init 2 */
 
