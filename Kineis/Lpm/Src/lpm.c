@@ -445,6 +445,16 @@ static void LPM_standby_enter() {
 	 * MX_ADC_Init runs on a half-initialized peripheral → calibration
 	 * failure → erratic readings → bad MAC decisions → boot loop. */
 	MX_ADC_DeInit();
+#else
+	/* GUI/STDLN/DOPPLER reach STANDBY (not SHUTDOWN) at rest, and the shared
+	 * STANDBY path never tore down the SubGHz radio — its bias network keeps
+	 * ~500 µA flowing, which is the bulk of the observed STANDBY floor. STANDBY
+	 * exit cold-resets the MCU so MX_SUBGHZ_Init re-arms the radio at boot — no
+	 * re-init pairing needed. (UW_DOPPLER does this in its own MGR_LPM_UW path.) */
+	{
+		extern SUBGHZ_HandleTypeDef hsubghz;
+		(void)HAL_SUBGHZ_DeInit(&hsubghz);
+	}
 #endif
 
 	GPIO_DisableAllToAnalogInput();
@@ -511,6 +521,14 @@ static void LPM_shutdown_enter() {
 #if defined(BSP_HAS_VBAT_ADC)
 	HAL_GPIO_WritePin(VBAT_EN_GPIO_Port, VBAT_EN_Pin, GPIO_PIN_RESET);
 #endif
+#else
+	/* Non-UW apps that are host-forced into SHUTDOWN must also drop the SubGHz
+	 * radio (~500 µA) — same rationale as the STANDBY path. SHUTDOWN exit cold-
+	 * boots so MX_SUBGHZ_Init re-arms the radio. */
+	{
+		extern SUBGHZ_HandleTypeDef hsubghz;
+		(void)HAL_SUBGHZ_DeInit(&hsubghz);
+	}
 #endif
 
 	GPIO_DisableAllToAnalogInput();
