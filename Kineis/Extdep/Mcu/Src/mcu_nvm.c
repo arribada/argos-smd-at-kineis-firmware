@@ -306,7 +306,12 @@ enum KNS_status_t MCU_NVM_getID(uint32_t *id)
     }
     enum KNS_status_t status = KNS_STATUS_OK;
 
-    status = MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, id, FLASH_ID_BYTE_SIZE);
+    /* The flash slot is FLASH_ID_BYTE_SIZE (8) bytes but the value is a 4-byte
+     * uint32_t (low word; upper bytes are pad). Read into a sized local so the
+     * 8-byte flash read never overflows the caller's 4-byte object. */
+    uint8_t slot[FLASH_ID_BYTE_SIZE];
+    status = MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, slot, FLASH_ID_BYTE_SIZE);
+    memcpy(id, slot, sizeof(*id));
 
     if (*id == 0xFFFFFFFF) {
 		*id = test_device_id;
@@ -321,7 +326,11 @@ enum KNS_status_t MCU_NVM_setID(uint32_t *id)
         return KNS_STATUS_MCU_NVM_ERR;
     }
 
-	return(MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, id, FLASH_ID_BYTE_SIZE));
+    /* Stage the 4-byte value into the 8-byte slot (zero-padded) so the write
+     * never over-reads past the caller's 4-byte uint32_t. */
+    uint8_t slot[FLASH_ID_BYTE_SIZE] = {0};
+    memcpy(slot, id, sizeof(*id));
+    return(MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, slot, FLASH_ID_BYTE_SIZE));
 }
 
 
@@ -338,7 +347,11 @@ enum KNS_status_t MCU_NVM_getAddr(uint8_t addr[])
     if (!addr) return KNS_STATUS_ERROR; // Vérification des pointeurs
 
     enum KNS_status_t status = KNS_STATUS_OK;
-    status = MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ADDR_OFFSET, addr, FLASH_ADDR_BYTE_SIZE);
+    /* 8-byte flash slot, 4-byte caller array: read into a sized local so the
+     * read never overflows addr[] (the address is the first 4 bytes). */
+    uint8_t slot[FLASH_ADDR_BYTE_SIZE];
+    status = MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ADDR_OFFSET, slot, FLASH_ADDR_BYTE_SIZE);
+    memcpy(addr, slot, 4);
 
     if (addr[0] == 0xFF && addr[1] == 0xFF && addr[2] == 0xFF && addr[3] == 0xFF) {
 		memcpy(addr, test_device_addr, 4);
@@ -349,7 +362,12 @@ enum KNS_status_t MCU_NVM_getAddr(uint8_t addr[])
 
 enum KNS_status_t MCU_NVM_setAddr(uint8_t addr[])
 {
-    return MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ADDR_OFFSET, addr, FLASH_ADDR_BYTE_SIZE);
+    if (!addr) return KNS_STATUS_MCU_NVM_ERR;
+    /* Stage the 4-byte address into the 8-byte slot (zero-padded) so the write
+     * never over-reads past the caller's 4-byte array. */
+    uint8_t slot[FLASH_ADDR_BYTE_SIZE] = {0};
+    memcpy(slot, addr, 4);
+    return MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ADDR_OFFSET, slot, FLASH_ADDR_BYTE_SIZE);
 }
 enum KNS_status_t MCU_NVM_getSN(uint8_t sn[])
 {
