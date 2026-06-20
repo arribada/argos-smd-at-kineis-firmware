@@ -94,6 +94,12 @@
 #  error "UW_DOPPLER requires a board with reed + RGB LED + PWR latch " \
          "(currently only SMD_STDALONE). Pick BOARD=SMD_STDALONE."
 #endif
+/* UW_DOPPLER drives the AT/UART console (grace window, last-activity tick, direct
+ * hlpuart1 traces) and has no SPI-command path. Refuse COMM=SPI loudly rather than
+ * fail later on undefined UART symbols. */
+#if defined(USE_SPI_DRIVER)
+#  error "UW_DOPPLER requires COMM=UART (no SPI command path). Pick COMM=UART."
+#endif
 #include "mgr_sws.h"
 #include "mgr_nvm.h"
 #include "mgr_wdg.h"

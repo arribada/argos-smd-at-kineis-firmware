@@ -124,8 +124,9 @@ static enum MgrLpm_LPM_t doppler_lpm_mode = LOW_POWER_MODE_STOP;
 /* Deploy mode: 1 = deployed (UART off after boot window), 0 = config mode */
 static uint8_t deploy_mode = 0;
 
-/* Boot window: AT command received during boot window keeps UART active */
-static bool boot_window_at_received = false;
+/* Boot window: AT command received during boot window keeps UART active.
+ * Only referenced on the UART/AT console path; unused in COMM=SPI builds. */
+static bool boot_window_at_received __attribute__((unused)) = false;
 
 #define BOOT_WINDOW_MS  5000  /**< UART listen window at boot (5s) */
 
