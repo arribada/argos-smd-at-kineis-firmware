@@ -4,6 +4,15 @@
 **Scope:** STANDALONE board + UW_DOPPLER app (turtle tracker)
 **Context:** Régression MAC stack ne devient jamais READY → reboot loop. Investigation suite à demande utilisateur "reprendre proprement".
 
+> **2026-06-20 — Consolidation v2 + re-validation.** Voir
+> [VALIDATION_2026-06-20.md](VALIDATION_2026-06-20.md) : merge v2-fix-lpm → v2
+> (tree byte-identique au tree validé `84c27b3`, v2-fix-lpm = sur-ensemble strict
+> de v2), 2 gardes flash bootloader (BL_STATE compilé-out + clamp erase
+> `APP_FLASH_SIZE=0x32000` + borne write DFU), brick SWS `max_dive_time_s==0`
+> corrigé. Tests 39/39 (508 checks), build matrix OK. Re-validation adversarial
+> multi-agents : 84/100 état-trouvé → **~88/100 GO post-remédiation**, gates
+> restantes = BANC/HW (STOP2 µA, biofouling, LSE-mid-STOP2, audit config pré-scellage).
+>
 > **2026-06-11 — Validation livrable.** Voir
 > [VALIDATION_2026-06-11.md](VALIDATION_2026-06-11.md) : power-off redessiné
 > (STOP2 soft-off + reed wake, option REED_WKUP3=PB3 pour vrai SHUTDOWN),
