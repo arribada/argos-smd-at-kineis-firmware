@@ -804,3 +804,57 @@ vMGR_LPM_clientNotifyEnter/Exit call kns_assert(0) -> kns_assert_failed() -> dev
 - Adversarially verify each HIGH before fixing (many touch wake/reset paths = needs OK).
 - Phase 3: write the missing unit tests (bl_crc real API, bl_spi_protocol, SWS/PMLOG/gesture, etc.).
 - Fix the build-config gaps (DOPPLER+SPI unused var; UW+SPI #error guard; RWX linker warning).
+
+
+---
+
+# PHASE 2 — cross-cutting + re-audit + verification (2026-06-20)
+
+Re-audited the 3 rate-limited files (mcu_nvm.c, kns_app_doppler.c, lpm.c) + 9 cross-cutting
+subsystem audits (NVIC, memory/linker/stack, clock tree, FSMs, flash wear/atomicity, KNS_CS
+concurrency, power/wake, reset/boot, cmd-input) + adversarial verification of the 25 dangerous HIGHs.
+
+## New CRITICAL/HIGH from re-audit + cross-cutting
+- **[critical]** (mcu_nvm.c) mcu_nvm.c:309 (MCU_NVM_getID) + mcu_flash.h:44 (FLASH_ID_BYTE_SIZE=8): MCU_NVM_getID(uint32_t *id) calls MCU_FLASH_read(..., id, FLASH_ID_BYTE_SIZE) with FLASH_ID_BYTE_SIZE=8. MCU_FLASH_read does an unchecked memcpy(buffer, addr, size) (mcu_flash.c:72), so it writes 8 by
+- **[critical]** (mcu_nvm.c) mcu_nvm.c:341 (MCU_NVM_getAddr) + mcu_flash.h:48 (FLASH_ADDR_BYTE_SIZE=8) + mcu_nvm.h:36 (DEVICE_ADDR_LENGTH=4): MCU_NVM_getAddr(uint8_t addr[]) calls MCU_FLASH_read(..., addr, FLASH_ADDR_BYTE_SIZE) with FLASH_ADDR_BYTE_SIZE=8, writing 8 bytes into a 4-byte array. The header documents the contract as a 4-byte ar
+- **[high]** (mcu_nvm.c) mcu_nvm.c:324 (MCU_NVM_setID) and mcu_nvm.c:352 (MCU_NVM_setAddr): Symmetric over-READ on the write paths. MCU_NVM_setID(uint32_t *id) calls MCU_FLASH_write(..., id, FLASH_ID_BYTE_SIZE=8), and MCU_FLASH_write does memcpy(backup+off, data, size) (mcu_flash.c:129) read
+- **[high]** (kns_app_doppler.c) kns_app_doppler.c:656-662 (finish_sequence) + :331-358 (check_tpl_schedule) + :295-319 (pulse_mcu_done); bsp_smd_stdalone.h:103-105: On BOARD=SMD_STDALONE, MCU_DONE_Pin is defined (PA15) so the MCU_DONE/TPL5111 power-cut path is compiled, but the BSP explicitly documents this pin as 'TPL5111, not implemented' (bsp_smd_stdalone.h:10
+- **[high]** (memory-linker-stack) Core/Src/main.c:877-879 (gate) vs 712 (snapshot) and 752-753 (flag clear); linker design STM32WL55XX_FLASH_APP.ld:135-176 (.data2/.bss2) vs 178-197 (.retention_noload): The cold-boot branch decides whether to run Sram2_Init() with `uint32_t csr = RCC->CSR; if(!(csr & (IWDGRSTF|SFTRSTF))) Sram2_Init();` (main.c:877-879). But at main.c:752-753 `__HAL_RCC_CLEAR_RESET_FL
+- **[high]** (clock-tree) Core/Src/tim.c:41 (Prescaler=31999) vs Kineis/Extdep/Mcu/Src/mcu_tim.c:258,302-303,307: TIM16 is on APB2. SYSCLK=32 MHz (HSI16/PLLM4 → 4 MHz, ×PLLN32 → 128 MHz VCO, /PLLR4 → 32 MHz; main.c:1153-1157), APB2CLKDivider=DIV1 (main.c:1172). With APB prescaler /1 there is NO APBx2 timer multip
+- **[high]** (state-machines) Bootloader/Src/bl_main.c:126-195 (bl_run), :315-325 (bl_state_detect_protocol timeout fall-through), :328-458 (bl_state_dfu_uart): bl_run() refreshes IWDG every iteration (bl_main.c:153) so the watchdog never fires, by design. But the DFU states (BL_STATE_DFU_UART/DFU_IDLE/DFU_SPI) have NO timeout and no path back to BL_STATE_CHE
+- **[high]** (flash-wear-atomicity) Kineis/Extdep/Mcu/Src/mcu_flash.c:282-329 (increment_wear_counter overflow branch) via MCU_FLASH_write(of_addr); of_addr = FLASH_MSG_COUNTER_OF_ADDR=0x0803B038 / WKU=0x0803B040, both in page 0 (mcu_flash.h:76-86): The MSG/WKU overflow words live at offset +56/+64 INSIDE FLASH_USER page 0, the same 2KB erase page that holds the immutable credentials (ID@0/ADDR@8/SECKEY@16/RADIOCONF@32, mcu_flash.h:42-56). When a
+- **[high]** (concurrency-kns-cs) Kineis/Extdep/Conf/kns_cs.c:39,46-56: `uint8_t idx = 0;` is declared with EXTERNAL linkage (no `static`) and is NOT volatile. It is the nesting depth used to index both `prim[]` (save slot) and to decide re-enabling IRQs. Two concrete pro
+- **[high]** (power-wake-paths) Kineis/Lpm/Src/lpm.c:234 (LPM_standby_enter via LPM_configWakeUpPins), lpm.c:556 (LPM_shutdown_enter); reachable via mgr_lpm.c:306-326 / 331-351 and AT+LPM forced mode (mgr_at_cmd_list_general.c:361); reed pin defined PB6 in Core/Inc/bsp/bsp_smd_stdalone.h:83: LPM_configWakeUpPins() unconditionally enables only PWR_WAKEUP_PIN3_HIGH (PB3) as the wake source for STANDBY/SHUTDOWN. On the DEFAULT SMD_STDALONE build (no REED_WKUP3 / REED_WKUP3_WIRE make flag) th
+- **[high]** (reset-boot-recovery) Core/Src/main.c:877-879 (gate) and :893 (stale re-read); clear at :753; correct value at :712: main.c:752-755: when RCC_FLAG_PINRST is SET, __HAL_RCC_CLEAR_RESET_FLAGS() executes, which is LL_RCC_ClearResetFlags() -> SET_BIT(RCC->CSR, RCC_CSR_RMVF). Per RM0453 p.341 (bit 23 RMVF) this clears LP
+- **[high]** (reset-boot-recovery) Kineis/App/Managers/MGR_ERR/Src/mgr_err.c:88 (read), :94-96 (IWDG promotion), :121 (stored CSR), :68-71 (reset_cause_str): MGR_ERR_init() is called at main.c:1018, AFTER main.c:753 already cleared RCC_CSR via RMVF (when PINRSTF set, i.e. on every reset — see companion finding). Line 88 'uint32_t csr = RCC->CSR;' therefore
+- **[high]** (reset-boot-recovery) Kineis/App/Managers/MGR_ERR/Src/mgr_err.c:113-117 (counting predicate) + :94-96; Kineis/App/kns_app_uw_doppler.c:337-344 (boot_loop_handle post-MONITORING path) + :1004-1012: Two independent backstops exist and both miss the silent-IWDG-hang case. (A) MGR_ERR_checkCrashLoop increments only when 'prev_tick>0 && prev_tick<MIN_UP_MS && prev_err!=ERR_NONE' (mgr_err.c:113). A s
+- **[critical]** (cmd-input-validation) Kineis/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_user_data.c:164-166 (sscanf) with patterns at :301 (USE_HDA4) and :303 (default), target type union sUserDataAttribute_t (1 byte) defined in Kineis/App/Libs/USERDATA/Inc/user_data.h:166-174: bMGR_AT_CMD_handleNewTxData() calls sscanf(pu8_cmdParamString, pattern, pu8UserDataBuf, &u8UserDataAttr.u8_raw). The pattern's last conversion is ",0x%hX". The 'h' length modifier makes %X store an `u
+- **[high]** (cmd-input-validation) Kineis/App/Managers/MGR_SPI_CMD/Src/mgr_spi_cmd_list_user_data.c:206 (size check) and :243 (usrdata_bitlen = userTxPayloadSize*8); contrast with the guarded UART path Kineis/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_user_data.c:185-192. Buffer sizes: sUserDataTxFifoElt_t.u8DataBuf[51] (USERDATA_TX_PAYLOAD_MAX_SIZE) vs KNS_MAC_send_data_ctxt_t.usrdata[25] (KNS_MAC_USRDATA_MAXLEN, Kineis/Lib/kns_mac_evt.h:41,136) and the radio datafield USERDATA_TX_DATAFIELD_SIZE=25 (user_data.h:118).: bMGR_SPI_CMD_WRITETX_cmd validates userTxPayloadSize only against sizeof(u8DataBuf)=51 (line 206) and earlier in WRITETXSIZE against USERDATA_TX_PAYLOAD_MAX_SIZE=51. It then sets spUserDataMsg->u16Dat
+
+## Verification of the 25 dangerous HIGHs: 7 confirmed, 14 partial, 4 refuted
+REFUTED (overstated, no fix): Bootloader/Src/bl_crc.c @ bl_crc.c:77-90 vs bl_dfu.c:228-262 and bl_main.c:730; Kineis/App/Mcu/Src/mcu_at_console_stm.c @ mcu_at_console_stm.c:125-145; Kineis/Extdep/Conf/kns_cs.c @ kns_cs.c:38-39,46-48,53-56; Kineis/Extdep/Mcu/Src/mcu_misc.c @ mcu_misc.c:91,191,246-250 MGR_LOG_DEBUG in PA ISR
+
+## Most dangerous (synthesis)
+MCU_NVM_getID / MCU_NVM_getAddr 4-byte buffer overflow on the LIVE sealed boot path (mcu_nvm.c:309 and :341, via the unchecked memcpy in MCU_FLASH_read at mcu_flash.c:72, with FLASH_ID_BYTE_SIZE/FLASH_ADDR_BYTE_SIZE=8 vs 4-byte caller objects). It is the single most dangerous because, unlike every other finding, it is reachable on the normal sealed credential-load path with NO gate (DEBUG=0, no CONFIG mode, no AT, no SPI): the closed libkineis.a itself calls these functions at each MAC init (libkineis_undefined_symbols.txt:14-15), passing a 4-byte object per the mcu_nvm.h contract, and the implementation writes 8 bytes into it — corrupting whatever the closed library placed in the adjacent 4 bytes of its own stack/struct. It is undefined behavior that currently only appears benign because the clobbered bytes happen to be reusable today; any libkineis update, struct-layout shift, or compiler change can turn it into silent credential mis-load or a hard fault deep inside the trusted-boundary library, with no field recovery. The fix is small, local, and risk-bounded (read the 8-byte slot into a sized local, copy out only the contracted bytes), so it is both the highest-impact and the cheapest to close before the seal.
+
+## Fixes committed this audit
+- b6fb604 CRITICAL mgr_err crash-loop STOP2 brick (wrong EXTI line + missing internal wake line)
+- fcf5471 qIdx2Str NULL-deref (missing comma)
+- 6e83138 CRITICAL mcu_nvm getID/getAddr 4-byte buffer overflow (8-into-4) on the live cred-load path
+- 66cfd55 KNS_CS_exit underflow guard + volatile idx; subghz stray wrong-IRQ NVIC write removed; AT+TX %hX 1-byte overflow
+- ca219bd build-config: DOPPLER+SPI compiles; UW_DOPPLER+SPI refused with clear #error
+
+## REMAINING confirmed must-fix — need user OK (wake/reset/clock paths, rule 5)
+- **Reset-cause / SRAM2-retention chain wiped before it is read, defeating the IWDG-silent-hang and crash-loop backstops. Wi** @ Core/Src/main.c:712 (pre-clear snapshot g_boot_rcc_csr_raw), :752-755 (clear), :877-879 (cold-boot Sram2_Init gate re-reads wiped CSR); Kineis/App/Managers/MGR_ERR/Src/mgr_err.c:88 (read), :94-96 (promotion), :113-117 (crash predicate)
+  fix: Use the pre-clear snapshot everywhere a real reset cause is needed: main.c:878 test g_boot_rcc_csr_raw (captured line 712) instead of a fresh RCC->CSR; and have MGR_ERR_init() consume that same snapsh
+  regression: Sram2_Init currently wipes retention on true cold boot (power-on/BOR) by design; the fix must STILL wipe on genuine power-on (snapshot has no IWDG/SFT
+
+- **TIM16 (TX_TIMEOUT) tick rate is 2x off: prescaler gives 1 ms/tick but the consumer assumes 500 us/tick. TIM16 is on APB2** @ Core/Src/tim.c:41 (Prescaler=31999); Kineis/Extdep/Mcu/Src/mcu_tim.c:258, :302-303; clock main.c:1153-1157,1172
+  fix: Make prescaler and consumer agree and pin with a compile-time assert. Either set Prescaler=15999 (->2000 Hz/500us, matches the *2 and /2 math) OR keep 31999 (1 ms) and drop the *2 / /2 in mcu_tim.c. A
+  regression: Changes the actual MAC TX timeout duration -> verify TX completes within and the timeout still fires on a genuine hang (this watchdog guards a stuck T
+
+## Opportunistic (confirmed, lower priority / not sealed-relevant)
+mgr_pmlog torn-slot holes (forensics dump); mcu_flash PRIMASK save/restore + wear-counter double-cycle;
+mgr_led ISR colour glitch; gpio VSEL invariant comment; kns_q_baremetal redundant mutex spin;
+mcu_nvm setWUC 16-bit wrap; bootloader bl_spi oversize-frame; spi.c LED-pin collision (SPI-on-STDALONE);
+mgr_at_cmd_list_doppler 64-bit print; AT+KEVT queue-drain; mgr_spi_cmd_common 250-byte clamp.
