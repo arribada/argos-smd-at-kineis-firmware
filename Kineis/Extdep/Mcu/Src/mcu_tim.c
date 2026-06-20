@@ -254,9 +254,14 @@ enum mcu_tim_status_t MCU_TIM_start(enum mcu_tim_hdlr hdlr, uint32_t timeout_ms)
 	/** Configure timer settings */
 	switch (hdlr) {
 	case MCU_TIM_HDLR_TX_TIMEOUT:
-		/** As htim16 ARR are 16 long, check delay is not too big.
-		 */
-		cnt_val = timeout_ms * 2 - 1;
+		/** TIM16 runs at a 1 ms tick (prescaler 31999 on the 32 MHz APB2 timer
+		 * clock, tim.c:41). We DELIBERATELY arm the TX-timeout at 2x the MAC's
+		 * requested value: the resulting (cnt+1)*1ms = 2*timeout_ms gives generous
+		 * headroom over the TCXO warmup + the ~1.7 s max TX, so a legit TX is never
+		 * aborted (audit 2026-06-20). The factor is intentional, not a 500 us-tick
+		 * artefact — do NOT "fix" it by halving the prescaler without re-checking
+		 * warmup+TX headroom. ARR is 16-bit, so reject if it would overflow. */
+		cnt_val = timeout_ms * 2 - 1;   /* 1 count = 1 ms; x2 = safety margin */
 		cnt_val_max = (1 << 16) - 1;
 		if (cnt_val > cnt_val_max)
 			return MCU_TIM_STATUS_ERROR;
@@ -326,8 +331,10 @@ enum mcu_tim_status_t MCU_TIM_getCount(enum mcu_tim_hdlr hdlr, uint32_t *elapsed
 	switch (hdlr) {
 	case MCU_TIM_HDLR_TX_TIMEOUT:
 		htim = &htim16;
-		/** Get counter value and divide it by 2 as it is currently a 500us-step counter */
-		*elapsed_time_ms = __HAL_TIM_GET_COUNTER(htim) / 2;
+		/* 1 ms tick (tim.c:41): elapsed_ms = counter directly. The old "/2"
+		 * assumed a 500 us tick the prescaler does not provide; this getter has no
+		 * live caller today, the correction just keeps the module coherent. */
+		*elapsed_time_ms = __HAL_TIM_GET_COUNTER(htim);
 	break;
 	case MCU_TIM_HDLR_TX_PERIOD:
 		hrtc_local = &hrtc;

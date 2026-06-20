@@ -38,6 +38,11 @@ void MX_TIM16_Init(void)
 
   /* USER CODE END TIM16_Init 1 */
   htim16.Instance = TIM16;
+  /* Prescaler 31999 on the 32 MHz APB2 timer clock => 1 ms tick. This is a
+   * load-bearing constant: mcu_tim.c (MCU_TIM_HDLR_TX_TIMEOUT) arms the MAC
+   * TX-timeout as cnt = timeout_ms*2-1 counts, i.e. a deliberate 2x safety
+   * margin over the requested timeout. Changing this prescaler changes that
+   * margin — re-check the TCXO-warmup + max-TX headroom before touching it. */
   htim16.Init.Prescaler = 31999;
   htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim16.Init.Period = 65535;
