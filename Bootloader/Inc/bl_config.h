@@ -132,9 +132,13 @@
  * 4. Bootloader handles DFU, then resets to run new app
  ******************************************************************************/
 
-/* Application code region - starts at 0x08000000 for Kineis compatibility */
+/* Application code region - starts at 0x08000000 for Kineis compatibility.
+ * Size is 0x32000 (200 KB), NOT 0x33000 (204 KB): the app linker shrank ROM to
+ * 200K to carve out FLASH_PMLOG at 0x08032000-0x08032FFF. The DFU app-erase and
+ * app-size cap MUST stay <= 0x32000 so they never touch FLASH_PMLOG, whose 2nd
+ * page @0x08032800 holds the Kineis credential mirror used for brick recovery. */
 #define APP_FLASH_BASE          0x08000000UL
-#define APP_FLASH_SIZE          0x33000UL       /* 204 KB */
+#define APP_FLASH_SIZE          0x32000UL       /* 200 KB (0x08032000+ = FLASH_PMLOG, reserved) */
 #define APP_FLASH_END           (APP_FLASH_BASE + APP_FLASH_SIZE - 1)
 #define APP_MAX_SIZE            APP_FLASH_SIZE
 
@@ -148,9 +152,22 @@
 #define FLASH_USER_START        0x0803B000UL
 #define FLASH_USER_SIZE_TOTAL   0x5000UL        /* 20 KB total */
 
-/* Bootloader state storage - first 2KB of flash_user */
+/* Bootloader state storage - first 2KB of flash_user.
+ * DANGER: this address aliases FLASH_USER page 0, which holds the Kineis
+ * credentials (ID/ADDR/SECKEY/RADIOCONF). The flash-resident bootloader state
+ * (DFU-request flag) is DEAD CODE on this firmware: production DFU signalling
+ * uses the RTC backup register TAMP_BKP0R with a SRAM fallback, never flash.
+ * It is compiled out (BL_STATE_PERSIST_ENABLED 0) so it can never erase the
+ * credentials. If you ever need flash-resident BL state, set the flag AND
+ * relocate BL_STATE_FLASH_ADDR to a page OUTSIDE the credentials first — the
+ * _Static_assert below will fail the build until you do. */
 #define BL_STATE_FLASH_ADDR     0x0803B000UL
 #define BL_STATE_FLASH_SIZE     0x800UL         /* 2 KB (1 page) */
+#define BL_STATE_PERSIST_ENABLED 0
+#if BL_STATE_PERSIST_ENABLED
+_Static_assert(BL_STATE_FLASH_ADDR != FLASH_USER_START,
+    "BL_STATE page aliases the Kineis credentials page (FLASH_USER page 0) -- relocate it");
+#endif
 
 /* ISR vector at 0x08000000, app header at 0x08000200 (after vector table) */
 #define APP_HEADER_OFFSET       0x200UL                 /* Header offset from flash base */

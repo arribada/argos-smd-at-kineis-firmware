@@ -242,6 +242,9 @@ bool bl_flash_addr_in_bootloader(uint32_t address)
     return (address >= BL_FLASH_BASE && address <= BL_FLASH_END);
 }
 
+#if BL_STATE_PERSIST_ENABLED
+/* DEAD CODE — disabled because BL_STATE_FLASH_ADDR aliases the credentials page.
+ * See bl_config.h (BL_STATE_PERSIST_ENABLED). Production uses TAMP_BKP0R + SRAM. */
 bl_flash_status_t bl_flash_read_bl_state(bl_state_flash_t* state)
 {
     if (state == NULL) {
@@ -326,6 +329,7 @@ bl_flash_status_t bl_flash_set_dfu_request(bool request)
     /* Write back */
     return bl_flash_write_bl_state(&state);
 }
+#endif /* BL_STATE_PERSIST_ENABLED */
 
 /* DFU request flag locations - shared with app
  * Primary: RTC backup registers (survives all resets except VBAT removal)

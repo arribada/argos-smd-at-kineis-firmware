@@ -133,6 +133,9 @@ bool bl_flash_addr_in_bootloader(uint32_t address);
  */
 uint32_t bl_flash_get_page(uint32_t address);
 
+/* Flash-resident bootloader state — DEAD CODE, compiled out: BL_STATE_FLASH_ADDR
+ * aliases the Kineis credentials page. See bl_config.h (BL_STATE_PERSIST_ENABLED). */
+#if BL_STATE_PERSIST_ENABLED
 /**
  * @brief Read bootloader state from flash
  * @param state Pointer to state structure to fill
@@ -153,6 +156,7 @@ bl_flash_status_t bl_flash_write_bl_state(const bl_state_flash_t* state);
  * @return BL_FLASH_OK if successful
  */
 bl_flash_status_t bl_flash_set_dfu_request(bool request);
+#endif /* BL_STATE_PERSIST_ENABLED */
 
 /**
  * @brief Check if DFU mode was requested

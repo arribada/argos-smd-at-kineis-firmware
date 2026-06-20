@@ -235,6 +235,13 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
         memset(aligned_data + payload_len, 0xFF, aligned_len - payload_len);
     }
 
+    /* Bound the END of the (alignment-padded) write to the app region: the
+     * start check above does not cover start+len, so a chunk near the top could
+     * otherwise overrun past APP_FLASH_END into FLASH_PMLOG. */
+    if (!bl_flash_addr_in_app(address + aligned_len - 1)) {
+        return DFU_RSP_ADDR_ERROR;
+    }
+
     /* Write data to flash */
     status = bl_flash_write(address, aligned_data, aligned_len);
 
