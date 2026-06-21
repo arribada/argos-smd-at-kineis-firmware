@@ -56,7 +56,9 @@ void MX_GPIO_Init(void)
 
   HAL_GPIO_WritePin(PA_PSU_EN_GPIO_Port, PA_PSU_EN_Pin, GPIO_PIN_RESET);
 #if !defined(SMD_STDALONE)
-  /* See mcu_misc.c: on STDALONE, PC1 = TPS63901 SEL — leave high-Z. */
+  /* Generic PA_PSU_SEL set for non-STDALONE boards. On STDALONE, PC1 = TPS63901
+   * VSEL is owned by the dedicated block further below (driven HIGH actively for
+   * 3V3-mode brownout safety), so skip this early generic set here. */
   HAL_GPIO_WritePin(PA_PSU_SEL_GPIO_Port, PA_PSU_SEL_Pin, GPIO_PIN_SET);
 #endif
   /*Configure GPIO pins : PA12 PA11 PA0 PA6

@@ -96,6 +96,10 @@ static bool MGR_AT_CMD_parseStreamCb(uint8_t *pu8_RxBuffer, int16_t *pi16_nbRxVa
 	bool isEOLdetected = false;
 	bool isFirstCharDetected = false;
 
+	if (*pi16_nbRxValidChar <= 0) {
+		return false;   /* nothing buffered: avoid the [-1] over-read below */
+	}
+
 	uint8_t u8_lastChar = pu8_RxBuffer[*pi16_nbRxValidChar - 1];
 
 #ifdef DEBUG
