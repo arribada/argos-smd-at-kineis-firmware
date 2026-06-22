@@ -812,3 +812,111 @@ bool bMGR_SPI_CMD_READRCONFRAW_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		return false;
 	}
 }
+
+bool bMGR_SPI_CMD_READMC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	(void)rx;  /* Unused parameter - command only returns data */
+	HAL_StatusTypeDef ret = HAL_OK;
+	enum KNS_status_t status;
+	uint16_t mc;
+
+	status = KNS_CFG_getMC(&mc);
+	if (status != KNS_STATUS_OK)
+	{
+		return bMGR_SPI_CMD_logFailedMsg((enum ERROR_RETURN_T) status, tx);
+	}
+
+	/* uint16 little-endian, 2 bytes */
+	tx->next_req = sizeof(mc);
+	memcpy(&tx->data[0], &mc, tx->next_req);
+
+	ret = bMGR_SPI_DRIVER_writeread();
+	if (ret == HAL_OK)
+	{
+		return true;
+	} else {
+		return false;
+	}
+}
+
+bool bMGR_SPI_CMD_WRITEMCREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	(void)rx;  /* Unused in pipelined protocol */
+	HAL_StatusTypeDef ret = HAL_OK;
+
+	/* Send ACK response for pipelined protocol */
+	tx->data[0] = 1;  /* OK indicator */
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
+	if (ret == HAL_OK)
+	{
+		return true;
+	} else {
+		return false;
+	}
+}
+
+bool bMGR_SPI_CMD_WRITEMC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	HAL_StatusTypeDef ret = HAL_OK;
+
+	/* Validate received data size: cmd (1) + mc (2) = 3 bytes minimum */
+	if (rx->size < CMD_WRITEMC_WAIT_LEN) {
+		MGR_LOG_DEBUG("[ERROR] MC size invalid: received %u, expected %u\r\n",
+		              rx->size, CMD_WRITEMC_WAIT_LEN);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS, tx);
+	}
+
+	uint16_t mc_in = 0;
+	memcpy(&mc_in, &(rx->data[1]), sizeof(uint16_t));
+
+	/* The MC is a 9-bit protocol field (0..511). Fold any larger host value
+	 * back into range (mod 512): a raw value > 511 wraps in the 9-bit header
+	 * but NOT in the 16-bit AES counter, which corrupts the frame. Mirrors the
+	 * AT+MC behaviour; KNS_CFG_setMC re-clamps as defence in depth. */
+	uint16_t mc = (uint16_t)(mc_in % 512u);
+
+	if (KNS_CFG_setMC(mc) != KNS_STATUS_OK)
+	{
+		MGR_LOG_DEBUG("Failed to update MC=%u\r\n", mc);
+		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
+	} else {
+		MGR_LOG_DEBUG("Set new MC=%u\r\n", mc);
+	}
+
+	/* Send success response */
+	tx->data[0] = 1;
+	tx->next_req = 1;
+	ret = bMGR_SPI_DRIVER_writeread();
+
+	if (ret == HAL_OK)
+	{
+		return true;
+	} else {
+		return false;
+	}
+}
+
+bool bMGR_SPI_CMD_READKCFG_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	(void)rx;  /* Unused parameter - command only returns data */
+	HAL_StatusTypeDef ret = HAL_OK;
+
+	/* Stack config bitmap: bit0 = L1 TX-period timer suspended, bit1 = resumed.
+	 * Read-only — no SPI write exists (writing would suspend/resume the RTC
+	 * wake-up timer the LPM scheduler owns and break auto-sleep). uint32 LE. */
+	union KNS_CFG_bitmap_t cfg = KNS_CFG_getCfg();
+	uint32_t raw = cfg.raw;
+
+	tx->next_req = sizeof(raw);
+	memcpy(&tx->data[0], &raw, tx->next_req);
+
+	ret = bMGR_SPI_DRIVER_writeread();
+	if (ret == HAL_OK)
+	{
+		return true;
+	} else {
+		return false;
+	}
+}

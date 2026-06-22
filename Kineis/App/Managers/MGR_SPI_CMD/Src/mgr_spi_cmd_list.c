@@ -20,7 +20,7 @@
 #include "mgr_spi_cmd_list_previpass.h"
 #include "mgr_spi_cmd_list_certif.h"
 
-const char *spicmd_version = "v0.8";
+const char *spicmd_version = "v0.8.1";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {
@@ -70,10 +70,10 @@ const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {
 	{ CMD_WRITE_TCXOWU, CMD_NONE,     				bMGR_SPI_CMD_WRITETCXO_cmd},
 	/* Reserved commands 0x2C - 0x3E (gap for future use and alignment with bootloader DFU range) */
 	{ CMD_READ_RCONF_RAW, CMD_NONE, bMGR_SPI_CMD_READRCONFRAW_cmd},  /* 0x2B - Read raw RCONF from flash */
-	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2C */
-	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2D */
-	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2E */
-	{ CMD_NONE, CMD_NONE, NULL},  /* 0x2F */
+	{ CMD_READ_MC, CMD_NONE, bMGR_SPI_CMD_READMC_cmd},              /* 0x2C - Read message counter */
+	{ CMD_WRITE_MC_REQ, CMD_WRITE_MC, bMGR_SPI_CMD_WRITEMCREQ_cmd}, /* 0x2D - Write MC request */
+	{ CMD_WRITE_MC, CMD_NONE, bMGR_SPI_CMD_WRITEMC_cmd},            /* 0x2E - Write MC value */
+	{ CMD_READ_KCFG, CMD_NONE, bMGR_SPI_CMD_READKCFG_cmd},          /* 0x2F - Read stack config bitmap (read-only) */
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x30 - SPI_CMD_DFU_PING in bootloader */
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x31 - SPI_CMD_DFU_GET_INFO */
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x32 - SPI_CMD_DFU_ERASE */

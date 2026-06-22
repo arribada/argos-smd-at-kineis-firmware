@@ -40,6 +40,7 @@
 #define CMD_WRITELPM_WAIT_LEN     2      /**< 1 byte for low power mode + 1 byte for command. */
 #define CMD_WRITEKMAC_WAIT_LEN    2      /**< 1 byte for write-only ID (for now) + 1 byte for command. */
 #define CMD_WRITETX_WAIT_LEN      3      /**< 1 byte for write-only ID + 2 bytes for data size (uint16). */
+#define CMD_WRITEMC_WAIT_LEN      3      /**< 2 bytes for uint16 message counter + 1 byte for command. */
 
 /* Enumerations --------------------------------------------------------------*/
 
@@ -94,6 +95,10 @@ typedef enum {
     CMD_WRITE_TCXOWU_REQ = 0x29, /**< Write TCXO wake-up request. */
     CMD_WRITE_TCXOWU     = 0x2A, /**< Write TCXO wake-up value. */
     CMD_READ_RCONF_RAW   = 0x2B, /**< Read raw radio configuration (16 bytes from flash). */
+    CMD_READ_MC          = 0x2C, /**< Read message counter (uint16, 9-bit 0..511 range). */
+    CMD_WRITE_MC_REQ     = 0x2D, /**< Write message counter request. */
+    CMD_WRITE_MC         = 0x2E, /**< Write message counter value (uint16, folded mod 512). */
+    CMD_READ_KCFG        = 0x2F, /**< Read stack config bitmap (uint32, read-only). */
     /* DFU commands - aligned with bootloader (0x30-0x3F range) */
     CMD_DFU_ENTER        = 0x3F, /**< Enter DFU/bootloader mode. */
     SPICMD_MAX_COUNT     = 0x40  /**< Maximum number of SPI commands. */

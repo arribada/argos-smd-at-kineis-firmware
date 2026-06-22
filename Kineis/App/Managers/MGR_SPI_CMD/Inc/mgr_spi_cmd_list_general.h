@@ -392,6 +392,58 @@ bool bMGR_SPI_CMD_DFU_ENTER_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
  */
 bool bMGR_SPI_CMD_READRCONFRAW_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
 
+/**
+ * @brief Read the message counter (MC).
+ *
+ * Returns the current 9-bit message counter as a little-endian uint16 (2 bytes).
+ * SPI equivalent of the UART AT+MC query.
+ *
+ * @param rx Pointer to the SPI receive buffer containing the command.
+ * @param tx Pointer to the SPI transmit buffer where the uint16 MC is sent (2 bytes, LE).
+ *
+ * @return true if the command is correctly received and processed, false otherwise.
+ */
+bool bMGR_SPI_CMD_READMC_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
+/**
+ * @brief Write message counter request (pipelined-protocol ACK phase).
+ *
+ * @param rx Unused.
+ * @param tx Pointer to the SPI transmit buffer where the ACK is sent.
+ *
+ * @return true if the command is correctly received and processed, false otherwise.
+ */
+bool bMGR_SPI_CMD_WRITEMCREQ_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
+/**
+ * @brief Write the message counter (MC) value (data phase).
+ *
+ * Expects a little-endian uint16 in rx->data[1..2]. The host value is folded
+ * into the 9-bit protocol range (mod 512) before being stored, mirroring AT+MC.
+ *
+ * @param rx Pointer to the SPI receive buffer (cmd byte + uint16 MC, LE).
+ * @param tx Pointer to the SPI transmit buffer where the status is sent.
+ *
+ * @return true if the command is correctly received and processed, false otherwise.
+ */
+bool bMGR_SPI_CMD_WRITEMC_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
+/**
+ * @brief Read the stack configuration bitmap (KCFG).
+ *
+ * Returns the v11 stack config bitmap as a little-endian uint32 (4 bytes):
+ * bit0 = L1 TX-period timer suspended, bit1 = resumed. SPI equivalent of the
+ * UART AT+KCFG query. Read-only: there is no SPI write for KCFG because setting
+ * it would suspend/resume the RTC wake-up timer owned by the LPM scheduler and
+ * silently break auto-sleep (same reason the AT+KCFG set form is refused).
+ *
+ * @param rx Pointer to the SPI receive buffer containing the command.
+ * @param tx Pointer to the SPI transmit buffer where the uint32 bitmap is sent (4 bytes, LE).
+ *
+ * @return true if the command is correctly received and processed, false otherwise.
+ */
+bool bMGR_SPI_CMD_READKCFG_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
 #endif /* __MGR_SPI_CMD_LIST_GENERAL_H */
 
 /** @} */
