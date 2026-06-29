@@ -273,6 +273,15 @@ static void IDLE_task(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(EXT_WKUP_BUTTON_GPIO_Port, &GPIO_InitStruct);
 
+#if defined(USE_SPI_DRIVER)
+  /* STOP-over-SPI: after a STOP wake (NSS-EXTI) stay awake briefly so the host
+   * can finish its retried transaction (e.g. WRITE_LPM=0x00 to leave STOP)
+   * before we re-enter STOP. Without it the slave re-sleeps between
+   * transactions and STOP is unrecoverable over SPI. */
+  if (LPM_spiStopGraceActive())
+    return;
+#endif
+
 #ifdef USE_BAREMETAL
   uint32_t prim;
 

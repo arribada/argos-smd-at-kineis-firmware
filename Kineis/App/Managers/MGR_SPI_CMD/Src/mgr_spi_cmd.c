@@ -44,10 +44,25 @@
 /** @brief Timeout for waiting for transaction (1 second) */
 #define TRANSACTION_TIMEOUT_MS  1000
 
+/** Recover a wedged SPI slave: if no clean transaction completes for this long
+ *  WHILE error_count keeps climbing (host actively clocking into a stuck RX,
+ *  typically a post-OVR desync), force a full driver reset instead of staying
+ *  mute until power-cycle. Gated on errors so a genuinely idle bus — and the
+ *  normal happy path, where every completed transaction clears the timer — is
+ *  never reset. */
+#define SPI_WEDGE_RECOVER_MS    750u
+
 /* Private variables ----------------------------------------------------------------------------*/
 volatile SpiState spiState = SPICMD_INIT;
 volatile MACStatus macStatus = MAC_OK;
 volatile CmdValue cmdInProgress = CMD_NONE;
+
+/* Wedge-recovery watchdog state (SPICMD_IDLE). spi_wedge_watch_tick is the HAL
+ * tick when the current transaction-less dry spell began (0 = none in progress,
+ * cleared on every completed transaction); spi_wedge_err_snapshot is
+ * spi_stats.error_count captured at that instant. */
+static uint32_t spi_wedge_watch_tick = 0;
+static uint32_t spi_wedge_err_snapshot = 0;
 
 /** @brief Flag to track if terminal MAC status (TX_DONE, TX_TIMEOUT, etc.) has been acknowledged
  *  Terminal statuses are only cleared when:
@@ -222,6 +237,7 @@ void MGR_SPI_CMD_state_handler(void)
                  * Command will be processed synchronously, then we arm with response. */
 
                 startTickTimeout = 0;
+                spi_wedge_watch_tick = 0;   /* clean transaction -> end dry spell */
             } else {
                 /* Timeout handling - just for logging */
                 if (startTickTimeout == 0) {
@@ -231,6 +247,27 @@ void MGR_SPI_CMD_state_handler(void)
                 if ((HAL_GetTick() - startTickTimeout) > TRANSACTION_TIMEOUT_MS) {
                     SPI_LOG_VERBOSE("Waiting for transaction...\r\n");
                     startTickTimeout = HAL_GetTick();
+                }
+
+                /* Wedge-recovery watchdog. The dry-spell timer is independent of
+                 * the log timer above and is cleared only by a completed
+                 * transaction, so it measures true time-since-last-clean-frame.
+                 * Reset the slave ONLY when errors are still accumulating during
+                 * the dry spell (host clocking into a stuck RX). A quiet/idle bus
+                 * produces no new errors and is never reset, so Linkit and the
+                 * normal happy path are unaffected. CRC-rejected frames still
+                 * complete a transaction (clearing the timer) so they don't
+                 * trigger this either. */
+                if (spi_wedge_watch_tick == 0) {
+                    spi_wedge_watch_tick = HAL_GetTick();
+                    spi_wedge_err_snapshot = spi_stats.error_count;
+                } else if ((HAL_GetTick() - spi_wedge_watch_tick) > SPI_WEDGE_RECOVER_MS
+                           && spi_stats.error_count != spi_wedge_err_snapshot) {
+                    MGR_LOG_DEBUG("SPI wedge: no clean frame %lums, err=%lu -> reset\r\n",
+                                  (unsigned long)(HAL_GetTick() - spi_wedge_watch_tick),
+                                  (unsigned long)spi_stats.error_count);
+                    spi_wedge_watch_tick = 0;
+                    spiState = SPICMD_ERROR;
                 }
             }
         }
@@ -258,6 +295,7 @@ void MGR_SPI_CMD_state_handler(void)
     case SPICMD_ERROR:
         MGR_LOG_DEBUG("SPI error, resetting...\r\n");
         startTickTimeout = 0;
+        spi_wedge_watch_tick = 0;   /* fresh dry-spell measurement after reset */
         MGR_SPI_PROTOCOL_reset();
         cmdInProgress = CMD_NONE;
 

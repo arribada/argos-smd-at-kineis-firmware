@@ -192,6 +192,18 @@ void LPM_saveRtcTime(void);
 /** @brief Add the RTC-measured time slept since LPM_saveRtcTime() to uwTick. */
 void LPM_compensateTick(void);
 
+#if defined(USE_SPI_DRIVER)
+/** @brief True while the STOP-over-SPI grace window is active.
+ *
+ * Armed on every STOP wake (NSS-EXTI). While true the GUI idle loop must NOT
+ * re-enter STOP, giving the host time to complete a retried multi-phase SPI
+ * transaction (notably WRITE_LPM=0x00 to leave STOP) before the slave sleeps
+ * again — without it STOP is unrecoverable over SPI. STANDBY/SHUTDOWN are
+ * unaffected (they cold-boot, never run LPM_stop_exit).
+ */
+bool LPM_spiStopGraceActive(void);
+#endif
+
 #endif /* LPM_KSTK_H */
 
 /**

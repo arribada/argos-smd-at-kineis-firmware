@@ -667,6 +667,21 @@ bool bMGR_SPI_CMD_WRITELPM_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		// Invalid value: contains bits outside the allowed set
 		return bMGR_SPI_CMD_logFailedMsg(ERROR_PARAMETER_FORMAT, tx);
 	}
+
+#if !defined(LPM_SHUTDOWN_ENABLED)
+	/* Defense in depth (mirrors the AT+LPM handler): fp_shutdown_enter is NULL
+	 * when SHUTDOWN isn't compiled in (lpm.c), so entering SHUTDOWN skips the
+	 * wake-pin arming and leaves the chip recoverable only by NRST/power-cycle.
+	 * Reject a bitmap OR forced byte that allows/forces SHUTDOWN so the host
+	 * gets a clean error instead of an unwakeable sleep. */
+	{
+		uint8_t forced_byte = (rx->size >= 3) ? rx->data[2] : 0u;
+		if ((lpm & LOW_POWER_MODE_SHUTDOWN) != 0u ||
+		    (forced_byte & LOW_POWER_MODE_SHUTDOWN) != 0u)
+			return bMGR_SPI_CMD_logFailedMsg(ERROR_FEATURE_NOT_AVAILABLE, tx);
+	}
+#endif
+
 	lpm_config.allowedLPMbitmap = lpm;
 
 	/* Optional second payload byte: forced mode override.

@@ -124,6 +124,17 @@ struct LPM_retentionReg_t lpm_ctxt = {
  */
 static enum MgrLpm_LPM_t lpm_forced_mode = LOW_POWER_MODE_NONE;
 
+#if defined(USE_SPI_DRIVER)
+/** STOP-over-SPI grace window deadline (HAL tick). After a STOP wake the slave
+ * is kept awake until this tick so the host can finish a retried multi-phase
+ * transaction (e.g. WRITE_LPM=0x00 to clear the STOP bitmap) before the idle
+ * loop re-enters STOP. Without it the slave re-sleeps between transactions and
+ * STOP is unrecoverable over SPI (NSS-only wake, no cold-boot, frame lost each
+ * time). STANDBY/SHUTDOWN are unaffected: they cold-boot, never run stop_exit. */
+#define SPI_STOP_GRACE_MS 500u
+static volatile uint32_t spi_stop_grace_until_tick;
+#endif
+
 /* Private functions --------------------------------------------------------------------------- */
 
 static bool LPM_configWakeUpUart(void)
@@ -399,6 +410,10 @@ static void LPM_stop_exit() {
 	HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
 	MX_SPI1_Init();
 	MCU_SPI_DRIVER_read();
+	/* Arm the STOP-over-SPI grace window so the idle loop won't re-enter STOP
+	 * before the host can complete its retried transaction (the frame that
+	 * triggered this NSS-EXTI wake was lost). */
+	spi_stop_grace_until_tick = HAL_GetTick() + SPI_STOP_GRACE_MS;
 #endif
 
 	HAL_UARTEx_DisableStopMode(&hlpuart1);
@@ -810,6 +825,14 @@ enum MgrLpm_LPM_t LPM_getForcedMode(void)
 {
 	return lpm_forced_mode;
 }
+
+#if defined(USE_SPI_DRIVER)
+bool LPM_spiStopGraceActive(void)
+{
+	/* Wrap-safe tick compare: true while now precedes the armed deadline. */
+	return (int32_t)(spi_stop_grace_until_tick - HAL_GetTick()) > 0;
+}
+#endif
 
 void LPM_shutdownNow(void)
 {
