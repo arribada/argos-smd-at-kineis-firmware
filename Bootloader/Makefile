@@ -45,6 +45,7 @@ $(BL_DIR)/Src/bl_dfu.c \
 $(BL_DIR)/Src/bl_uart.c \
 $(BL_DIR)/Src/bl_spi.c \
 $(BL_DIR)/Src/bl_spi_protocol.c \
+$(BL_DIR)/Src/bl_syscalls.c \
 $(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal.c \
 $(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_cortex.c \
 $(ROOT_DIR)/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_rcc.c \
@@ -156,6 +157,9 @@ LDSCRIPT = $(BL_DIR)/STM32WL55XX_BL.ld
 
 LIBS = -lc -lm -lnosys
 LDFLAGS = $(MCU) -pipe -specs=nano.specs -T$(LDSCRIPT) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
+# Silence the benign "LOAD segment with RWX permissions" hint from ld >=2.39
+# (RAM is (xrw); harmless on Cortex-M bare-metal). No effect on the output bytes.
+LDFLAGS += -Wl,--no-warn-rwx-segments
 
 #######################################
 # build the bootloader

@@ -619,6 +619,11 @@ LDSCRIPT = STM32WL55XX_FLASH_APP.ld
 LIBS = -lc -lm -lnosys
 LIBDIR =
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
+# Silence the benign "LOAD segment with RWX permissions" hint from ld >=2.39:
+# RAM regions are (xrw) and the linker lumps a writable+executable region into
+# one LOAD segment. Harmless on Cortex-M bare-metal (no MMU enforces W^X); the
+# flag changes no bytes in the output.
+LDFLAGS += -Wl,--no-warn-rwx-segments
 ifneq ($(DEBUG), 1)
 LDFLAGS += -s
 endif
