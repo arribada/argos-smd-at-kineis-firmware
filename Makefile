@@ -629,9 +629,8 @@ CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
 #   BL:  0x08033000 - 0x0803AFFF (32KB)  - bootloader after app
 #   User:0x0803B000 - 0x0803FFFF (20KB)  - flash user data preserved
 #
-# Use STM32WL55XX_FLASH_CM4.ld  for standalone app (full 236KB, no bootloader)
-# Use STM32WL55XX_FLASH_APP.ld  for app with bootloader (204KB, leaves room for BL)
-#LDSCRIPT = STM32WL55XX_FLASH_CM4.ld
+# App linked behind the DFU bootloader (200KB app region; bootloader + FLASH_USER
+# occupy the flash above it). The former no-bootloader CM4 linker script was removed.
 LDSCRIPT = STM32WL55XX_FLASH_APP.ld
 
 # libraries
