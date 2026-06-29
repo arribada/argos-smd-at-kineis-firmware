@@ -1,136 +1,171 @@
-# Bootloader — Standalone DFU Bootloader (STM32WL55)
+# Bootloader — Standalone DFU bootloader (STM32WL55)
 
 ## Purpose
 
-Standalone in-application firmware-update (DFU) bootloader for the STM32WL55,
-built as a **separate binary** (own [Makefile](Makefile),
-[linker script](STM32WL55XX_BL.ld), [startup_bl.s](startup_bl.s)) and flashed at
-`0x08033000`. It receives a new application image over UART or SPI, programs it
-into the application region `0x08000000–0x0803_1FFF`, validates a CRC-32, and
-jumps to the app. It is reached after the running app receives `AT+BOOT` and
-resets/jumps with a DFU flag set.
+Standalone in-application DFU (device firmware update) bootloader for the
+STM32WL55, built as a **separate image** that lives at `0x08033000` (after the
+204 KB application, before the Kineis credentials). It re-flashes the
+application region over **UART** (`AT+DFU=` text commands) or **SPI** (binary
+A+/legacy protocol), validates the new image (header + CRC-32/MPEG-2), and
+jumps to it. It never lets the host write the bootloader region or the Kineis
+credential pages.
 
 ## Files
 
 | File | Role |
 |------|------|
-| [Src/bl_main.c](Src/bl_main.c) | `main()`, HW/clock init, the `bl_state_t` state machine (`bl_run`), protocol detection, app-validity check, and `bl_jump_to_app()`. Also early-LPUART1 debug, IWDG petting, `HardFault_Handler`, optional `BL_LED`. |
-| [Src/bl_dfu.c](Src/bl_dfu.c) | Transport-agnostic DFU command handlers (`bl_dfu_process_cmd` + `bl_dfu_cmd_*`). Owns the `dfu_context_t` session state (erase_done, write_addr, accumulated CRC, verify_passed). |
-| [Src/bl_flash.c](Src/bl_flash.c) | Bounded flash erase/write/read/verify (64-bit doubleword programming), region guards, and RTC/SRAM DFU-flag read/clear. |
-| [Src/bl_crc.c](Src/bl_crc.c) | Software CRC-32/MPEG-2 (poly `0x04C11DB7`, init `0xFFFFFFFF`, no reflection / no final XOR), streaming accumulate + flash-region CRC. |
-| [Src/bl_uart.c](Src/bl_uart.c) | LPUART1 (PA2/PA3) IRQ-driven `AT+DFU=...` line transport: ring buffer, line assembly, ASCII/hex response formatting (`+DFU=OK`/`+DFU=ERR,...`). |
-| [Src/bl_spi.c](Src/bl_spi.c) | SPI1 **slave**, polled (PA1 SCK, PA15 NSS, PB4 MISO, PB5 MOSI). Transaction framing, idle/busy patterns, multi-transaction WRITE/READ staging. |
-| [Src/bl_spi_protocol.c](Src/bl_spi_protocol.c) | "A+" SPI frame layer: `[0xAA][SEQ][CMD][LEN][DATA][CRC8]` request / `[0x55]...` response, CRC-8 (poly `0x07`), legacy direct-command fallback, extended status. |
-| [Src/bl_syscalls.c](Src/bl_syscalls.c) | Weak `_read/_write/_close/_lseek` stubs to suppress newlib-nano `-lnosys` warnings; no functional behaviour. |
-| [Inc/bl_config.h](Inc/bl_config.h) | Single source of truth for flash layout, DFU flag addresses/magics, command IDs, response codes, `bl_state_t`, buffer sizes. Doxygen `@page` documents the boot flow. |
-| [Inc/bl_app_header.h](Inc/bl_app_header.h) | 256-byte `app_header_t` (magic `"KINE"`, version, `app_crc32`, addresses, HW-compat flags) + inline validators. `_Static_assert` enforces 256 bytes. |
-| [Inc/bl_main.h](Inc/bl_main.h) / [Inc/bl_dfu.h](Inc/bl_dfu.h) / [Inc/bl_flash.h](Inc/bl_flash.h) / [Inc/bl_crc.h](Inc/bl_crc.h) / [Inc/bl_uart.h](Inc/bl_uart.h) / [Inc/bl_spi.h](Inc/bl_spi.h) | Public interfaces for each module. |
-| [Makefile](Makefile) | Standalone build (`arm-none-eabi-gcc`, `-Os`, `nano.specs`), `PROTOCOL`/`DEBUG`/`BL_LED`/`BL_UART_BAUD` flags, JLink `flash` target writing `0x08033000`. |
-| [STM32WL55XX_BL.ld](STM32WL55XX_BL.ld) | Bootloader-only memory map: `ROM @0x08033000 (32K)`, `RAM_NOINIT @0x2000FFF8` (shared DFU flag), `_app_addr = 0x08000000`. |
+| [Src/bl_main.c](Src/bl_main.c) | Entry point, clock/HW init, DFU-flag capture, the `bl_state_t` state machine (`bl_run`), protocol auto-detect/forced path, validated `bl_jump_to_app`, IWDG refresh, `early_debug_print` over LPUART1, optional `BL_LED` activity indicator |
+| [Inc/bl_main.h](Inc/bl_main.h) | Public API for init/run/state/jump/version; `BL_DBG` macro (gated on `BL_DEBUG`) |
+| [Src/bl_flash.c](Src/bl_flash.c) | Bounded flash erase/write/read/verify (64-bit aligned), region guards, DFU-request flag read/clear via TAMP+SRAM |
+| [Inc/bl_flash.h](Inc/bl_flash.h) | Flash API + `bl_flash_status_t`; declares the flash-resident state functions (compiled out) |
+| [Src/bl_dfu.c](Src/bl_dfu.c) | Transport-agnostic DFU command handlers (`PING`/`INFO`/`ERASE`/`WRITE`/`READ`/`VERIFY`/`SET_HEADER`/`ABORT`/`STATUS`); `dfu_context_t` session state; `bl_dfu_can_jump` gate |
+| [Inc/bl_dfu.h](Inc/bl_dfu.h) | DFU handler API + `dfu_context_t` |
+| [Src/bl_uart.c](Src/bl_uart.c) | UART transport: LPUART1 IRQ ring-buffer RX, `AT+DFU=` line assembly, `+DFU=OK/ERR` responses |
+| [Inc/bl_uart.h](Inc/bl_uart.h) | UART transport API |
+| [Src/bl_spi.c](Src/bl_spi.c) | SPI **slave** transport (polling, NSS=PA15 hard input), fixed 280-byte transactions, idle/busy patterns, multi-transaction WRITE/READ handshakes |
+| [Inc/bl_spi.h](Inc/bl_spi.h) | SPI transport API |
+| [Src/bl_spi_protocol.c](Src/bl_spi_protocol.c) | A+ frame parse/build (magic `0xAA`/`0x55`, seq, CRC-8 CCITT), legacy-mode fallback, extended-status builder |
+| [Inc/bl_spi_protocol.h](Inc/bl_spi_protocol.h) | A+ frame layout, status codes, `bl_extended_status_t`, op-state enum |
+| [Src/bl_crc.c](Src/bl_crc.c) | Software CRC-32/MPEG-2 (poly `0x04C11DB7`, init `0xFFFFFFFF`, no reflect/no final XOR) — single-shot, accumulate, and flash-region variants |
+| [Inc/bl_crc.h](Inc/bl_crc.h) | CRC API |
+| [Src/bl_syscalls.c](Src/bl_syscalls.c) | Weak `_read/_write/_close/_lseek` stubs (suppress newlib `-lnosys` warnings; no functional change) |
+| [Inc/bl_config.h](Inc/bl_config.h) | **Single source of truth**: flash/RAM layout, magic values, DFU command/response enums, `bl_state_t`, timeouts, buffer sizes |
+| [Inc/bl_app_header.h](Inc/bl_app_header.h) | 256-byte `app_header_t` (magic `"KINE"`, version, app CRC-32, addresses) + inline validators |
+| [STM32WL55XX_BL.ld](STM32WL55XX_BL.ld) | Linker: ROM `@0x08033000` (32K), `.noinit` DFU flag `@0x2000FFF8`, 4K stack |
+| [startup_bl.s](startup_bl.s) | Vector table + `Reset_Handler` |
+| [Makefile](Makefile) | Builds with `arm-none-eabi-gcc`; `PROTOCOL`, `DEBUG`, `BL_LED`, `BL_UART_BAUD` flags; `flash` target (J-Link, erases `0x08033000`–`0x0803B000`) |
 
 ## Key flows / data structures
 
 ### Boot / DFU entry flow
 
-1. App receives `AT+BOOT` → sets DFU magic `0x4446554D` ("DFUM") in **TAMP_BKP0R**
-   (`0x4000B100`) and SRAM (`0x2000FFF8`), the protocol selector in SRAM
-   (`0x2000FFFC`: `"UART"`/`"SPI!"`/`0`=auto), then either `NVIC_SystemReset()`
-   or a direct `SCB->VTOR`+MSP jump to `0x08033000` (see
-   [Core/Src/main.c](../Core/Src/main.c) `jumpToBootloader`).
-2. BL `main()` captures the SRAM/TAMP flags **before** any memory init, prints a
-   banner over LPUART1, clears the flags, then runs `bl_init()` → `bl_run()`.
-3. State machine in `bl_run()`:
-   `INIT → CHECK_APP → DETECT_PROTOCOL → DFU_UART | DFU_SPI → VALIDATE → JUMP_APP`.
-   - `INIT`: DFU requested → `DETECT_PROTOCOL`; else `CHECK_APP`.
-   - `CHECK_APP`: valid app → `JUMP_APP`, else `DETECT_PROTOCOL`.
-   - `DETECT_PROTOCOL`: forced protocol skips detection; otherwise a
-     `BL_DETECTION_TIMEOUT_MS` (3 s) **race** between SPI and UART (SPI checked
-     first; UART RX flushed after a 5 ms settle to drop AF-switch noise).
-   - `JUMP_APP`: `bl_jump_to_app()` — reads SP/entry from the app vector (or
-     `app_header_t` if present), validates SP in RAM and entry in flash, resets
-     SPI1/DMA1, disables IRQs/SysTick, sets `VTOR`, `__set_MSP`, branches.
+1. The **application** receives `AT+BOOT` (or the SPI/AT BOOT command), writes
+   `DFU_REQUEST_MAGIC` (`0x4446554D` = `"DFUM"`) to **TAMP_BKP0R**
+   (`0x4000B100`, survives reset) and the **SRAM** flag (`0x2000FFF8`),
+   optionally writes a protocol selector to `0x2000FFFC`
+   (`DFU_PROTO_UART`/`DFU_PROTO_SPI`/`DFU_PROTO_NONE`), then transfers control
+   to the bootloader at `0x08033000` (see `Core/Src/main.c`).
+2. `main()` (bl_main.c) captures the SRAM/proto flags **before** any memory
+   init, enables backup-domain access, reads TAMP, sets `SCB->VTOR =
+   BL_FLASH_BASE`, prints the banner, and **clears all three flags**.
+3. `bl_run()` drives `bl_state_t`:
+   `INIT → CHECK_APP / DETECT_PROTOCOL → DFU_UART|DFU_SPI → VALIDATE →
+   JUMP_APP` (with an `ERROR` recovery state that loops back to the DFU state).
+   - `DETECT_PROTOCOL`: a **forced** proto flag skips detection; otherwise a
+     ~3 s race (`BL_DETECTION_TIMEOUT_MS`) checks SPI first, then UART.
+   - If no DFU was requested and the app is valid, it jumps straight to the app.
 
-### DFU command set (`dfu_cmd_t`, shared UART/SPI)
+### DFU session (the contract, enforced in `bl_dfu.c`)
 
-`PING(0x01) GET_INFO(0x02) ERASE(0x03) WRITE(0x04) READ(0x05) VERIFY(0x06)
-RESET(0x07) JUMP(0x08) GET_STATUS(0x09) ABORT(0x0A) SET_HEADER(0x0B) ENTER(0x0F)`.
-SPI uses the same IDs +`SPI_CMD_DFU_BASE` (`0x30`).
+`ERASE` (starts session, erases app region, resets CRC) → repeated `WRITE`
+(`[addr(4)][data]`, 64-bit aligned, CRC accumulated) → `VERIFY` (`[crc(4)]`,
+compares accumulated CRC vs host) → `JUMP`. `JUMP` is gated by
+`bl_dfu_can_jump()` which requires `session_active && erase_done &&
+verify_passed`. `WRITE` returns `NOT_READY` if `ERASE` was not run first.
 
-Normal session: **ERASE** (starts session, resets streaming CRC) → repeated
-**WRITE** `[addr(4)][data]` (64-bit aligned, end-bounded into the app region,
-write-back verified, CRC accumulated) → **VERIFY** `[crc(4)]` (compares against
-`bl_crc32_get()`) → **JUMP** (gated by `bl_dfu_can_jump()` = verify_passed).
+### Application validation & jump
 
-### `dfu_context_t` (bl_dfu.c)
+`bl_check_app_valid()` first tries the `app_header_t` path
+(`bl_validate_app_header` + `bl_validate_app_crc` over `bl_crc32_flash`); if no
+valid `"KINE"` header is present it **falls back** to a sanity check of the
+reset vector at `0x08000000` (stack pointer in SRAM, entry point in app flash).
+`bl_jump_to_app()` re-validates SP/PC, resets SPI1/DMA1, disables IRQs, clears
+SysTick, sets `SCB->VTOR`, `__set_MSP`, and branches to the reset handler.
 
-Tracks `session_active`, `erase_done`, `write_addr`, `received_size`,
-`expected_crc`/`calculated_crc`, `verify_passed`, `last_error`.
-`WRITE` is rejected with `NOT_READY` unless a prior `ERASE` set
-`session_active && erase_done`; `JUMP` requires `verify_passed`.
+### Transports
+
+- **UART** ([bl_uart.c](Src/bl_uart.c)): LPUART1 (PA2 TX / PA3 RX), IRQ ring
+  buffer, line-terminated `AT+DFU=...` parsing; oversized lines are dropped
+  whole (never acted on as a truncated `WRITE`). Responses are
+  `+DFU=OK[,data]` / `+DFU=ERR,<reason>`.
+- **SPI** ([bl_spi.c](Src/bl_spi.c) + [bl_spi_protocol.c](Src/bl_spi_protocol.c)):
+  SPI1 **slave**, polled, NSS = PA15 hard input, MISO pre-filled with
+  `BL_SPI_IDLE_PATTERN` (`0xAA`). A+ frame = `[0xAA][SEQ][CMD][LEN][DATA][CRC8]`;
+  response = `[0x55][SEQ][STATUS][LEN][DATA][CRC8]`. SPI command IDs are
+  `SPI_CMD_DFU_BASE (0x30)` + `dfu_cmd_t`. `WRITE`/`READ` use a two-transaction
+  REQ/DATA handshake. `bl_spi_wait_tx_done()` must run before any state change
+  (JUMP/RESET/VALIDATE) so the full response (incl. CRC) is clocked out.
+
+### Important structs
+
+- `dfu_context_t` ([bl_dfu.h](Inc/bl_dfu.h)) — per-session state: write addr,
+  received size, expected/calculated CRC, and the `session_active`/
+  `erase_done`/`verify_passed` gates.
+- `app_header_t` ([bl_app_header.h](Inc/bl_app_header.h)) — 256-byte
+  (`_Static_assert`) image descriptor at `0x08000200`.
+- `bl_spi_protocol_ctx_t` / `bl_extended_status_t` — A+ parser state and the
+  `GET_STATUS` reply consumed by the SPI host.
 
 ## Integration
 
-- **App ↔ BL contract** is the shared trio in [bl_config.h](Inc/bl_config.h) and
-  mirrored in [Core/Src/main.c](../Core/Src/main.c): DFU magic `"DFUM"`, TAMP/SRAM
-  flag addresses, protocol selector values, and `BOOTLOADER_ADDR 0x08033000`.
-  Keep both files in sync — these are a wire ABI.
-- **Flash regions** (256 KB total): application `0x08000000` (`APP_FLASH_SIZE
-  0x32000` = 200 KB usable), bootloader `0x08033000` (32 KB), then `FLASH_PMLOG
-  @0x08032000` (credential mirror, reserved) and **FLASH_USER credentials
-  @0x0803B000** (Kineis ID/ADDR/SECKEY). Sibling subsystems:
-  [mcu_flash.h](../Kineis/Extdep/Mcu/Inc/mcu_flash.h) owns `FLASH_USER`;
-  the app linker [STM32WL55XX_FLASH_APP.ld](../STM32WL55XX_FLASH_APP.ld) carves
-  these regions. The BL never erases its own region or `FLASH_USER` via
-  `bl_flash_addr_in_bootloader` + the app-bounded WRITE guard.
-- **Build flags** (this folder's [Makefile](Makefile), independent of the app build):
-  - `PROTOCOL=SPI` (default) / `PROTOCOL=UART` — both transports are always
-    compiled in; the flag only sets the **default UART baud** (`BL_PROTOCOL_UART`
-    → 9600, else 115200) and the boot-banner baud.
-  - `BL_UART_BAUD=<n>` — overrides UART-DFU baud independently of `PROTOCOL`
-    (e.g. UW_DOPPLER console at 115200).
-  - `DEBUG=1` — defines `BL_DEBUG`, enabling `BL_DBG`/CRC trace over LPUART1.
-  - `BL_LED=1` — opt-in RGB activity scan on PA1/PB4/PB5 (off by default so
-    deployed bootloaders stay byte-identical; those pins are also the SPI1 bus).
-  - There is **no app-side `BOARD`/`COMM`/`LPM`/`APP`** flag here — the BL is
-    board-agnostic and does not link libkineis, HAL LPM, or the app managers.
+- **Separate build, separate image.** This is its own Makefile and linker
+  script — **not** compiled into the main firmware. It is flashed once to
+  `0x08033000` (`make flash` here) and re-used across app updates.
+- **Layout coupling with the app** (all in [bl_config.h](Inc/bl_config.h),
+  must stay in sync with the app's `STM32WL55XX_FLASH_APP.ld` and
+  `Kineis/Extdep/Mcu/Inc/mcu_flash.h`):
+  - App region `0x08000000`–`0x08031FFF` (`APP_FLASH_SIZE = 0x32000`, **200 KB**,
+    *not* the 204 KB up to the BL — the app linker carves out `FLASH_PMLOG`
+    `@0x08032000`, whose 2nd page mirrors the Kineis credentials for brick
+    recovery).
+  - Bootloader `0x08033000`–`0x0803AFFF` (32 KB).
+  - `FLASH_USER` (Kineis credentials/config) `0x0803B000`–`0x0803FFFF` (20 KB).
+- **Hand-off contract** with `Core/Src/main.c`: the magic, flag addresses
+  (`TAMP_BKP0R`, SRAM `0x2000FFF8`/`0x2000FFFC`) and proto values are duplicated
+  on both sides — change them together. Cross-references the app's AT layer
+  (`MGR_AT_CMD`, `AT+BOOT`) and SPI layer (`MGR_SPI_CMD`).
+- **CRC parity**: `bl_crc.c` is byte-compatible with the Zephyr host
+  `argos_dfu_crc32()`; the SPI transaction size (280) matches that host driver.
+- **Build flags** (this folder's Makefile):
+  - `PROTOCOL=SPI|UART` (default `SPI`) — both transports are **always
+    compiled in** (`USE_SPI_DRIVER` is always defined); this flag only sets the
+    default UART baud (`UART` → 9600, `SPI` → 115200 for debug output) and the
+    `BL_PROTOCOL_*` define.
+  - `BL_UART_BAUD=<n>` — override UART-DFU baud independent of `PROTOCOL`
+    (e.g. a UW_DOPPLER board whose console is 115200 needs `PROTOCOL=UART
+    BL_UART_BAUD=115200`).
+  - `DEBUG=1` — defines `DEBUG`→`BL_DEBUG`, enabling `BL_DBG`/`[CMD]`/`[CRC]`
+    traces on LPUART1. Off in release.
+  - `BL_LED=1` — opt-in RGB activity indicator (PA1/PB4/PB5, active-low,
+    R→G→B scan); off by default so deployed bootloaders stay byte-identical.
+  - The app-side `APP`/`BOARD`/`COMM`/`LPM` flags do **not** apply here — the
+    bootloader has its own minimal HAL set and no Kineis/MAC/LPM code.
 
 ## Gotchas / constraints
 
-- **IWDG inheritance.** The app arms IWDG (~16 s, cannot be disabled by SW and
-  survives reset). `bl_run()` pets `IWDG->KR = 0xAAAA` every loop iteration; the
-  longest single op (full app erase ≈ 2.8 s) stays under budget. Without this
-  the UART DFU stalls deterministically (~40 %) — see the long comment in
-  [bl_main.c](Src/bl_main.c).
-- **APP size cap is 200 KB, not 204 KB.** `APP_FLASH_SIZE = 0x32000` stops below
-  `FLASH_PMLOG @0x08032000`. WRITE must stay `<= 0x32000`; the WRITE handler
-  bounds `address + aligned_len - 1` into the app region precisely to avoid
-  overrunning into the credential mirror.
-- **READ is intentionally unbounded (BL-01).** `bl_dfu_cmd_read` only clamps to
-  the full 256 KB flash, so a host in DFU mode can read the AES secret key /
-  credentials. Left open on purpose (confidentiality not a current priority);
-  the fix (apply the same `bl_flash_addr_in_app` guard as WRITE) is documented
-  inline in [bl_dfu.c](Src/bl_dfu.c).
-- **Flash-resident BL state is DEAD CODE.** `BL_STATE_FLASH_ADDR 0x0803B000`
-  aliases `FLASH_USER` page 0 (credentials). It is compiled out
-  (`BL_STATE_PERSIST_ENABLED 0`) with a `_Static_assert` landmine; production
-  DFU signalling uses TAMP_BKP0R + SRAM only. Do **not** enable it without
-  relocating the address first.
-- **SPI is slave + polling, NSS-driven** (`bl_spi_irq_handler` is a no-op). The
-  poll loops feed the TX FIFO with `0xAA` idle and time out on a CPU-cycle count
-  (~200 ms) to tolerate up to ~4 MHz SPI; `bl_spi_wait_tx_done()` MUST be called
-  before VALIDATE/JUMP/RESET or only the 4 pre-filled FIFO bytes (no CRC) reach
-  the master. Sibling app-side SPI lives in
-  [MGR_SPI_CMD](../Kineis/App/Managers/MGR_SPI_CMD).
-- **Two SPI protocol modes.** A+ frames (magic `0xAA`/`0x55`, CRC-8) are CRC-
-  enforced; a legacy direct-command byte (`0x30–0x3F`) is accepted with
-  `crc_valid = true`.
-- **UART line discipline.** A command line that exceeds `BL_CMD_BUFFER_SIZE`
-  (600) is dropped whole (`cmd_overflow`) rather than acted on as a truncated
-  WRITE; chunks are 248 bytes (`31×8`) for doubleword alignment.
-- **App validation has a legacy fallback.** If no valid `app_header_t` (magic
-  `"KINE"`) exists, `bl_check_app_valid` accepts a plausible raw vector table at
-  `0x08000000` (SP in SRAM, entry in flash) — so a header is optional.
-- **Standalone build.** This folder builds and flashes on its own
-  (`make PROTOCOL=... [DEBUG=1] [BL_LED=1]`, `make flash`); it is not part of the
-  app Makefile. Always `make clean` when changing a flag (objects don't track
-  flag changes).
+- **IWDG is inherited, not started here.** The app arms IWDG (~16 s, cannot be
+  disabled by software, survives reset). `bl_run()` refreshes it every
+  iteration (`IWDG->KR = 0xAAAA`); without it UART DFU stalls deterministically
+  after ~16 s (~44 KB) and looks like "flash fails at 40%". The longest single
+  op (full app erase ≈2.8 s) stays under budget — keep page-erase short.
+- **Flash region guards are the safety net.** `bl_flash_erase_page` /
+  `bl_flash_write_doubleword` refuse the bootloader region; `bl_dfu_cmd_write`
+  bounds **both** start and (alignment-padded) end to the app region via
+  `bl_flash_addr_in_app`, so a top-of-region chunk can't overrun into
+  `FLASH_PMLOG`/credentials. Writes are 64-bit aligned and read-back verified.
+- **`DFU_CMD_READ` is intentionally unbounded** (BL-01, audit 2026-06-27):
+  unlike `WRITE`, it has no app-region clamp, so a host in DFU mode can read
+  the entire 256 KB flash — **including the Kineis AES secret key/credentials**
+  at `0x0803B000` and the `FLASH_PMLOG` mirror. Physical/host access is
+  required (post `AT+BOOT`). The fix (same guard as `WRITE`) is documented
+  in-line in [bl_dfu.c](Src/bl_dfu.c) but deliberately not applied.
+- **Flash-resident BL state is DEAD CODE.** `BL_STATE_FLASH_ADDR` aliases
+  `FLASH_USER` page 0 (the credentials). It is compiled out
+  (`BL_STATE_PERSIST_ENABLED 0`) so `bl_flash_write_bl_state` can never erase
+  the credentials; production DFU signalling uses TAMP_BKP0R + SRAM only. The
+  guarded `_Static_assert` in [bl_config.h](Inc/bl_config.h) fails the build if
+  it is re-enabled without relocating the page first. Do **not** flip this flag.
+- **SPI is a polled slave.** Tight RX/TX loops avoid `HAL_GetTick()` in the
+  inner loop to prevent TX-FIFO underrun up to ~4 MHz SPI; only the first 4
+  response bytes are pre-filled into the FIFO, so `bl_spi_wait_tx_done()` is
+  mandatory before JUMP/RESET/VALIDATE or the response (incl. CRC) is truncated.
+- **SPI bus pins overlap the SMD_STDALONE RGB LEDs** (PA1/PB4/PB5). `BL_LED`
+  drives them only in the UART-DFU states and turns them off before any SPI
+  init or app jump, so the bus is never disturbed.
+- **`BL_CMD_BUFFER_SIZE` (600) must hold a full `WRITE` line.** At
+  `BL_CHUNK_SIZE=248` a `WRITE` line is ~520 chars; undersizing silently
+  truncates it into a short `WRITE` and corrupts the image. RX ring is 1024 to
+  absorb the next line arriving while a flash write blocks the consumer.
+- **Header is optional.** Current builds may ship without a `"KINE"` header;
+  validation then relies on the vector-table fallback. `SET_HEADER` exists for
+  future signed/headered images.
