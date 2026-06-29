@@ -100,7 +100,15 @@
 #define PWR_LATCH_Pin           GPIO_PIN_7
 #define PWR_LATCH_GPIO_Port     GPIOB
 
-/* ---- MCU_DONE (TPL5111, not implemented) ---- */
+/* ---- MCU_DONE (TPL5111 power-timer handshake) ----
+ * BSP-01: the TPL5111 is NOT populated/implemented on SMD_STDALONE. Defining
+ * MCU_DONE_Pin makes the DOPPLER app take its "pulse MCU_DONE to cut power" path
+ * and compile OUT its RTC enter_deep_sleep fallback (#if !defined(MCU_DONE_Pin)),
+ * so DOPPLER on this board would rely on a power-cut that never happens =>
+ * DOPPLER on SMD_STDALONE is NOT a supported low-power config. Use APP=UW_DOPPLER
+ * (the actual sealed tracker, reed/STOP2 driven) on this board. Kept only because
+ * PA15 is physically routed. NB: PA15 is also SPI1_NSS — a further reason
+ * COMM=SPI is refused for the DOPPLER/UW_DOPPLER apps (see Makefile guard). */
 #define MCU_DONE_Pin            GPIO_PIN_15
 #define MCU_DONE_GPIO_Port      GPIOA
 

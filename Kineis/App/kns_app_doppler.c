@@ -736,7 +736,14 @@ void KNS_APP_doppler_loop(void)
 			if (doppler_state == DOPPLER_BOOT)
 				boot_window_at_received = true;
 		}
-		MGR_AT_CMD_macEvtProcess();
+		/* DPL-001: DO NOT call MGR_AT_CMD_macEvtProcess() here. That AT/user_data
+		 * consumer pops KNS_Q_UL_MAC2APP — the SAME queue this app's
+		 * process_mac_events() owns — then dereferences USERDATA_txFifoGetFirst(),
+		 * which is NULL for DOPPLER (TX is pushed directly via KNS_Q_DL_APP2MAC,
+		 * never through the USERDATA FIFO). On the first TX completion that NULL-
+		 * derefs -> kns_assert -> reset loop, bricking DOPPLER+UART. The state
+		 * machine below drains MAC events itself; only the AT *decoder* above is
+		 * needed for config. (UW_DOPPLER deliberately omits this call too.) */
 	}
 #endif
 
@@ -772,6 +779,8 @@ void KNS_APP_doppler_loop(void)
 	case DOPPLER_CHECK_SCHEDULE:
 	{
 #if defined(MCU_DONE_Pin)
+/* #pragma message (NOT #warning: the latter is promoted to error by -Werror). */
+#pragma message("BSP-01: DOPPLER deep-sleep relies on the TPL5111 MCU_DONE power-cut, NOT implemented on SMD_STDALONE -> no working low-power path for DOPPLER on this board; use APP=UW_DOPPLER.")
 		if (!check_tpl_schedule()) {
 			/* check_tpl_schedule pulsed MCU_DONE and should not return.
 			 * If it does (TPL5111 didn't cut power), just idle. */

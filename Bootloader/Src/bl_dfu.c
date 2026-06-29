@@ -270,6 +270,20 @@ dfu_response_t bl_dfu_cmd_read(const uint8_t* data, uint16_t data_len,
     uint32_t address;
     uint16_t read_len;
 
+    /* SECURITY NOTE (BL-01, audit 2026-06-27) — INTENTIONALLY NOT FIXED for now
+     * (credential confidentiality is not a current priority). This handler does
+     * NO app-region bound, unlike WRITE (which uses bl_flash_addr_in_app):
+     * bl_flash_read only clamps to the full 256 KB flash, so a host in DFU mode
+     * (post AT+BOOT — physical/host access required) can READ the entire flash,
+     * including the Kineis AES secret key + credentials at FLASH_USER 0x0803B000
+     * and the FLASH_PMLOG credential mirror. To close it later, add the SAME
+     * guard WRITE uses, right after read_len is computed:
+     *     if (!bl_flash_addr_in_app(address) || read_len == 0 ||
+     *         !bl_flash_addr_in_app(address + read_len - 1))
+     *         return DFU_RSP_ADDR_ERROR;
+     * That restricts READ to the application region and leaves credentials
+     * unreadable while preserving write-back verification. */
+
     /* Parse address and length */
     if (data_len < 6) { /* 4 bytes address + 2 bytes length */
         return DFU_RSP_SIZE_ERROR;

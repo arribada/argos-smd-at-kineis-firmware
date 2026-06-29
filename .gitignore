@@ -9,6 +9,7 @@ Kineis/doc/html/
 *.log/
 *.log
 *.bak
+*.ioc
 .claude/*
 Tools/*
 Bootloader/build/*

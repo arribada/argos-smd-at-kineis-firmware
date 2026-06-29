@@ -127,6 +127,17 @@ ifneq ($(APP),$(filter $(APP),STDLN GUI UW_DOPPLER DOPPLER))
 $(error Invalid APP=$(APP). Must be one of: STDLN GUI UW_DOPPLER DOPPLER)
 endif
 
+# DOPPLER and UW_DOPPLER are UART-only trackers (RTC/reed driven, no SPI host
+# protocol). Refuse COMM=SPI for them at config time: UW_DOPPLER also #error's
+# in-source, and this guard additionally keeps DOPPLER out of the SPI host path
+# whose STOP-over-SPI grace window does not cover the DOPPLER idle loop (LPM-01).
+# Only GUI (and STDLN) are intended for COMM=SPI.
+ifeq ($(COMM),SPI)
+ifneq ($(filter $(APP),DOPPLER UW_DOPPLER),)
+$(error $(APP) is UART-only; COMM=SPI is unsupported. Use COMM=UART, or APP=GUI for an SPI host.)
+endif
+endif
+
 # optimization
 ifeq ($(DEBUG), 1)
 OPT = -Og
@@ -303,9 +314,17 @@ C_DEFS +=  \
 -DDEBUG
 endif
 
+# VERBOSE adds extra trace + debug-only locals (e.g. kns_q rIdxPrev) that are
+# consumed ONLY by the DEBUG log macros. Without DEBUG those locals are unused,
+# which broke the build under -Werror in the DEBUG=0 VERBOSE=1 combo. VERBOSE is
+# meaningless without DEBUG, so it is tied to DEBUG here: -DVERBOSE is emitted
+# only when DEBUG=1. Every DEBUG/VERBOSE combo now compiles; the canonical
+# release (DEBUG=0 VERBOSE=0) and default (DEBUG=1 VERBOSE=1) are unchanged.
+ifeq ($(DEBUG), 1)
 ifeq ($(VERBOSE), 1)
 C_DEFS +=  \
 -DVERBOSE
+endif
 endif
 
 ifeq ($(SMPS_BYPASS_TX), 1)
