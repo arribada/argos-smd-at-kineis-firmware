@@ -203,8 +203,13 @@ static void vMGR_LPM_clientNotifyEnter(enum MgrLpm_LPM_t deepest_lpm)
 	//> Notify clients with the chosen LPM
 	for (index = 0; index < MGR_LPM_CLIENT_NBR_MAX; index++) {
 		if (mgrLpmClientTab[index].fpMGR_LPM_LpmNotifEnterCb != NULL) {
+			/* LPM-02: a false return is a documented client veto ("cannot enter
+			 * this LPM"), NOT a fault — it must not reset the device. Log and
+			 * continue. All shipped clients return true so this never fires
+			 * today; this only removes a latent reset-loop trap. */
 			if (!mgrLpmClientTab[index].fpMGR_LPM_LpmNotifEnterCb(deepest_lpm))
-				kns_assert(0);
+				MGR_LOG_DEBUG("[LPM] client %u veto on enter (mode=0x%02X)\r\n",
+					(unsigned)index, (unsigned)deepest_lpm);
 		}
 	}
 }
@@ -225,8 +230,10 @@ static void vMGR_LPM_clientNotifyExit(enum MgrLpm_LPM_t deepest_lpm)
 	//> Notify clients with LPM used (reverse order, including client[0])
 	for (index = MGR_LPM_CLIENT_NBR_MAX - 1; index >= 0; index--) {
 		if (mgrLpmClientTab[index].fpMGR_LPM_LpmNotifExitCb != NULL) {
+			/* LPM-02: documented veto, not a fault — log, don't reset. */
 			if (!mgrLpmClientTab[index].fpMGR_LPM_LpmNotifExitCb(deepest_lpm))
-				kns_assert(0);
+				MGR_LOG_DEBUG("[LPM] client %u veto on exit (mode=0x%02X)\r\n",
+					(unsigned)index, (unsigned)deepest_lpm);
 		}
 	}
 }

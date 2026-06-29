@@ -501,6 +501,20 @@ static void ensure_sram_preserved_on_reset(void)
         /* Wait for operation to complete */
         while ((FLASH->SR & FLASH_SR_BSY) != 0U);
 
+        /* BOOT-01: never loop-reset on a FAILED OB program. If the write did not
+         * take (write-protected OB, latched flash error), the reset below would
+         * re-enter this branch on every boot -> infinite reset loop -> brick of a
+         * sealed unit with no NRST/host access. On any error flag, clear it,
+         * re-lock, and continue booting with SRAM_RST still unset (degraded —
+         * SRAM not preserved across reset — but NOT bricked). The success path
+         * (no error flag) is unchanged: lock + reset so the OB takes effect. */
+        if ((FLASH->SR & (FLASH_SR_OPTVERR | FLASH_SR_WRPERR | FLASH_SR_PGSERR | FLASH_SR_PROGERR)) != 0U) {
+            FLASH->SR = (FLASH_SR_OPTVERR | FLASH_SR_WRPERR | FLASH_SR_PGSERR | FLASH_SR_PROGERR);
+            FLASH->CR |= FLASH_CR_OPTLOCK;
+            FLASH->CR |= FLASH_CR_LOCK;
+            return;
+        }
+
         /* Lock flash */
         FLASH->CR |= FLASH_CR_OPTLOCK;
         FLASH->CR |= FLASH_CR_LOCK;
