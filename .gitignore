@@ -14,3 +14,5 @@ Kineis/doc/html/
 Tools/*
 Bootloader/build/*
 Tests/report/
+.cache/
+compile_commands.json

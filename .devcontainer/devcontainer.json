@@ -1,0 +1,33 @@
+{
+	// Dev container for the STM32WL55 Kineis firmware. Build / unit-test / edit
+	// in a reproducible Linux env. See .devcontainer/README.md.
+	"name": "argos-smd-kineis-firmware (STM32WL55)",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": ".."
+	},
+	// --privileged + /dev bind lets an ST-LINK USB probe reach the container on
+	// a Linux host. On Windows/macOS USB passthrough is unreliable: flash from
+	// the host with `make flash*` (J-Link) instead.
+	"runArgs": ["--privileged", "-v", "/dev:/dev"],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"llvm-vs-code-extensions.vscode-clangd",
+				"marus25.cortex-debug",
+				"ms-python.python"
+			],
+			"settings": {
+				"clangd.arguments": [
+					"--background-index",
+					"--compile-commands-dir=${workspaceFolder}"
+				],
+				"terminal.integrated.defaultProfile.linux": "bash"
+			}
+		}
+	},
+	// One-time: generate compile_commands.json so clangd resolves includes.
+	// Full build, a couple of minutes; non-fatal (|| true) so container start
+	// never fails. Re-run manually after changing build flags.
+	"postCreateCommand": "bear -- make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j || true"
+}
