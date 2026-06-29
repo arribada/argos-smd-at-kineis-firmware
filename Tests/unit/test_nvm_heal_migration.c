@@ -15,6 +15,7 @@
  */
 
 #include "test_framework.h"
+#include <stddef.h>   /* offsetof — not guaranteed via test_framework.h on strict libc */
 
 /* ---- Mirror of the SWS-config slice of apply_config (mgr_nvm.c:432-463) ---- */
 
