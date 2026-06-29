@@ -340,6 +340,105 @@ static void test_blank_wrap_safe(void)
 	TEST_PASS();
 }
 
+/* ---- Console RX-wake arming gate (mirror of mgr_lpm_uw.c CONSOLE_WAKE_ON_RX) ----
+ * The PA3 = LPUART_RX falling-edge STOP2 wake is armed ONLY while the console is
+ * up (APP_UART_isEnabled). A sealed UW_DOPPLER unit (OPERATIONAL, UART torn
+ * down, no DEBUG) leaves PA3 floating with no host holding it idle-high; arming
+ * the EXTI there turned ambient EMI into a 2.5s-holdoff wake-storm (~5 mA, never
+ * re-sleeps — the symptom that appeared the moment the UART cable was unplugged).
+ * Gate fix: no live UART -> EXTI not armed -> a noise edge cannot create a
+ * holdoff -> the chip still reaches STOP2. */
+
+#define CW_HOLDOFF_MS 2500u
+
+static bool     cw_uart_enabled;   /* APP_UART_isEnabled() ground truth */
+static bool     cw_armed;          /* PA3 EXTI3 armed for this STOP2 window */
+static bool     cw_rx_edge;        /* EXTI3_IRQHandler latched a falling edge */
+static uint32_t cw_holdoff_until;  /* s_console_holdoff_until */
+static uint32_t cw_tick;
+
+static void cw_reset(bool uart_enabled)
+{
+	cw_uart_enabled  = uart_enabled;
+	cw_armed         = false;
+	cw_rx_edge       = false;
+	cw_holdoff_until = 0u;
+	cw_tick          = 50000u;
+}
+
+/* Mirror of the STOP2-entry arm block: if (APP_UART_isEnabled()) arm EXTI3. */
+static void cw_stop2_enter(void) { cw_armed = cw_uart_enabled; }
+
+/* A PA3 line edge reaches EXTI3_IRQHandler only while the pin is armed as a
+ * falling-edge EXTI; otherwise it stays analog/AF and no handler runs. */
+static void cw_pa3_edge(void) { if (cw_armed) cw_rx_edge = true; }
+
+/* Mirror of the wake block: arm the holdoff iff we armed AND saw an edge. */
+static void cw_stop2_exit(void)
+{
+	if (cw_armed && cw_rx_edge) {
+		cw_rx_edge = false;
+		cw_holdoff_until = cw_tick + CW_HOLDOFF_MS;
+	}
+}
+
+/* Mirror of the idleTick holdoff gate (wrap-safe): 1 = may STOP2, 0 = held. */
+static int cw_may_sleep(void)
+{
+	if (cw_holdoff_until != 0u &&
+	    (uint32_t)(cw_tick - cw_holdoff_until) > 0x80000000u)
+		return 0;
+	return 1;
+}
+
+/* UART up: edge during STOP2 arms the 2.5s holdoff, which holds the chip awake
+ * until it expires (the legitimate bench console-wake behaviour). */
+static void test_console_wake_armed_when_uart_up(void)
+{
+	cw_reset(true);
+	cw_stop2_enter();
+	ASSERT_TRUE(cw_armed);
+	cw_pa3_edge();
+	cw_stop2_exit();
+	ASSERT_EQ(0, cw_may_sleep());          /* held awake */
+	cw_tick += CW_HOLDOFF_MS;              /* holdoff elapsed */
+	ASSERT_EQ(1, cw_may_sleep());
+	TEST_PASS();
+}
+
+/* UART down (sealed operational): EXTI never armed, so a noise edge latches
+ * nothing and no holdoff is created -> the chip still sleeps. Regression lock
+ * for the floating-PA3 wake-storm fix. */
+static void test_console_wake_not_armed_when_uart_down(void)
+{
+	cw_reset(false);
+	cw_stop2_enter();
+	ASSERT_FALSE(cw_armed);
+	cw_pa3_edge();
+	ASSERT_FALSE(cw_rx_edge);
+	cw_stop2_exit();
+	ASSERT_EQ(0u, cw_holdoff_until);
+	ASSERT_EQ(1, cw_may_sleep());          /* free to STOP2 */
+	TEST_PASS();
+}
+
+/* The actual field scenario: continuous EMI on a floating disconnected RX. With
+ * the UART down, 1000 noise edges across 1000 sleep cycles never hold the chip
+ * awake -> no wake-storm, battery floor preserved. */
+static void test_console_wake_storm_suppressed_when_down(void)
+{
+	cw_reset(false);
+	for (int i = 0; i < 1000; i++) {
+		cw_stop2_enter();
+		cw_pa3_edge();
+		cw_stop2_exit();
+		ASSERT_EQ(1, cw_may_sleep());
+		cw_tick += 400u;
+	}
+	ASSERT_EQ(0u, cw_holdoff_until);
+	TEST_PASS();
+}
+
 int main(void)
 {
 	TEST_SUITE_START("UW_DOPPLER LPM client gating");
@@ -359,6 +458,9 @@ int main(void)
 	RUN_TEST(test_blank_expiry_resumes_sampling);
 	RUN_TEST(test_blank_preserves_confirmed_magnet);
 	RUN_TEST(test_blank_wrap_safe);
+	RUN_TEST(test_console_wake_armed_when_uart_up);
+	RUN_TEST(test_console_wake_not_armed_when_uart_down);
+	RUN_TEST(test_console_wake_storm_suppressed_when_down);
 	TEST_SUITE_END();
 	return tests_failed ? 1 : 0;
 }

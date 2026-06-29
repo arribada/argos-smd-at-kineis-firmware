@@ -31,6 +31,7 @@
 #include "mcu_misc.h"      /* MCU_MISC_VSEL_set */
 #include "lpm.h"           /* LPM_shutdownNow / LPM_shutdownWithAutoWake */
 #include "rtc.h"
+#include "usart.h"         /* APP_UART_isEnabled - gate console RX-wake on a live UART */
 #include "adc.h"           /* MX_ADC_Init/DeInit — STOP2 entry/exit */
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"       /* MGR_LED_off before STOP2 */
@@ -67,9 +68,12 @@
  * the sleep window: the first UART byte (start bit) wakes the chip — that
  * byte is lost — then sleep is held off for this long so the host's next
  * command lands on a live console (which then opens the 30 s AT grace).
- * Internal pull-up keeps the line idle-high when no cable is attached, so
- * sealed deployments never see a phantom edge. Disabled in REED_WKUP3
- * builds: the reed on PB3 owns EXTI line 3. */
+ * The internal pull-up is NOT enough to hold a *disconnected* RX line
+ * idle-high against EMI, so this wake is armed at runtime ONLY while the
+ * console is actually up (APP_UART_isEnabled) — see enterStop2TimedMs. A
+ * sealed unit with the UART torn down never arms it and so never sees a
+ * phantom edge. Disabled in REED_WKUP3 builds: the reed on PB3 owns EXTI
+ * line 3. */
 #define CONSOLE_WAKE_HOLDOFF_MS  2500u
 #if !defined(BSP_REED_ON_WKUP3) && defined(BSP_HAS_PWR_LATCH)
 #define CONSOLE_WAKE_ON_RX 1
@@ -980,9 +984,18 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	 * STOP2 reaches its µA-floor normally. */
 
 #if defined(CONSOLE_WAKE_ON_RX)
-	/* Re-purpose PA3 (LPUART RX) as a falling-edge wake for the sleep
-	 * window — see CONSOLE_WAKE_HOLDOFF_MS rationale above. */
-	{
+	/* Arm the PA3 RX-wake ONLY when the console is actually up. Rationale:
+	 * the internal pull-up does NOT reliably hold a *disconnected* RX line
+	 * idle-high against ambient EMI (bench-confirmed) — and a sealed
+	 * UW_DOPPLER unit in OPERATIONAL with the UART torn down (no DEBUG,
+	 * UARTLOG off) has exactly that: PA3 floating, no host. Arming a
+	 * falling-edge EXTI there turns noise into a wake-storm (idleTick keeps
+	 * re-arming the 2.5 s holdoff → ~5 mA, never re-sleeps). APP_UART_isEnabled
+	 * is the ground truth: bench / CONFIG / DEBUG / UART-kept-on keep the
+	 * feature; the deployed silent console skips it (PA3 stays as the analog
+	 * teardown left it — the proven pre-wake-on-RX behaviour). */
+	const bool console_wake_armed = APP_UART_isEnabled();
+	if (console_wake_armed) {
 		GPIO_InitTypeDef rx_wake = {0};
 		rx_wake.Pin = GPIO_PIN_3;
 		rx_wake.Mode = GPIO_MODE_IT_FALLING;
@@ -1028,24 +1041,29 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 	s_stop2_count++;
 
 #if defined(CONSOLE_WAKE_ON_RX)
-	/* Give PA3 back to the LPUART (MX_GPIO_Init below doesn't own the
-	 * UART pins — they live in HAL_UART_MspInit). */
-	HAL_NVIC_DisableIRQ(EXTI3_IRQn);
-	__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
-	{
-		GPIO_InitTypeDef rx_af = {0};
-		rx_af.Pin = GPIO_PIN_3;
-		rx_af.Mode = GPIO_MODE_AF_PP;
-		rx_af.Pull = GPIO_NOPULL;
-		rx_af.Speed = GPIO_SPEED_FREQ_LOW;
-		rx_af.Alternate = GPIO_AF8_LPUART1;
-		HAL_GPIO_Init(GPIOA, &rx_af);
-	}
-	if (s_console_rx_edge) {
-		s_console_rx_edge = false;
-		/* Someone is knocking: stay awake so their next command lands
-		 * on a live console. */
-		s_console_holdoff_until = HAL_GetTick() + CONSOLE_WAKE_HOLDOFF_MS;
+	/* Mirror the entry gate: only undo the PA3 EXTI re-purpose if we armed
+	 * it. When the console was down we never touched PA3, so leave it as the
+	 * analog teardown left it (no floating AF input, no phantom holdoff). */
+	if (console_wake_armed) {
+		/* Give PA3 back to the LPUART (MX_GPIO_Init below doesn't own the
+		 * UART pins — they live in HAL_UART_MspInit). */
+		HAL_NVIC_DisableIRQ(EXTI3_IRQn);
+		__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
+		{
+			GPIO_InitTypeDef rx_af = {0};
+			rx_af.Pin = GPIO_PIN_3;
+			rx_af.Mode = GPIO_MODE_AF_PP;
+			rx_af.Pull = GPIO_NOPULL;
+			rx_af.Speed = GPIO_SPEED_FREQ_LOW;
+			rx_af.Alternate = GPIO_AF8_LPUART1;
+			HAL_GPIO_Init(GPIOA, &rx_af);
+		}
+		if (s_console_rx_edge) {
+			s_console_rx_edge = false;
+			/* Someone is knocking: stay awake so their next command lands
+			 * on a live console. */
+			s_console_holdoff_until = HAL_GetTick() + CONSOLE_WAKE_HOLDOFF_MS;
+		}
 	}
 #endif
 
