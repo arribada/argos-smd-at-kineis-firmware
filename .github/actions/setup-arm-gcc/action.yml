@@ -1,0 +1,35 @@
+name: Setup arm-none-eabi GCC
+description: >-
+  Install the pinned arm-none-eabi GCC 13.3.rel1 toolchain (identical to
+  .devcontainer/Dockerfile). Cached so only the first matrix job downloads it.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache toolchain
+      id: cache-armgcc
+      uses: actions/cache@v4
+      with:
+        path: /opt/gcc-arm-none-eabi
+        # Bump this key if the pinned toolchain version changes.
+        key: armgcc-13.3.rel1-x86_64-linux
+
+    - name: Download + install toolchain
+      if: steps.cache-armgcc.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        TC=arm-gnu-toolchain-13.3.rel1-x86_64-arm-none-eabi
+        wget -q "https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/${TC}.tar.xz"
+        sudo mkdir -p /opt
+        sudo tar -xf "${TC}.tar.xz" -C /opt
+        sudo mv "/opt/${TC}" /opt/gcc-arm-none-eabi
+        rm "${TC}.tar.xz"
+
+    - name: Expose on PATH
+      shell: bash
+      run: echo "/opt/gcc-arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+    - name: Verify
+      shell: bash
+      run: arm-none-eabi-gcc --version | head -1

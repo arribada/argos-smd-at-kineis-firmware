@@ -1,0 +1,146 @@
+name: CI
+
+# Non-regression (unit tests) on every push/PR + a build of every allowed
+# board/app variant, with downloadable firmware images. Tag a commit `vX.Y.Z`
+# to publish all variants as a GitHub Release (no local recompile needed).
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write          # release job needs to create/upload a Release
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # 1) Non-regression: the Unity unit suite (native gcc). Gates the commit.
+  # ----------------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests (non-regression)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Unity suite
+        # run_tests.sh exits non-zero on any failing suite -> red commit.
+        run: bash Tests/scripts/run_tests.sh | tee test-results.txt
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-log
+          path: test-results.txt
+
+  # ----------------------------------------------------------------------------
+  # 2) Build every allowed board/app variant (firmware images as artifacts).
+  #    Each matrix entry is one independent job (fail-fast: false), so a single
+  #    broken variant does not hide the others. To add a variant, add one line.
+  # ----------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Every board/app/comm combo below was confirmed to compile (local
+          # arm-gcc 13.3.rel1 sweep, MAC_PRFL=BASIC). Constraints: UW_DOPPLER is
+          # SMD_STDALONE/UART only; DOPPLER is UART-only and needs LPM=SHUTDOWN.
+          # To add a MAC_PRFL=BLIND variant (STDLN/DOPPLER accept it), copy a
+          # line and set mac: BLIND. Drop a line to stop shipping that variant.
+
+          # --- UW_DOPPLER (deploy target: SMD_STDALONE / UART / BASIC only) ---
+          - { name: uw_doppler-stdalone-release, app: UW_DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 0, extra: REED_WKUP3_WIRE=1 }
+          - { name: uw_doppler-stdalone-bench,    app: UW_DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 1, extra: REED_WKUP3_WIRE=1 }
+
+          # --- GUI (all boards, UART + SPI) ---
+          - { name: gui-pa-uart,        app: GUI, board: SMD_PA,       comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-pa-spi,         app: GUI, board: SMD_PA,       comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-nopa-uart,      app: GUI, board: SMD_NOPA,     comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-nopa-spi,       app: GUI, board: SMD_NOPA,     comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-stdalone-uart,  app: GUI, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-stdalone-spi,   app: GUI, board: SMD_STDALONE, comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-op-uart,        app: GUI, board: SMD_OP,       comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: gui-op-spi,         app: GUI, board: SMD_OP,       comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+
+          # --- STDLN (all boards, UART + SPI) ---
+          - { name: stdln-pa-uart,       app: STDLN, board: SMD_PA,       comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-pa-spi,        app: STDLN, board: SMD_PA,       comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-nopa-uart,     app: STDLN, board: SMD_NOPA,     comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-nopa-spi,      app: STDLN, board: SMD_NOPA,     comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-stdalone-uart, app: STDLN, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-stdalone-spi,  app: STDLN, board: SMD_STDALONE, comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-op-uart,       app: STDLN, board: SMD_OP,       comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: stdln-op-spi,        app: STDLN, board: SMD_OP,       comm: SPI,  mac: BASIC, debug: 0, extra: "" }
+
+          # --- DOPPLER (all boards, UART only, needs LPM=SHUTDOWN) ---
+          - { name: doppler-pa-uart,       app: DOPPLER, board: SMD_PA,       comm: UART, mac: BASIC, debug: 0, extra: LPM=SHUTDOWN }
+          - { name: doppler-nopa-uart,     app: DOPPLER, board: SMD_NOPA,     comm: UART, mac: BASIC, debug: 0, extra: LPM=SHUTDOWN }
+          - { name: doppler-stdalone-uart, app: DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 0, extra: LPM=SHUTDOWN }
+          - { name: doppler-op-uart,       app: DOPPLER, board: SMD_OP,       comm: UART, mac: BASIC, debug: 0, extra: LPM=SHUTDOWN }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-arm-gcc
+      - name: Build (app + bootloader, merged image)
+        run: |
+          set -euo pipefail
+          make clean
+          make BOARD=${{ matrix.board }} APP=${{ matrix.app }} COMM=${{ matrix.comm }} \
+               MAC_PRFL=${{ matrix.mac }} DEBUG=${{ matrix.debug }} VERBOSE=0 \
+               ${{ matrix.extra }} -j"$(nproc)" full
+      - name: Stage images
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # App image (.elf/.hex/.bin) + the merged app+bootloader image (*_full.*)
+          cp -v build/*.elf build/*.hex build/*.bin out/ 2>/dev/null || true
+          cp -v build/*_full.* out/ 2>/dev/null || true
+          ls -l out
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fw-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          # Per-commit artifacts are downloadable from the Actions run page (90 d).
+
+  # ----------------------------------------------------------------------------
+  # 3) Release: on a `vX.Y.Z` tag, attach every built variant to a GitHub
+  #    Release so users download flashable images without recompiling.
+  # ----------------------------------------------------------------------------
+  release:
+    name: Publish Release
+    runs-on: ubuntu-24.04
+    needs: [unit-tests, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all variant artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: fw-*
+      - name: Flatten + prefix by variant
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for d in dist/fw-*; do
+            v="$(basename "$d" | sed 's/^fw-//')"
+            for f in "$d"/*; do
+              cp -v "$f" "release/${v}__$(basename "$f")"
+            done
+          done
+          ls -l release
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" release/* \
+              --title "${{ github.ref_name }}" --generate-notes \
+            || gh release upload "${{ github.ref_name }}" release/* --clobber

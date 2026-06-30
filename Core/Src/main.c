@@ -1227,6 +1227,21 @@ void SystemClock_Config(void)
       (void)HAL_RCC_OscConfig(&lsi_cfg);   /* on-chip, effectively always ready */
       g_rtc_use_lsi = 1;
     }
+
+    /* TODO(LSECSS, bench-only): turn a mid-mission LSE death into graceful LSI
+     * fallback (keep reporting instead of going silent). RM0453 §7.2.11: LSECSS
+     * runs in all modes but VBAT and, in STOP2, raises an IT (vector
+     * TAMP_STAMP_LSECSS_SSRU, IRQn 2) that WAKES the core on LSE failure; no auto
+     * HW action -> SW must switch RTCSEL->LSI. The existing WaitForSynchro gate
+     * (mgr_lpm_uw.c) only catches an LSE already dead at the NEXT entry, not one
+     * dying mid-sleep -> that narrow residual is what this would close.
+     * Deferred (clock + wake/reset IRQ, no unit test, low-prob accepted). To
+     * enable: arm LSECSS AFTER LSE+LSI ready AND after RTCSEL (post MX_RTC_Init);
+     * add TAMP_STAMP_LSECSS_SSRU_IRQHandler (today weak->Default_Handler, so a
+     * bare enable WEDGES with IWDG frozen in STOP) doing: clear LSECSSC, then
+     * LSECSSON off, then LSEON off, latch g_rtc_force_lsi, reset; NVIC-enable.
+     * NB: LSECSSON LOCKS RTCSEL+LSEON writes until LSECSSD/BDRST (RM0453 7.4.30)
+     * -> entangles the g_rtc_force_lsi recovery. Validate via HW kill-crystal. */
   }
 }
 
