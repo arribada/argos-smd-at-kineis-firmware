@@ -12,6 +12,11 @@ Kineis/doc/html/
 *.ioc
 .claude/*
 Tools/*
+# Build-essential tooling referenced by the Makefile (full/dfu targets) must
+# ship so CI and fresh clones can build — the rest of Tools/ stays ignored.
+!Tools/merge_firmware.py
+!Tools/create_dfu.py
+!Tools/dfu_tool.py
 Bootloader/build/*
 Tests/report/
 .cache/
