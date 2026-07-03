@@ -329,6 +329,19 @@ bool bMGR_SPI_CMD_WRITESECKEY_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
 bool bMGR_SPI_CMD_READSPIMACSTATE_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
 
 /**
+ * @brief Read the frame handler (int16 LE) of the last completed TX.
+ *
+ * New command CMD_READ_TX_HDLR (0x40). Mirrors the handler appended to the UART
+ * +TX response. Retro-compat: a SEPARATE command, so the MAC_STATUS response is
+ * unchanged (old masters that never poll it are unaffected).
+ *
+ * @param rx unused.
+ * @param tx 2-byte int16 handler (-1 if no TX completed yet).
+ * @return true if correctly processed, false otherwise.
+ */
+bool bMGR_SPI_CMD_READTXHDLR_cmd(SPI_Buffer *rx, SPI_Buffer *tx);
+
+/**
  * @brief Write TCXO calibration or configuration data.
  *
  * This function processes the SPI command to update the Temperature Compensated Crystal Oscillator (TCXO)

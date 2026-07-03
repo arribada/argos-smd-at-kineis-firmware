@@ -101,7 +101,9 @@ typedef enum {
     CMD_READ_KCFG        = 0x2F, /**< Read stack config bitmap (uint32, read-only). */
     /* DFU commands - aligned with bootloader (0x30-0x3F range) */
     CMD_DFU_ENTER        = 0x3F, /**< Enter DFU/bootloader mode. */
-    SPICMD_MAX_COUNT     = 0x40  /**< Maximum number of SPI commands. */
+    CMD_READ_TX_HDLR     = 0x40, /**< Read last completed TX frame handler (int16 LE).
+                                  *   Retro-compat add: separate command, MAC_STATUS unchanged. */
+    SPICMD_MAX_COUNT     = 0x41  /**< Maximum number of SPI commands. */
 } CmdValue;
 
 /* Types ---------------------------------------------------------------------*/

@@ -85,6 +85,13 @@ enum ERROR_RETURN_T MGR_AT_CMD_mapKnsStatusToError(enum KNS_status_t s);
  */
 bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *atcmd_rsp_data);
 
+/** @brief Set the Kineis TX frame handler appended at the END of the next +TX
+ *  response (+TX=<code>,<data>,<hdlr>). Called from MGR_AT_CMD_macEvtProcess
+ *  with srvcEvt.tx_ctxt.frm_hdlr. Diverges from KIM (handler-first) to preserve
+ *  backward compatibility with existing hosts.
+ */
+void MGR_AT_CMD_setTxFrmHdlr(int16_t frm_hdlr);
+
 #endif /* __MGR_AT_CMD_COMMON_H */
 
 /**

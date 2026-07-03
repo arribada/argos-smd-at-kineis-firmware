@@ -21,3 +21,7 @@ Bootloader/build/*
 Tests/report/
 .cache/
 compile_commands.json
+
+# Private working docs (audits, reports, deep-dives) — kept LOCAL for us, NOT
+# published. The user-facing documentation is the GitHub wiki instead.
+/docs/

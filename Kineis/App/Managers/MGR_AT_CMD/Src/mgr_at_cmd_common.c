@@ -57,6 +57,19 @@ enum ERROR_RETURN_T MGR_AT_CMD_mapKnsStatusToError(enum KNS_status_t s)
 	return (enum ERROR_RETURN_T)s;
 }
 
+/* Last Kineis TX frame handler, captured from the MAC event by
+ * MGR_AT_CMD_macEvtProcess before a +TX response is emitted. It is APPENDED at
+ * the END: "+TX=<code>,<data>,<hdlr>" so a legacy host parsing only
+ * <code>,<data> stays compatible. NOTE: this DIVERGES from the KIM reference,
+ * which puts the handler FIRST (+TX=<hdlr>,<code>,<data>) and breaks backward
+ * compat. AT TX FIFO depth is 1, so one pending handler is enough. */
+static int16_t s_txFrmHdlr = -1;
+
+void MGR_AT_CMD_setTxFrmHdlr(int16_t frm_hdlr)
+{
+	s_txFrmHdlr = frm_hdlr;
+}
+
 bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *atcmd_rsp_data)
 {
 
@@ -71,7 +84,8 @@ bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *a
 
 			MCU_AT_CONSOLE_send("+TX=0,");
 			MCU_AT_CONSOLE_send_dataBuf(pu8UserDataPtr, u16UserDataBitlen);
-			MCU_AT_CONSOLE_send("\r\n");
+			/* Handler appended at the END for backward compat (see s_txFrmHdlr). */
+			MCU_AT_CONSOLE_send(",%d\r\n", s_txFrmHdlr);
 		}
 		return true;
 	}
@@ -94,7 +108,8 @@ bool bMGR_AT_CMD_sendResponse(enum atcmd_rsp_type_t atcmd_response_type, void *a
 
 			MCU_AT_CONSOLE_send("+TX=%d,", error_id);
 			MCU_AT_CONSOLE_send_dataBuf(pu8UserDataPtr, u16UserDataBitlen);
-			MCU_AT_CONSOLE_send("\r\n");
+			/* Handler appended at the END for backward compat (see s_txFrmHdlr). */
+			MCU_AT_CONSOLE_send(",%d\r\n", s_txFrmHdlr);
 		}
 		return true;
 	}

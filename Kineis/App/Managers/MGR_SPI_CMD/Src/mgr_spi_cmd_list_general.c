@@ -381,6 +381,24 @@ bool bMGR_SPI_CMD_READSPIMACSTATE_cmd(SPI_Buffer *rx, SPI_Buffer *tx){
 	}
 }
 
+/* Set by MGR_SPI_CMD_macEvtProcess on TX completion (mgr_spi_cmd.c). */
+extern volatile int16_t spiTxFrmHdlr;
+
+bool bMGR_SPI_CMD_READTXHDLR_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
+{
+	(void)rx;  /* command only returns data */
+	int16_t hdlr = spiTxFrmHdlr;
+	HAL_StatusTypeDef ret;
+
+	/* int16 little-endian, 2 bytes (same convention as CMD_READ_MC). Returns the
+	 * handler of the last completed TX (-1 if none yet). New command (0x40),
+	 * non-breaking: old masters never poll it, so MAC_STATUS stays 2 bytes. */
+	tx->next_req = sizeof(hdlr);
+	memcpy(&tx->data[0], &hdlr, tx->next_req);
+	ret = bMGR_SPI_DRIVER_writeread();
+	return (ret == HAL_OK);
+}
+
 bool bMGR_SPI_CMD_READID_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 {
 	(void)rx;  /* Unused parameter - command only returns data */

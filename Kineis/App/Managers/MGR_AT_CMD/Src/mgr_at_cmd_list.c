@@ -26,7 +26,7 @@
 #include "mgr_at_cmd_list_doppler.h"
 #endif
 
-const char *atcmd_version = "v0.8.1";
+const char *atcmd_version = "v1.0.0";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct atcmd_desc_t cas_atcmd_list_array[ATCMD_MAX_COUNT] = {

@@ -410,6 +410,10 @@ enum KNS_status_t MGR_AT_CMD_macEvtProcess(void)
 		}
 		spUserDataMsg = USERDATA_txFifoGetFirst();
 		kns_assert(spUserDataMsg != NULL);
+		/* Append this frame's handler at the END of the +TX response (backward
+		 * compat; KIM puts it first). RX_ERROR/RX_TIMEOUT alias tx_ctxt — cosmetic
+		 * only, and those reuse the +TX error format already. */
+		MGR_AT_CMD_setTxFrmHdlr(srvcEvt.tx_ctxt.frm_hdlr);
 	break;
 	case (KNS_MAC_ERROR):
 		if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {

@@ -20,7 +20,7 @@
 #include "mgr_spi_cmd_list_previpass.h"
 #include "mgr_spi_cmd_list_certif.h"
 
-const char *spicmd_version = "v0.8.1";
+const char *spicmd_version = "v1.0.0";
 
 /** @attention update AT cmd version above if you add or remove commands in this list */
 const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {
@@ -91,6 +91,7 @@ const struct spicmd_desc_t cas_spicmd_list_array[SPICMD_MAX_COUNT] = {
 	{ CMD_NONE, CMD_NONE, NULL},  /* 0x3E */
 	/* DFU Enter command - triggers reboot to bootloader */
 	{ CMD_DFU_ENTER, CMD_NONE, bMGR_SPI_CMD_DFU_ENTER_cmd},  /* 0x3F */
+	{ CMD_READ_TX_HDLR, CMD_NONE, bMGR_SPI_CMD_READTXHDLR_cmd},  /* 0x40 - Read last TX frame handler */
 };
 
 /**

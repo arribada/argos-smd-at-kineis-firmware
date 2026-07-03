@@ -55,6 +55,10 @@
 /* Private variables ----------------------------------------------------------------------------*/
 volatile SpiState spiState = SPICMD_INIT;
 volatile MACStatus macStatus = MAC_OK;
+/* Frame handler (frm_hdlr) of the last completed TX, exposed read-only via the
+ * new CMD_READ_TX_HDLR (0x40). -1 = none yet. Retro-compat: a SEPARATE command,
+ * so the existing MAC_STATUS response bytes are unchanged. */
+volatile int16_t spiTxFrmHdlr = -1;
 volatile CmdValue cmdInProgress = CMD_NONE;
 
 /* Wedge-recovery watchdog state (SPICMD_IDLE). spi_wedge_watch_tick is the HAL
@@ -360,6 +364,10 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
         }
         spUserDataMsg = USERDATA_txFifoGetFirst();
         kns_assert(spUserDataMsg != NULL);
+        /* Capture this frame's handler for the new CMD_READ_TX_HDLR (0x40).
+         * Read from the event (not the element) — same value the UART +TX
+         * appends. FIFO handling below is unchanged. */
+        spiTxFrmHdlr = srvcEvt.tx_ctxt.frm_hdlr;
         /* macStatus will be set in the processing switch below */
         break;
     case (KNS_MAC_ERROR):
