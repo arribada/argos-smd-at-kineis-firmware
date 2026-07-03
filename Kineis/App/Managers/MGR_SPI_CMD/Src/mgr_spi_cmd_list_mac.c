@@ -80,6 +80,14 @@ bool bMGR_SPI_CMD_WRITEKMAC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 		}
 	};
 	appEvt.init_prfl_ctxt.id = rx->data[1];
+	/* Copy the profile config context (mirror of AT+KMAC) when the master sent
+	 * it in the A+ payload: [cmd][id][7 ctx bytes]. Gated on the received length
+	 * so a host that sends only the id keeps the exact legacy behaviour
+	 * (blindCfg stays {0}). Enables BLIND config (retx_nb, retx_period_s, ...)
+	 * over SPI. rx->size = cmd byte + payload. */
+	if (rx->size >= 2u + sizeof(struct KNS_MAC_BLIND_usrCfg_t))
+		memcpy(&appEvt.init_prfl_ctxt.prflCfgPtr, &rx->data[2],
+		       sizeof(struct KNS_MAC_BLIND_usrCfg_t));
 
 	status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
 	switch (status) {
