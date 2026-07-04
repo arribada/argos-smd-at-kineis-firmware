@@ -20,6 +20,7 @@
 #include <string.h>
 #include "mcu_spi_driver.h"
 //#include "mgr_spi_cmd_list_user_data.h"
+#include "mgr_spi_protocol.h"
 #include "mgr_spi_cmd_list_mac.h"
 #include "mgr_spi_cmd_list.h"
 #include "kns_q.h"
@@ -81,11 +82,17 @@ bool bMGR_SPI_CMD_WRITEKMAC_cmd(SPI_Buffer *rx, SPI_Buffer *tx)
 	};
 	appEvt.init_prfl_ctxt.id = rx->data[1];
 	/* Copy the profile config context (mirror of AT+KMAC) when the master sent
-	 * it in the A+ payload: [cmd][id][7 ctx bytes]. Gated on the received length
-	 * so a host that sends only the id keeps the exact legacy behaviour
-	 * (blindCfg stays {0}). Enables BLIND config (retx_nb, retx_period_s, ...)
-	 * over SPI. rx->size = cmd byte + payload. */
-	if (rx->size >= 2u + sizeof(struct KNS_MAC_BLIND_usrCfg_t))
+	 * it in the A+ payload: [cmd][id][7 ctx bytes]. Three gates so every
+	 * existing flow stays byte-identical:
+	 *  - BLIND id only: BASIC/NONE keep blindCfg={0} exactly as before.
+	 *  - A+ frames only: in legacy mode rx->size is the RAW DMA clock count
+	 *    (mgr_spi_cmd.c SPICMD_IDLE), so a master clocking fixed-size
+	 *    transactions would pass the length check and bus padding would be
+	 *    copied. A+ size is exact (data_len+1) and CRC-checked.
+	 *  - Length: the 7 ctx bytes must actually be present. */
+	if (appEvt.init_prfl_ctxt.id == KNS_MAC_PRFL_BLIND &&
+	    !MGR_SPI_PROTOCOL_is_legacy() &&
+	    rx->size >= 2u + sizeof(struct KNS_MAC_BLIND_usrCfg_t))
 		memcpy(&appEvt.init_prfl_ctxt.prflCfgPtr, &rx->data[2],
 		       sizeof(struct KNS_MAC_BLIND_usrCfg_t));
 

@@ -68,6 +68,11 @@ jobs:
           - { name: gui-op-uart,        app: GUI, board: SMD_OP,       comm: UART, mac: BASIC, debug: 0, extra: "" }
           - { name: gui-op-spi,         app: GUI, board: SMD_OP,       comm: SPI,  mac: BASIC, debug: 0, extra: "" }
 
+          # --- GUI BLIND profile (compiles the BLIND config paths: AT+KMAC ctx,
+          #     SPI WRITE_KMAC ctx gate) so a BLIND-only break is caught in CI ---
+          - { name: gui-pa-uart-blind,  app: GUI, board: SMD_PA,       comm: UART, mac: BLIND, debug: 0, extra: "" }
+          - { name: gui-pa-spi-blind,   app: GUI, board: SMD_PA,       comm: SPI,  mac: BLIND, debug: 0, extra: "" }
+
           # --- STDLN (all boards, UART + SPI) ---
           - { name: stdln-pa-uart,       app: STDLN, board: SMD_PA,       comm: UART, mac: BASIC, debug: 0, extra: "" }
           - { name: stdln-pa-spi,        app: STDLN, board: SMD_PA,       comm: SPI,  mac: BASIC, debug: 0, extra: "" }

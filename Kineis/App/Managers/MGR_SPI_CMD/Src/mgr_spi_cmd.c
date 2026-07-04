@@ -461,6 +461,12 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
 
     case (KNS_MAC_OK):
         MGR_LOG_DEBUG("MGR_SPI_CMD MAC reported OK to previous command.\r\n");
+        /* Frame accepted: expose its handler on CMD_READ_TX_HDLR right away
+         * (sendreply_ctxt is valid on OK/ERROR replies) so the master can
+         * correlate before TX_DONE and 0x40 never returns a stale value from
+         * a previous message. */
+        if (srvcEvt.app_evt == KNS_MAC_SEND_DATA)
+            spiTxFrmHdlr = srvcEvt.sendreply_ctxt.frm_hdlr;
         if (srvcEvt.app_evt == KNS_MAC_STOP_SEND_DATA)
             kns_assert(USERDATA_txFifoFlush() == true);
         macStatus = MAC_OK;
@@ -469,8 +475,12 @@ enum KNS_status_t MGR_SPI_CMD_macEvtProcess(void)
 
     case (KNS_MAC_ERROR):
         MGR_LOG_DEBUG("MGR_SPI_CMD MAC reported ERROR to previous command.\r\n");
-        if (srvcEvt.app_evt == KNS_MAC_SEND_DATA)
+        if (srvcEvt.app_evt == KNS_MAC_SEND_DATA) {
+            /* Mirror the OK path: keep 0x40 coherent with the frame the
+             * error refers to instead of the previous TX. */
+            spiTxFrmHdlr = srvcEvt.sendreply_ctxt.frm_hdlr;
             USERDATA_txFifoRemoveElt(spUserDataMsg);
+        }
         macStatus = MAC_ERROR;
         cbStatus = KNS_STATUS_ERROR;
         break;
