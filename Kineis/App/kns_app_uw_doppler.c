@@ -180,6 +180,11 @@ struct {
 	uint16_t water_baseline;
 	uint16_t observed_peak_adc;  /**< Highest ADC ever seen (dynamic cap) */
 } sws_retained;
+/* Retention structs are placed by LINK ORDER: pin the size so any field
+ * change breaks the build and forces a magic bump (else a sealed-unit
+ * firmware update silently invalidates the retained data). */
+_Static_assert(sizeof(sws_retained) == 12,
+               "sws_retained layout changed — bump SWS_RETAINED_MAGIC");
 
 /* ---- Boot-loop protection -----------------------------------------------
  * Counts consecutive boots that never reached MONITORING. A reset between
@@ -209,6 +214,8 @@ struct {
 	uint8_t  _pad[3];
 	uint32_t crc32;
 } boot_retained;
+_Static_assert(sizeof(boot_retained) == 16,
+               "boot_retained layout changed — bump BOOT_RETAIN_MAGIC");
 
 /* Session-scoped Message Counter (Argos MC).
  *
@@ -234,6 +241,8 @@ struct {
 	uint8_t  _pad;
 } mc_retained;
 #define MC_RETAINED_MAGIC 0x4D4344CCUL  /* "MCD" + version 0xCC */
+_Static_assert(sizeof(mc_retained) == 8,
+               "mc_retained layout changed — bump MC_RETAINED_MAGIC");
 
 static uint32_t boot_retained_crc(void)
 {
@@ -434,15 +443,23 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 /* LB mode (low-battery) config. Defaults engage LB at 2.9V (just above the
  * existing min_tx_mV=2.8V hard floor) with 200 mV hysteresis. In LB mode TX
  * timing is slower and capped at 3 TX per surface event. */
+#define LB_DEFAULT_ENTER_MV       0     /**< 0 = LB mode disabled by default */
+#define LB_DEFAULT_EXIT_MV        3100
+#define LB_DEFAULT_TX_INTERVAL_S  60    /**< 6x slower than normal 10s */
+#define LB_DEFAULT_TX_MAX_S       600   /**< 10 min cap vs normal 3 min */
+#define LB_DEFAULT_TX_MAX_COUNT   3
+/* Hysteresis invariant: exit must sit above enter or the LB state flaps. */
+_Static_assert(LB_DEFAULT_EXIT_MV > LB_DEFAULT_ENTER_MV,
+               "LB hysteresis: lb_exit_mV must exceed lb_enter_mV");
 static KNS_APP_UwDopplerLbCfg_t lb_cfg = {
-	.lb_enter_mV       = 0,    /**< 0 = LB mode disabled by default (BATCFG hard
-	                            *   floor still inhibits TX below min_tx_mV);
-	                            *   the values below are seeds for when the
-	                            *   operator enables it via AT+LBCFG. */
-	.lb_exit_mV        = 3100,
-	.lb_tx_interval_s  = 60,   /**< 6x slower than normal 10s */
-	.lb_tx_max_s       = 600,  /**< 10 min cap vs normal 3 min */
-	.lb_tx_max_count   = 3,
+	.lb_enter_mV       = LB_DEFAULT_ENTER_MV, /**< BATCFG hard floor still inhibits
+	                            *   TX below min_tx_mV; the values below are
+	                            *   seeds for when the operator enables LB
+	                            *   via AT+LBCFG. */
+	.lb_exit_mV        = LB_DEFAULT_EXIT_MV,
+	.lb_tx_interval_s  = LB_DEFAULT_TX_INTERVAL_S,
+	.lb_tx_max_s       = LB_DEFAULT_TX_MAX_S,
+	.lb_tx_max_count   = LB_DEFAULT_TX_MAX_COUNT,
 };
 static bool lb_active = false; /**< Hysteretic state, updated each TX cycle. */
 /* Forward decl: lb_update is defined alongside the LB getters/setters near the
@@ -689,7 +706,9 @@ static uint8_t test_tx_remaining = 0;
 #define TX_BACKOFF_BASE_MS       60000  /**< First backoff after a consecutive TX error: 1 min. Doubles each error up to TX_BACKOFF_MAX_MS. */
 #define TX_BACKOFF_MAX_MS       600000  /**< Backoff cap (10 min). Prevents months-long lock-outs while still throttling a sustained RF failure mode (e.g. dead transceiver, bad antenna match). */
 #define TX_BACKOFF_MAX_SHIFT         4  /**< Max left-shift on the base — 60s -> 16x = 16min, capped at TX_BACKOFF_MAX_MS = 10min anyway. */
-static uint8_t  consecutive_tx_errors = 0;     /**< Reset on TX_DONE or surface event. */
+static uint8_t  consecutive_tx_errors = 0;     /**< Reset on TX_DONE only — a surface
+                                                 * event does NOT clear it; the armed
+                                                 * backoff self-expires (<= 10 min). */
 static uint32_t tx_backoff_until_tick = 0;     /**< Block any TX request until this tick. */
 
 static void tx_backoff_arm(void)
@@ -2265,12 +2284,6 @@ void KNS_APP_uw_doppler_loop(void)
 				first_tx_random_offset_ms =
 					prng_next() % FIRST_TX_RANDOM_WINDOW_MS;
 
-				/* Pre-warmup TCXO: start it now so it's stable by the time
-				 * the first TX fires. Save current warmup setting so we can
-				 * temporarily zero it for the first TX (avoid double wait).
-				 * Re-entrance guard: don't overwrite saved value if a previous
-				 * skip is still pending (would store the already-zeroed value).
-				 */
 				/* TCXO pre-warmup DISABLED on this app/board combination.
 				 *
 				 * Why: on STM32WL5x the TCXO power rail (VDDTCXO) is gated by

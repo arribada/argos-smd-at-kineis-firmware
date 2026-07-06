@@ -193,6 +193,9 @@ typedef struct {
  * cold-boot used by the auto-cycle. Cleared only by VBAT loss. */
 static __attribute__((__section__(".retentionRamNoload")))
 UwLpmDutyCfg_t s_duty;
+/* Link-order-placed retention: pin the size, bump DUTY_CFG_MAGIC on change. */
+_Static_assert(sizeof(UwLpmDutyCfg_t) == 16,
+               "UwLpmDutyCfg_t layout changed — bump DUTY_CFG_MAGIC");
 
 /* Event-driven LPM thresholds. Replaces the old "always sleep for N seconds"
  * model with a "sleep until next scheduled task" approach. The thresholds
@@ -216,6 +219,8 @@ typedef struct {
 
 static __attribute__((__section__(".retentionRamNoload")))
 LpmThrCfg_t s_lpm_thr;
+_Static_assert(sizeof(LpmThrCfg_t) == 12,
+               "LpmThrCfg_t layout changed — bump LPM_THR_MAGIC");
 
 static void s_apply_lpm_thr_defaults_if_needed(void)
 {
