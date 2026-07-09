@@ -205,6 +205,14 @@ _Static_assert(BL_STATE_FLASH_ADDR != FLASH_USER_START,
 
 /* Protocol detection */
 #define BL_DETECTION_TIMEOUT_MS     3000        /* 3 seconds */
+/* Safety auto-exit: if we sit in a DFU state (esp. after an EXPLICIT AT+DFU,
+ * where detect_protocol otherwise parks us in DFU_UART forever) with NO valid
+ * DFU command for this long, AND a valid application image is present, jump to
+ * the app instead of waiting indefinitely. Recovers a wrong-baudrate / lost-
+ * host lockup WITHOUT needing NRST. Every valid command refreshes the timer, so
+ * an active (even slow) flash session is never interrupted. A genuinely bricked
+ * unit (invalid app) is NEVER auto-jumped — it stays in DFU for recovery. */
+#define BL_DFU_INACTIVITY_TIMEOUT_MS 120000     /* 2 min */
 #define BL_DEFAULT_PROTOCOL         BL_PROTO_UART
 
 /* UART configuration - baudrate depends on protocol mode

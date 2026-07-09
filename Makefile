@@ -641,7 +641,12 @@ LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BU
 # RAM regions are (xrw) and the linker lumps a writable+executable region into
 # one LOAD segment. Harmless on Cortex-M bare-metal (no MMU enforces W^X); the
 # flag changes no bytes in the output.
-LDFLAGS += -Wl,--no-warn-rwx-segments
+# The option only EXISTS in ld >= 2.39 (Arm GNU Toolchain 12+). Older toolchains
+# (e.g. GNU Arm 10-2020-q4, ld 2.35) treat it as an unknown option and FAIL the
+# link. Probe the driver's own linker and add the flag only when it is
+# supported, so the repo builds on any toolchain vintage.
+LDFLAG_NOWARN_RWX := $(shell $(CC) -Wl,--no-warn-rwx-segments -nostdlib -x c /dev/null -o /dev/null > /dev/null 2>&1 && echo -Wl,--no-warn-rwx-segments)
+LDFLAGS += $(LDFLAG_NOWARN_RWX)
 ifneq ($(DEBUG), 1)
 LDFLAGS += -s
 endif

@@ -159,7 +159,11 @@ LIBS = -lc -lm -lnosys
 LDFLAGS = $(MCU) -pipe -specs=nano.specs -T$(LDSCRIPT) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -static
 # Silence the benign "LOAD segment with RWX permissions" hint from ld >=2.39
 # (RAM is (xrw); harmless on Cortex-M bare-metal). No effect on the output bytes.
-LDFLAGS += -Wl,--no-warn-rwx-segments
+# Only exists in ld >= 2.39 (Arm GNU Toolchain 12+); older toolchains (ld 2.35)
+# FAIL the link on the unknown option. Probe the linker and add it only when
+# supported so the bootloader builds on any toolchain vintage.
+LDFLAG_NOWARN_RWX := $(shell $(CC) -Wl,--no-warn-rwx-segments -nostdlib -x c /dev/null -o /dev/null > /dev/null 2>&1 && echo -Wl,--no-warn-rwx-segments)
+LDFLAGS += $(LDFLAG_NOWARN_RWX)
 
 #######################################
 # build the bootloader

@@ -40,6 +40,14 @@ static uint16_t blink_on_ms = 0;
 static uint16_t blink_off_ms = 0;
 static uint32_t blink_tick = 0;
 static bool blink_phase_on = false;
+/* True when the in-flight blink was started via a *Forced variant. The forced
+ * gesture/AT feedback (WAKE green, CONFIG blue, SHUTDOWN red, WAIT_CONFIRM)
+ * must stay visible even when AT+LED=0 / the 24H window has set led_mode=OFF.
+ * blink_impl bypasses the mode gate at START, but MGR_LED_task() re-checks
+ * is_mode_active() every loop and used to silence the forced blink on the very
+ * next tick (symptom: the DETECT WHITE solid shows but the SWITCH/SHUTDOWN
+ * blinks go dark). Storing the bypass here lets the task honor it too. */
+static bool blink_bypass = false;
 
 /* Soft-PWM state for composite colours (WHITE/VIOLET/CYAN/YELLOW).
  *
@@ -210,6 +218,11 @@ static void blink_impl(MGR_LED_Color_t color, uint8_t count, uint16_t on_ms,
 		return;
 	}
 
+	/* Remember whether this blink is forced so MGR_LED_task() keeps it
+	 * alive even when led_mode is OFF/expired. Set before the idempotent
+	 * early-return so a re-issue updates the bypass semantics too. */
+	blink_bypass = bypass;
+
 	/* Idempotent: a blink already in flight with the SAME parameters
 	 * is left alone. Without this, callers that re-issue the same
 	 * MGR_LED_blink() each main-loop iteration (e.g. the CONFIG-mode
@@ -379,7 +392,10 @@ void MGR_LED_task(void)
 	if (!blinking)
 		return;
 
-	if (!is_mode_active()) {
+	/* Forced blinks (gesture / AT feedback) bypass the mode gate — they must
+	 * remain visible even when AT+LED=0 silenced the deployment status LEDs.
+	 * Only a NON-forced blink is silenced when led_mode is OFF/24H-expired. */
+	if (!blink_bypass && !is_mode_active()) {
 		MGR_LED_off();
 		return;
 	}

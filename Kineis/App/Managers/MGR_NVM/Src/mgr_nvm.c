@@ -608,6 +608,12 @@ static void migrate_v1_to_v3(const NVM_Config_v1_t *v1, NVM_Config_t *out)
 	out->tx_max_count            = v1->tx_max_count;
 	out->tx_max_interval_s       = v1->tx_max_interval_s;
 	out->tx_jitter_percent       = 0;  /* v3 default */
+	/* tx_cooldown_s was introduced in v4 (no v1 source). Seed the app
+	 * compile-time default (10 s) instead of leaving the memset 0, which
+	 * would silently DISABLE the inter-TX quiet floor on a v1 unit migrated
+	 * forward — a flapping SWS then TXes on every surface sample. 0 stays a
+	 * valid *operator* opt-out via AT+TXCFG; it must not be a migration artefact. */
+	out->tx_cooldown_s           = 10;
 	out->sws_threshold_min       = v1->sws_threshold_min;
 	out->sws_threshold_max       = v1->sws_threshold_max;
 	out->sws_initial_air_baseline   = v1->sws_initial_air_baseline;
@@ -636,6 +642,9 @@ static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
 	out->tx_max_count            = v2->tx_max_count;
 	out->tx_max_interval_s       = v2->tx_max_interval_s;
 	out->tx_jitter_percent       = 0;
+	/* tx_cooldown_s introduced in v4 (no v2 source) — seed the 10 s default
+	 * so migration never silently disables the inter-TX quiet floor. */
+	out->tx_cooldown_s           = 10;
 	out->sws_threshold_min       = v2->sws_threshold_min;
 	out->sws_threshold_max       = v2->sws_threshold_max;
 	out->sws_initial_air_baseline   = v2->sws_initial_air_baseline;
@@ -805,6 +814,12 @@ static void migrate_v3_to_v4(const NVM_Config_v3_t *v3, NVM_Config_t *out)
 	out->tx_max_count                   = v3->tx_max_count;
 	out->tx_max_interval_s              = v3->tx_max_interval_s;
 	out->tx_jitter_percent              = v3->tx_jitter_percent;
+	/* tx_cooldown_s introduced in v4 (no v3 source) — seed the 10 s default
+	 * so a v3 config migrated forward keeps a non-zero inter-TX quiet floor
+	 * instead of the memset 0 (which disables it and lets a flapping SWS TX
+	 * every surface sample). This is the concrete origin of a field-observed
+	 * tx_cooldown_s==0 on units upgraded from a pre-v4 firmware without re-SAVE. */
+	out->tx_cooldown_s                  = 10;
 	out->sws_threshold_min              = v3->sws_threshold_min;
 	out->sws_threshold_max              = v3->sws_threshold_max;
 	out->sws_initial_air_baseline       = v3->sws_initial_air_baseline;

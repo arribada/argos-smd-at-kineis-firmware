@@ -199,8 +199,14 @@ _Static_assert(sizeof(sws_retained) == 12,
  * Stored in SRAM2 retention so it survives every reset class except
  * VBAT removal. CRC32 detects accidental corruption / first-power-on. */
 #define BOOT_RETAIN_MAGIC          0x424F4F54UL  /* "BOOT" */
-#define BOOT_FAIL_FACTORY_RESET    5
-#define BOOT_FAIL_PERMANENT_OFF    10
+/* Raised from 5/10 to 8/16 (audit 2026-07-08): the factory reset silently
+ * wipes operator tuning (TX/SWS/LED) and permanent-off parks the tag for 24 h,
+ * yet a boot loop is usually a transient MAC/radio/HAL fault that a config wipe
+ * does NOT fix. More runway lets a transient fault clear before we take a
+ * destructive/parking action. A genuinely-bricked boot still escalates, just
+ * later. Argos identity + SWS calib are preserved across factory reset. */
+#define BOOT_FAIL_FACTORY_RESET    8
+#define BOOT_FAIL_PERMANENT_OFF    16
 
 static __attribute__((__section__(".retentionRamNoload")))
 struct {
@@ -299,10 +305,10 @@ extern bool MGR_NVM_reset(void);
  * push the chip into permanent SHUTDOWN during normal development.
  *
  * Escalations (sealed-deployment safe):
- *   ≥ BOOT_FAIL_FACTORY_RESET (5):  wipe MGR_NVM, reset. Defaults restored
+ *   ≥ BOOT_FAIL_FACTORY_RESET (8):  wipe MGR_NVM, reset. Defaults restored
  *                                   on next boot; SWS calib preserved via
  *                                   sws_retained in SRAM2. Done ONCE.
- *   ≥ BOOT_FAIL_PERMANENT_OFF (10): SHUTDOWN with 24 h RTC auto-wake.
+ *   ≥ BOOT_FAIL_PERMANENT_OFF (16): SHUTDOWN with 24 h RTC auto-wake.
  *                                   The capsule may have no magnet access,
  *                                   so we never go off forever — the chip
  *                                   tries again every 24 h until either
@@ -703,9 +709,9 @@ static uint8_t test_tx_remaining = 0;
 /* Exponential backoff on consecutive device errors (TX_TIMEOUT / MAC_ERROR).
  * Constants defined here (rather than with the other state-machine timeouts
  * below) so the static helpers right after see them. */
-#define TX_BACKOFF_BASE_MS       60000  /**< First backoff after a consecutive TX error: 1 min. Doubles each error up to TX_BACKOFF_MAX_MS. */
-#define TX_BACKOFF_MAX_MS       600000  /**< Backoff cap (10 min). Prevents months-long lock-outs while still throttling a sustained RF failure mode (e.g. dead transceiver, bad antenna match). */
-#define TX_BACKOFF_MAX_SHIFT         4  /**< Max left-shift on the base — 60s -> 16x = 16min, capped at TX_BACKOFF_MAX_MS = 10min anyway. */
+#define TX_BACKOFF_BASE_MS       60000  /**< Backoff after the 2nd CONSECUTIVE TX error: 1 min. The 1st error is FREE (no silence) so a single transient failure never swallows a whole brief surface window. Doubles each further error up to TX_BACKOFF_MAX_MS. */
+#define TX_BACKOFF_MAX_MS       180000  /**< Backoff cap (3 min, lowered from 10 min): a marginal-RF tag recovers its message cadence far faster while a sustained failure (dead transceiver / bad antenna match) is still throttled. */
+#define TX_BACKOFF_MAX_SHIFT         4  /**< Max left-shift on the base (the TX_BACKOFF_MAX_MS cap hits first). */
 static uint8_t  consecutive_tx_errors = 0;     /**< Reset on TX_DONE only — a surface
                                                  * event does NOT clear it; the armed
                                                  * backoff self-expires (<= 10 min). */
@@ -713,8 +719,21 @@ static uint32_t tx_backoff_until_tick = 0;     /**< Block any TX request until t
 
 static void tx_backoff_arm(void)
 {
-	uint8_t shift = consecutive_tx_errors;
-	if (shift > 0) shift--;            /* first error = base, second = base*2 */
+	/* First error is FREE: a single transient TX failure (TCXO not ready,
+	 * one-off radio hiccup, a satellite-less surface) must NOT silence the
+	 * tag — a 60 s block would swallow a whole brief surface window and cost
+	 * real Argos messages. Backoff engages only from the 2nd CONSECUTIVE
+	 * error (a genuinely sustained fault). The immediate retry is still
+	 * spaced by TX_HARD_MIN_INTERVAL_MS (2 s), so this cannot thrash the PA.
+	 * consecutive_tx_errors is incremented by the caller BEFORE this runs,
+	 * so ==1 is the first error of a fresh streak (reset() zeroes it on any
+	 * TX_DONE). */
+	if (consecutive_tx_errors < 2u) {
+		tx_backoff_until_tick = 0;   /* no silence on the first error */
+		return;
+	}
+	/* 2nd error = base (1 min), doubling each further error, capped at 3 min. */
+	uint8_t shift = (uint8_t)(consecutive_tx_errors - 2u);  /* 2nd err -> shift 0 */
 	if (shift > TX_BACKOFF_MAX_SHIFT)
 		shift = TX_BACKOFF_MAX_SHIFT;
 	uint32_t backoff_ms = TX_BACKOFF_BASE_MS << shift;
@@ -766,8 +785,9 @@ static uint8_t  mac_init_retries = 0;      /**< MAC init retry counter */
 #define CRED_FAIL_AT_IDLE_MS     30000u  /**< extend the window while AT is active */
 #define CRED_FAIL_RETRY_S        3600u   /**< STOP2 re-check cadence while creds lost */
 #define MIN_INTER_TX_INTERVAL_MS 5000   /**< Hard floor between two consecutive TX requests AND between MAC-ready and first TX — protects against MAC stack re-entry and PA back-to-back inrush */
+#define TX_HARD_MIN_INTERVAL_MS  2000   /**< ABSOLUTE floor between two ACTUAL TX on the surface path, enforced even when tx_cooldown_s==0 (operator opt-out) OR a flapping SWS detector keeps re-arming surface_tx_pending + zeroing last_tx_tick. Measured against last_actual_tx_tick, which the surface-detect paths never zero and which is RTC-wall-clock-compensated across STOP2. Distinct from MIN_INTER_TX_INTERVAL_MS (PA/MAC back-to-back protection): this one specifically caps the re-surface/flapping TX storm. */
 #define PA_WDG_THRESHOLD_MS      30000  /**< Max time PA can stay ON without a TX_DONE before we force-off + reset. A normal Argos TX is < 1 s; 30 s leaves ample room for the longest BLIND retx pattern while still cutting silent 60 mA drain quickly enough to spare battery. */
-#define MAX_STATE_HANG_MS       300000  /**< 5 min cap on any non-steady state. MONITORING is excluded (steady state). Anything longer means the SM is wedged — log + reset rather than silently hang. */
+#define MAX_STATE_HANG_MS       600000  /**< 10 min cap on any non-steady state (raised from 5 min for extra false-positive margin — the per-state timeouts TIMEOUT_TX_DONE_MS/MAC_READY_MS already catch real hangs far sooner). MONITORING is excluded (steady state). Anything longer means the SM is wedged — log + reset rather than silently hang. */
 /* TX_BACKOFF_* macros are defined earlier in the file so the static helpers
  * (tx_backoff_arm etc.) can see them. Kept the originals below as docs:
  * #define TX_BACKOFF_BASE_MS  60000
@@ -2482,6 +2502,19 @@ void KNS_APP_uw_doppler_loop(void)
 			 * lets the operator actually see the OPERATIONAL confirm before sealing. */
 			if (should_tx && MGR_GESTURE_isInteracting())
 				should_tx = false;
+			/* ABSOLUTE inter-TX floor (defends against tx_cooldown_s==0 and a
+			 * flapping SWS detector that re-arms surface_tx_pending + zeroes
+			 * last_tx_tick on every UW<->SURFACE bounce). last_actual_tx_tick is
+			 * NOT zeroed by the surface-detect paths and is RTC-wall-clock-
+			 * compensated across STOP2, so this guarantees >= TX_HARD_MIN_INTERVAL_MS
+			 * between two REAL TX regardless of config. ==0 => no TX yet, so a
+			 * fresh deploy still fires its first frame immediately. */
+			if (should_tx && last_actual_tx_tick != 0u &&
+			    (HAL_GetTick() - last_actual_tx_tick) < TX_HARD_MIN_INTERVAL_MS) {
+				MGR_LOG_WARN("[UW_DPL] Inter-TX floor (%ums), skipping\r\n",
+					(unsigned)TX_HARD_MIN_INTERVAL_MS);
+				should_tx = false;
+			}
 			if (should_tx) {
 				UWDPL_TRACE("TX should=yes");
 				LAT_TRACE("SURF_TX");  /* T1: enter SURFACE_TX state */
