@@ -91,6 +91,13 @@ uint32_t MGR_SWS_msUntilNextSample(void);
 /** @brief Force immediate measurement (bypass interval timer) */
 void MGR_SWS_forceMeasurement(void);
 
+/** @brief Blank SWS sampling until `until_tick` (wrap-safe HAL tick). While
+ *  active, MGR_SWS_task() skips the ADC read so the SubGHz PA on/off transient
+ *  coupled into the high-impedance electrode (PA11) is not misread as an
+ *  underwater spike (which flaps the detector and re-fires TX). The app calls
+ *  this across a TX-in-flight window + settle tail — mirrors MGR_REED_blankUntil. */
+void MGR_SWS_blankUntil(uint32_t until_tick);
+
 /** @brief Check if state changed since last call (auto-resets flag) */
 bool MGR_SWS_stateChanged(void);
 

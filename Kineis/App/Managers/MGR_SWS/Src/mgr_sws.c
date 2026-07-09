@@ -154,6 +154,15 @@ static MGR_SWS_Config_t sws_config = {
 static MGR_SWS_State_t sws_state = MGR_SWS_STATE_UNKNOWN;
 static bool state_changed_flag = false;
 static bool force_measurement = false;
+/* TX-transient blanking: while now precedes s_tx_blank_until_tick, MGR_SWS_task
+ * skips the ADC read entirely. The SubGHz PA on/off transient couples into the
+ * high-impedance SWS electrode (PA11) and a sample taken during/just after a TX
+ * reads a spurious ~2000 ("underwater") spike — which flaps the detector
+ * SURFACE<->UW every few seconds, re-fires a TX each cycle, and drifts the
+ * water baseline up (bench-confirmed in the field logs). Mirrors the reed
+ * driver's MGR_REED_blankUntil. Wrap-safe compare; 0 = inactive. Main-context
+ * only (SWS task + blankUntil both run in the app loop) so no volatile. */
+static uint32_t s_tx_blank_until_tick = 0;
 static uint16_t last_raw_adc = 0;
 /* Last ADC sample that came back from a SUCCESSFUL HAL conversion. Returned by
  * sws_read_adc when a conversion fails, so a dead ADC never injects a 0 (which
@@ -1187,6 +1196,14 @@ void MGR_SWS_task(void)
 		return;
 
 	uint32_t now = HAL_GetTick();
+
+	/* TX-transient blanking: skip the read while a TX + settle window is active
+	 * so the PA coupling into PA11 is never sampled as an underwater spike. Do
+	 * NOT advance last_measurement_tick here — the next non-blanked pass then
+	 * samples as soon as the window clears. */
+	if ((int32_t)(s_tx_blank_until_tick - now) > 0)
+		return;
+
 	uint32_t elapsed_ms = now - last_measurement_tick;
 	uint32_t interval_ms = current_test_interval_ms();
 
@@ -1290,6 +1307,14 @@ void MGR_SWS_setConfig(const MGR_SWS_Config_t *config)
 void MGR_SWS_forceMeasurement(void)
 {
 	force_measurement = true;
+}
+
+void MGR_SWS_blankUntil(uint32_t until_tick)
+{
+	/* Suppress SWS sampling until `until_tick` (see s_tx_blank_until_tick) so
+	 * the SubGHz PA transient coupled into the electrode is not read as UW. The
+	 * app refreshes this across a TX-in-flight window + settle tail. */
+	s_tx_blank_until_tick = until_tick;
 }
 
 bool MGR_SWS_stateChanged(void)

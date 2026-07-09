@@ -44,6 +44,12 @@ void Error_Handler(void);
 /* early_debug_print is declared in bl_main.h */
 static void early_debug_update_baudrate(void);
 
+/* Tick of the last VALID DFU command (any recognized AT+DFU / SPI DFU cmd).
+ * Drives the BL_DFU_INACTIVITY_TIMEOUT_MS safety auto-exit in bl_run().
+ * 0 = no DFU session started yet (lazily armed on the first DFU-state iter).
+ * Declared before bl_run() so the safety check can reference it. */
+static uint32_t bl_dfu_activity_tick = 0;
+
 #ifdef BL_LED
 /* ---- Optional bootloader activity LEDs (opt-in: Makefile BL_LED=1) --------
  * SMD_STDALONE RGB: PA1=RED, PB4=GREEN, PB5=BLUE, ACTIVE LOW (RESET = on).
@@ -155,6 +161,29 @@ void bl_run(void)
 #ifdef BL_LED
         bl_led_service();
 #endif
+
+        /* Safety auto-exit from a stuck DFU session. If we have been sitting in
+         * a DFU state with NO valid command for BL_DFU_INACTIVITY_TIMEOUT_MS and
+         * a VALID application image is present, jump to it rather than wait
+         * forever — recovers a wrong-baudrate / lost-host lockup without NRST
+         * (esp. the dfu_explicitly_requested case, which never times out on its
+         * own). A bricked unit (invalid app) is left in DFU so it stays
+         * recoverable. The clock is lazily armed on the first DFU iteration and
+         * refreshed by every valid command (bl_dfu_activity_tick), so an active
+         * flash is never interrupted. */
+        if (current_state == BL_STATE_DFU_UART ||
+            current_state == BL_STATE_DFU_IDLE  ||
+            current_state == BL_STATE_DFU_SPI) {
+            if (bl_dfu_activity_tick == 0u) {
+                bl_dfu_activity_tick = HAL_GetTick();
+            } else if ((HAL_GetTick() - bl_dfu_activity_tick) >
+                           BL_DFU_INACTIVITY_TIMEOUT_MS &&
+                       bl_check_app_valid()) {
+                BL_DBG("[BL] DFU inactivity timeout — valid app present, jumping\r\n");
+                current_state = BL_STATE_JUMP_APP;
+            }
+        }
+
         switch (current_state) {
             case BL_STATE_INIT:
                 bl_state_init();
@@ -423,6 +452,9 @@ static void bl_state_dfu_uart(void)
             }
 
             if (dfu_cmd != DFU_CMD_MAX) {
+                /* Valid command → refresh the DFU inactivity safety timer so an
+                 * active flash session is never auto-exited. */
+                bl_dfu_activity_tick = HAL_GetTick();
                 if (dfu_cmd == DFU_CMD_JUMP) {
                     if (!bl_dfu_can_jump()) {
                         bl_uart_send_response(DFU_RSP_NOT_READY, NULL, 0);
@@ -473,6 +505,9 @@ static void bl_state_dfu_spi(void)
         dfu_cmd_t dfu_cmd = DFU_CMD_MAX;
 
         if (spi_cmd >= SPI_CMD_DFU_BASE) {
+            /* Valid DFU-range SPI command → refresh the inactivity safety timer
+             * (covers ENTER/PING/WRITE/... incl. the early-return cases below). */
+            bl_dfu_activity_tick = HAL_GetTick();
             switch (spi_cmd) {
                 case SPI_CMD_DFU_PING:      dfu_cmd = DFU_CMD_PING; break;
                 case SPI_CMD_DFU_GET_INFO:  dfu_cmd = DFU_CMD_GET_INFO; break;

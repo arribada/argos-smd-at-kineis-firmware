@@ -1080,6 +1080,10 @@ static void enter_shutdown(void)
 	MGR_WDG_refresh();  /* Refresh before NVM save (flash write takes time) */
 	MGR_NVM_save();
 
+	/* Synchronous flush so the last log lines reach the wire BEFORE the power
+	 * transition — the async ring otherwise loses them and the logs can't show
+	 * which shutdown path executed. */
+	MGR_LOG_flush_all();
 	MGR_LPM_UW_enterShutdownReed();
 }
 #endif
@@ -1917,6 +1921,18 @@ void KNS_APP_uw_doppler_loop(void)
 	 *     CONFIG      → UART ON  (AT command surface available).
 	 *   - Override: build with -DUW_DOPPLER_KEEP_UART_ALIVE=1 to keep UART
 	 *     on forever (debug builds, factory test). */
+	/* Blank the SWS across a TX + settle tail (ALWAYS, not gesture-gated): the
+	 * SubGHz PA on/off transient couples into the high-impedance electrode
+	 * (PA11) and a sample taken during/just after a TX reads a spurious ~2000
+	 * "underwater" spike. That flaps the detector SURFACE<->UW every few
+	 * seconds, re-fires a TX each cycle, and drifts water_baseline up as the
+	 * calib chases the fake peaks (field-log confirmed). 1 s tail covers a full
+	 * surface sample interval after the PA settles. Same idea as the reed
+	 * blanking below; the SWS previously had NO such guard. */
+	if (uw_doppler_state == UW_DOPPLER_SURFACE_TX ||
+	    uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE) {
+		MGR_SWS_blankUntil(HAL_GetTick() + 1000u);
+	}
 #if defined(UW_DOPPLER_HAS_GESTURE)
 	/* Suppress TX-coupled reed chatter: the SubGHz PA on/off transient is the
 	 * sole coupling source into the high-impedance reed node (PB6 pull-down +
