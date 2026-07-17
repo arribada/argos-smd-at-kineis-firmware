@@ -2,18 +2,18 @@
  * @file    mgr_err.c
  * @brief   Error tracker using TAMP backup registers
  *
- * Uses STM32WL TAMP backup registers BKP2R-BKP7R to persist
+ * Uses STM32WL TAMP backup registers BKP12R-BKP17R to persist
  * error context across system resets. These registers survive
  * all resets (NRST, software, watchdog, brown-out) and are only
  * cleared on VBAT removal.
  *
- * Register map:
- *   BKP2R = reset counter (incremented each boot)
- *   BKP3R = last RCC_CSR flags (reset cause snapshot)
- *   BKP4R = last error code (MGR_ERR_Code_t)
- *   BKP5R = last UW_DOPPLER state at time of error
- *   BKP6R = last HAL tick at time of error
- *   BKP7R = reserved
+ * Register map (this module):
+ *   BKP12R = reset counter (incremented each boot)
+ *   BKP13R = last RCC_CSR flags (reset cause snapshot)
+ *   BKP14R = last error code (MGR_ERR_Code_t)
+ *   BKP15R = last UW_DOPPLER state at time of error
+ *   BKP16R = last HAL tick at time of error
+ *   BKP17R = consecutive crash counter
  *
  * Init sequence: read previous session data, log it, then clear
  * error code for this session and increment boot counter.
@@ -30,13 +30,38 @@
 #include "stm32wlxx_hal.h"
 #include "mgr_log.h"
 
-/* Use TAMP peripheral struct for backup register access */
-#define ERR_BKP_COUNT   (TAMP->BKP2R)   /* Reset counter */
-#define ERR_BKP_CSR     (TAMP->BKP3R)   /* Last RCC_CSR */
-#define ERR_BKP_CODE    (TAMP->BKP4R)   /* Last error code */
-#define ERR_BKP_STATE   (TAMP->BKP5R)   /* Last state */
-#define ERR_BKP_TICK    (TAMP->BKP6R)   /* Last tick */
-#define ERR_BKP_CRASH   (TAMP->BKP7R)   /* Consecutive crash counter */
+/* Use TAMP peripheral struct for backup register access.
+ *
+ * REMAPPED BKP2R-BKP7R -> BKP12R-BKP17R (fix 2026-07): the old block
+ * collided with the LINKER-placed backup-domain data at 0x4000B100
+ * (.lpmSection / .msgCntSectionData in STM32WL55XX_FLASH_APP.ld):
+ * mcu_tim's timer[] sits in BKP0R-BKP3R, lpm_ctxt in BKP4R and the
+ * Kineis Argos message_counter in BKP5R. Every MGR_ERR_log therefore
+ * overwrote the LIVE message counter (on-air MC corruption + spurious
+ * destructive MC page rewrites) and MCU_TIM_resetState zeroed the boot
+ * counter each boot ("Boot #1" forever).
+ *
+ * Full TAMP BKPxR allocation on this firmware:
+ *   BKP0R-BKP3R   mcu_tim timer[] (linker .lpmSection). BKP0/1 are ALSO
+ *                 the DFU request flag (main.c / bootloader) — benign by
+ *                 ordering: consumed at boot before any timer is armed.
+ *   BKP4R         lpm_ctxt (linker)
+ *   BKP5R         Kineis Argos message_counter (linker .msgCntSectionData)
+ *   BKP6R-BKP9R   free
+ *   BKP10R        MGR_ERR fault-streak counter (this module)
+ *   BKP11R        MGR_LPM_UW soft-off wake magic (SOFTOFF_WAKE_MAGIC)
+ *   BKP12R-BKP17R MGR_ERR (this module)
+ *   BKP18R        flash-ECC NMI breadcrumb (stm32wlxx_it.c)
+ *   BKP19R        MGR_CRED provisioning-intent flag (mgr_cred.c, "CINT")
+ * Keep this table in sync when allocating a new backup register. */
+#define ERR_BKP_COUNT   (TAMP->BKP12R)  /* Reset counter */
+#define ERR_BKP_CSR     (TAMP->BKP13R)  /* Last RCC_CSR */
+#define ERR_BKP_CODE    (TAMP->BKP14R)  /* Last error code */
+#define ERR_BKP_STATE   (TAMP->BKP15R)  /* Last state */
+#define ERR_BKP_TICK    (TAMP->BKP16R)  /* Last tick */
+#define ERR_BKP_CRASH   (TAMP->BKP17R)  /* Consecutive crash counter (<30 s boots) */
+#define ERR_BKP_FSTREAK (TAMP->BKP10R)  /* Consecutive fault-terminated boots,
+                                         * ANY uptime (fix 2026-07) */
 
 __attribute__((unused)) static const char *err_code_str(MGR_ERR_Code_t code)
 {
@@ -97,8 +122,14 @@ void MGR_ERR_init(void)
 	/* If THIS boot was caused by IWDG but the previous session never logged
 	 * an error code, the previous boot hung silently — surface that as
 	 * WDG_RESET so the user sees it instead of last_err=NONE. tick stays 0
-	 * because the previous boot never got far enough to record one. */
-	if ((csr & RCC_CSR_IWDGRSTF) && prev_err == ERR_NONE) {
+	 * because the previous boot never got far enough to record one.
+	 * Fix 2026-07: use the PRE-RMVF snapshot — the post-RMVF `csr` reads 0
+	 * on every internal reset (bidirectional NRST co-asserts PINRSTF and
+	 * main.c clears the flags), so this synthesis was dead in production
+	 * and silent IWDG hangs were invisible to the fault-streak ladder
+	 * below. IWDGRSTF in the true snapshot is unambiguous (a debugger
+	 * SYSRESETREQ sets SFT, not IWDG). */
+	if ((true_csr & RCC_CSR_IWDGRSTF) && prev_err == ERR_NONE) {
 		prev_err = ERR_WDG_RESET;
 	}
 
@@ -125,13 +156,40 @@ void MGR_ERR_init(void)
 		MGR_LOG_WARN("[ERR] true reset cause masked by RMVF: %s (not counted)\r\n",
 			reset_cause_str(true_csr));
 
-	/* Crash loop detection: check if previous boot was short-lived */
+	/* Crash loop detection: check if previous boot was short-lived.
+	 * ERR_CREDS_BLANK is excluded (fix 2026-07): the CRED_FAIL park logs it
+	 * early in every wake cycle by DESIGN (deliberate fail-loud state, not a
+	 * crash), so counting it made a blank-cred unit accrue a false crash
+	 * loop and take a spurious 1 h safe sleep every ~10 park cycles —
+	 * narrowing the operator's already-narrow recovery windows. */
 	uint32_t prev_crash = ERR_BKP_CRASH;
-	if (prev_tick > 0 && prev_tick < MGR_ERR_CRASH_LOOP_MIN_UP_MS && prev_err != ERR_NONE) {
+	if (prev_tick > 0 && prev_tick < MGR_ERR_CRASH_LOOP_MIN_UP_MS &&
+	    prev_err != ERR_NONE && prev_err != ERR_CREDS_BLANK) {
 		prev_crash++;
 	} else {
 		prev_crash = 0;  /* Previous boot was stable, reset counter */
 	}
+
+	/* Fault-streak ladder (fix 2026-07, sim-proven structural gap): the
+	 * <30 s crash counter misses any reproducible fault at uptime >= 30 s
+	 * and the boot-loop ladder only counts pre-MONITORING deaths — a tag
+	 * faulting 60 s after every boot ran 100% awake FOREVER (sim: 1439
+	 * boots/day, no remedy, pack dead in weeks). Count CONSECUTIVE
+	 * fault-terminated boots regardless of uptime; any clean boot (no
+	 * error logged, incl. AT+RESET and park wakes) resets the streak.
+	 * ERR_CREDS_BLANK is excluded (deliberate fail-loud park, not a
+	 * crash). checkCrashLoop() throttles the streak with the same 1 h
+	 * safe sleep, bounding the awake duty to ~streak_max*period per hour. */
+	uint32_t prev_streak = ERR_BKP_FSTREAK;
+	if (prev_err != ERR_NONE && prev_err != ERR_CREDS_BLANK) {
+		if (prev_streak < 0xFFFFu)
+			prev_streak++;
+	} else {
+		prev_streak = 0;
+	}
+	if (prev_streak > 0)
+		MGR_LOG_WARN("[ERR] Fault streak: %lu consecutive\r\n",
+			(unsigned long)prev_streak);
 
 	/* Update registers for this session */
 	ERR_BKP_COUNT = prev_count + 1;  /* Increment reset counter */
@@ -140,6 +198,7 @@ void MGR_ERR_init(void)
 	ERR_BKP_STATE = 0;
 	ERR_BKP_TICK  = 0;
 	ERR_BKP_CRASH = prev_crash;
+	ERR_BKP_FSTREAK = prev_streak;
 
 	if (prev_crash > 0) {
 		MGR_LOG_WARN("[ERR] Consecutive crashes: %lu\r\n", prev_crash);
@@ -194,11 +253,16 @@ uint32_t MGR_ERR_getCrashCount(void)
 
 bool MGR_ERR_checkCrashLoop(void)
 {
-	if (ERR_BKP_CRASH < MGR_ERR_CRASH_LOOP_MAX)
+	/* Two triggers (fix 2026-07): the fast <30 s crash loop (counter at
+	 * MGR_ERR_CRASH_LOOP_MAX) and the slow ANY-uptime fault streak
+	 * (MGR_ERR_FAULT_STREAK_MAX consecutive fault-terminated boots) — the
+	 * latter closes the sim-proven post-MONITORING >=30 s blind spot. */
+	if (ERR_BKP_CRASH < MGR_ERR_CRASH_LOOP_MAX &&
+	    ERR_BKP_FSTREAK < MGR_ERR_FAULT_STREAK_MAX)
 		return false;
 
-	MGR_LOG_ERR("[ERR] CRASH LOOP detected (%lu consecutive), safe sleep %us\r\n",
-		ERR_BKP_CRASH, MGR_ERR_CRASH_LOOP_SLEEP_S);
+	MGR_LOG_ERR("[ERR] CRASH/FAULT LOOP detected (crash=%lu streak=%lu), safe sleep %us\r\n",
+		ERR_BKP_CRASH, ERR_BKP_FSTREAK, MGR_ERR_CRASH_LOOP_SLEEP_S);
 
 	/* Configure RTC wakeup timer to wake after CRASH_LOOP_SLEEP_S seconds.
 	 * RTC clock = LSE (32768 Hz), wakeup clock = CK_SPRE (1 Hz).
@@ -253,8 +317,9 @@ bool MGR_ERR_checkCrashLoop(void)
 	RTC->SCR = RTC_SCR_CWUTF;
 	RTC->WPR = 0xFFU;
 
-	/* Reset crash counter to give the device another chance */
+	/* Reset both loop counters to give the device another chance */
 	ERR_BKP_CRASH = 0;
+	ERR_BKP_FSTREAK = 0;
 
 	MGR_LOG_INFO("[ERR] Woke from safe sleep, retrying\r\n");
 	return true;

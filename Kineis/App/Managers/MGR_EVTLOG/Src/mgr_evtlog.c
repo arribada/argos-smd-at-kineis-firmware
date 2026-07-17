@@ -135,6 +135,7 @@ MGR_EVTLOG_Severity_t MGR_EVTLOG_getSeverity(MGR_EVTLOG_Type_t type)
 	case EVT_TX_BACKOFF:
 	case EVT_BOOT_FAIL:
 	case EVT_SWS_FAULT:
+	case EVT_TX_REARM:
 		return EVT_SEV_WARN;
 
 	case EVT_ERROR:

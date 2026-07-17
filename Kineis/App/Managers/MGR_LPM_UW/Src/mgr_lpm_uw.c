@@ -39,6 +39,7 @@
 #include "mgr_reed.h"      /* MGR_REED_releasePower + REED_MCU_Pin (stubs if no reed) */
 #include "mgr_at_cmd.h"    /* MGR_AT_CMD_getLastActivityTick — console grace window */
 #include "mgr_err.h"       /* MGR_ERR_logAndReset(ERR_RTC_DEAD) — RTC-liveness gate */
+#include "mgr_wdg.h"       /* MGR_WDG_refresh — parkStop2AutoWake awake slivers */
 #include "mgr_pmlog.h"     /* durable (flash) RTC-dead breadcrumb — TAMP is wiped by the LSE->LSI backup reset */
 
 /* This LPM path owns the single RTC wake-up timer and clobbers it on every
@@ -449,10 +450,18 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 
 #if defined(CONSOLE_WAKE_ON_RX)
 	/* A UART edge woke the last STOP2: hold the console open briefly so
-	 * the host's retry lands (it then opens the full AT grace). */
-	if (s_console_holdoff_until != 0u &&
-	    (HAL_GetTick() - s_console_holdoff_until) > 0x80000000u)
-		return;
+	 * the host's retry lands (it then opens the full AT grace).
+	 *
+	 * Clear-on-expiry (fix 2026-07): the old form kept the stale deadline
+	 * forever, and the signed-window compare re-engages 2^31 ms (24.8 days)
+	 * after it — vetoing STOP2 on EVERY pass for the next 24.8 days at
+	 * MONITORING current (~5 mA, ~3 Ah burnt), repeating every 49.7 days.
+	 * Same pattern as tx_backoff_blocked / MGR_REED's blank window. */
+	if (s_console_holdoff_until != 0u) {
+		if ((int32_t)(s_console_holdoff_until - HAL_GetTick()) > 0)
+			return;                    /* inside the 2.5 s holdoff */
+		s_console_holdoff_until = 0u;      /* expired — disarm for good */
+	}
 #endif
 
 	/* Debugger attached: STOP2 under an active SWD session degenerates
@@ -740,6 +749,73 @@ void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds)
 	MGR_LOG_INFO("[LPM_UW] SHUTDOWN auto-wake %lus\r\n",
 		(unsigned long)wakeup_seconds);
 	LPM_shutdownWithAutoWake(wakeup_seconds);
+	for (;;) { /* unreachable */ }
+}
+
+void MGR_LPM_UW_parkStop2AutoWake(uint32_t wakeup_seconds)
+{
+	/* Invariant-compliant timed park (fix 2026-07). The old parks
+	 * (CRED_FAIL 1 h, boot-loop PERMANENT_OFF 24 h) entered true SHUTDOWN,
+	 * which violated BOTH halves of the "a potted tag always answers the
+	 * magnet and always resumes" requirement:
+	 *  - the LSI is powered OFF in Shutdown mode (RM0453: only LSE can
+	 *    clock the RTC there), so a unit running on the LSE-death LSI
+	 *    fallback NEVER woke — permanent brick, with the PB7 PWR pull-up
+	 *    keeping the regulator latched so even the reed's HW re-power
+	 *    path was inert;
+	 *  - PB6 has no wake circuitry in SHUTDOWN, so the recovery magnet
+	 *    was dead for the whole park.
+	 * STOP2 keeps both: the RTC wake works on EITHER clock (LSI runs in
+	 * Stop2) and the reed EXTI stays armed (magnet answers ~instantly).
+	 * Cost: ~3 uA vs sub-uA — negligible against the pack. Any wake exits
+	 * through a clean NVIC_SystemReset so the caller's "never returns,
+	 * next boot re-evaluates" contract is preserved and the gesture FSM
+	 * greets the operator normally on a magnet wake. */
+	MGR_LOG_WARN("[LPM_UW] STOP2 park %lus (magnet-wakeable)\r\n",
+		(unsigned long)wakeup_seconds);
+
+	if (wakeup_seconds == 0u)
+		wakeup_seconds = 1u;
+	if (wakeup_seconds > 86400u)
+		wakeup_seconds = 86400u;    /* 24 h cap — longest current caller */
+
+	const uint32_t target_ms = wakeup_seconds * 1000u;
+	const uint32_t start = HAL_GetTick();
+
+	while ((HAL_GetTick() - start) < target_ms) {
+		uint32_t left = target_ms - (HAL_GetTick() - start);
+
+		if (left > 65535000u)
+			left = 65535000u;   /* per-cycle RTC WUT ceiling (18.2 h) */
+		MGR_LPM_UW_enterStop2TimedMs(left);
+		/* Awake: either the RTC deadline, a reed edge, or a spurious
+		 * wake. A present magnet = operator interaction — reboot NOW so
+		 * the gesture FSM (wake blink, CONFIG, shutdown) services it.
+		 *
+		 * RAW-pin 3-of-5 dwell (fix 2026-07, sim-proven): the debounced
+		 * MGR_REED_isMagnetPresent() getter needs 5 consecutive 10 ms
+		 * samples to confirm, but this loop only executed ONE sample per
+		 * wake — the counter could never converge and a held/tapped
+		 * magnet was ignored for the WHOLE park (sim: 0/200 parks
+		 * answered, 23 h response latency on a 24 h park). Sampling the
+		 * raw pin 5x over ~40 ms rejects single EMI spikes; a residual
+		 * false positive merely costs one reboot, after which the
+		 * caller's state re-parks. */
+		{
+			uint8_t hi = 0;
+
+			for (int s = 0; s < 5; s++) {
+				if (HAL_GPIO_ReadPin(REED_MCU_GPIO_Port,
+				                     REED_MCU_Pin) == GPIO_PIN_SET)
+					hi++;
+				HAL_Delay(10);
+			}
+			if (hi >= 3)
+				break;   /* operator magnet — reboot to gesture FSM */
+		}
+		MGR_WDG_refresh();  /* awake slivers accumulate against IWDG */
+	}
+	NVIC_SystemReset();
 	for (;;) { /* unreachable */ }
 }
 
@@ -1163,6 +1239,10 @@ void MGR_LPM_UW_enterShutdownReed(void) { LPM_shutdownNow(); for (;;) {} }
 
 __attribute__((noreturn))
 void MGR_LPM_UW_enterShutdownAutoWake(uint32_t s)
+    { LPM_shutdownWithAutoWake(s); for (;;) {} }
+
+__attribute__((noreturn))
+void MGR_LPM_UW_parkStop2AutoWake(uint32_t s)
     { LPM_shutdownWithAutoWake(s); for (;;) {} }
 
 void MGR_LPM_UW_enterStop2Timed(uint32_t s) { (void)s; }

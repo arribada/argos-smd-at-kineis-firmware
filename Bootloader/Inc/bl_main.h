@@ -78,6 +78,20 @@ void bl_jump_to_app(void);
 bool bl_check_app_valid(void);
 
 /**
+ * @brief STRICT application validity: header magic AND full-image CRC must
+ *        pass — NO SP/PC plausibility fallback.
+ *
+ * Used by the DFU inactivity auto-exit: after an interrupted DFU (ERASE +
+ * partial WRITE) the vector table is already programmed, so the lenient
+ * fallback of bl_check_app_valid() would accept a torn image and jump into
+ * erased flash — and since the MCU reset vector is the app, every later
+ * reset re-enters the torn image (SWD-only recovery). The explicit JUMP
+ * command keeps the lenient check (it is gated on verify_passed in bl_dfu).
+ * @return true only when a CRC-proven complete image is present
+ */
+bool bl_check_app_valid_strict(void);
+
+/**
  * @brief Perform system reset
  */
 void bl_system_reset(void);

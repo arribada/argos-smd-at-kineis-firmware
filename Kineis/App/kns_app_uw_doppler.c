@@ -342,13 +342,51 @@ static void boot_loop_handle(void)
 	 *   OBLRSTF : option-byte launch reset (e.g. MGR_WDG_ensureIwdgStopOptionByte
 	 *             during the very first deployment boot). Without this case the
 	 *             first deployment would burn one false-positive failure count
-	 *             every time we touch option bytes. */
-	if (g_boot_rcc_csr_raw & (RCC_CSR_BORRSTF | RCC_CSR_PINRSTF | RCC_CSR_OBLRSTF)) {
-		boot_retained.consecutive_failures = 0;
-		boot_retained.factory_reset_attempted = 0;
+	 *             every time we touch option bytes.
+	 *
+	 * Fix 2026-07: on the STM32WL's default BIDIRECTIONAL NRST, every
+	 * INTERNAL reset (IWDG / WWDG / SFT / LPWR) drives the NRST pin and
+	 * CO-ASSERTS PINRSTF — so the old "PINRSTF present = clean reset" test
+	 * matched EVERY fault reset, zeroed the counter each boot, and made the
+	 * whole factory-reset(8)/permanent-off(16) escalation ladder
+	 * unreachable (a corrupted-NVM crash loop could never self-heal).
+	 * main.c:906 already abandoned this heuristic for the same reason.
+	 * Treat the reset as clean ONLY when no internal-reset flag accompanies
+	 * the cold-boot flags. An intentional NVIC_SystemReset (AT+RESET, DFU)
+	 * sets SFTRSTF and falls through to the boot_in_progress logic below,
+	 * which correctly does NOT count it when the previous boot had reached
+	 * MONITORING. */
+	{
+		const bool internal_reset = (g_boot_rcc_csr_raw &
+			(RCC_CSR_IWDGRSTF | RCC_CSR_WWDGRSTF |
+			 RCC_CSR_SFTRSTF  | RCC_CSR_LPWRRSTF)) != 0u;
+
+		if (!internal_reset &&
+		    (g_boot_rcc_csr_raw &
+		     (RCC_CSR_BORRSTF | RCC_CSR_PINRSTF | RCC_CSR_OBLRSTF))) {
+			boot_retained.consecutive_failures = 0;
+			boot_retained.factory_reset_attempted = 0;
+			boot_retained.permanent_off_armed = 0;
+			boot_retained.boot_in_progress = 1;
+			boot_retained_commit();
+			return;
+		}
+	}
+
+	/* Waking from the PERMANENT_OFF timed park (fix 2026-07): grant ONE
+	 * full boot attempt instead of instantly re-parking. The park wake is
+	 * an internal reset, so without this the counter (already >= 16) would
+	 * re-trip within seconds and the mission could NEVER resume even after
+	 * the original fault cleared — the tag would just re-park forever.
+	 * One attempt per park: reaching MONITORING clears everything via
+	 * boot_loop_mark_success; another pre-MONITORING death puts the counter
+	 * straight back at the park rung (24 h cadence). */
+	if (boot_retained.permanent_off_armed) {
 		boot_retained.permanent_off_armed = 0;
+		boot_retained.consecutive_failures = BOOT_FAIL_PERMANENT_OFF - 1;
 		boot_retained.boot_in_progress = 1;
 		boot_retained_commit();
+		MGR_LOG_WARN("[BOOT-LOOP] park wake: granting one boot attempt\r\n");
 		return;
 	}
 
@@ -376,17 +414,20 @@ static void boot_loop_handle(void)
 		boot_retained.factory_reset_attempted);
 
 	if (boot_retained.consecutive_failures >= BOOT_FAIL_PERMANENT_OFF) {
-		MGR_LOG_ERR("[BOOT-LOOP] PERMANENT_OFF: SHUTDOWN with 24h auto-wake\r\n");
+		MGR_LOG_ERR("[BOOT-LOOP] PERMANENT_OFF: 24h STOP2 park (magnet-wakeable)\r\n");
 		MGR_EVTLOG_log(EVT_FACTORY_RESET, 0xFFFFu);
 		boot_retained.permanent_off_armed = 1;
 		boot_retained_commit();
 #if defined(BSP_HAS_REED_SWITCH)
-		/* Do NOT cut the PWR latch (MGR_REED_releasePower) here: on STDALONE
-		 * that drops VDD and the RTC backup domain dies, so the 24h auto-wake
-		 * below could NEVER fire -> permanent brick in a sealed capsule.
-		 * LPM_shutdownWithAutoWake keeps PB7 HIGH for the auto-wake case so the
-		 * board stays powered through SHUTDOWN and the RTC wakes it. */
-		LPM_shutdownWithAutoWake(BOOT_PERMANENT_OFF_WAKE_S);
+		/* Fix 2026-07: parked in STOP2, no longer true SHUTDOWN. SHUTDOWN
+		 * violated the recoverability invariant twice over: the LSI is
+		 * powered off there, so a unit on the LSE-death LSI fallback NEVER
+		 * woke (permanent brick), and PB6 cannot wake SHUTDOWN, so the
+		 * recovery magnet was dead for the whole 24 h. The STOP2 park keeps
+		 * the RTC wake on either clock AND answers the magnet instantly;
+		 * the wake resets, and boot_loop_handle's park-wake grace above
+		 * grants one full mission attempt per park. */
+		MGR_LPM_UW_parkStop2AutoWake(BOOT_PERMANENT_OFF_WAKE_S);
 #else
 		MGR_ERR_logAndReset(ERR_BOOT_LOOP);
 #endif
@@ -497,6 +538,28 @@ static uint32_t last_tx_tick = 0;          /**< Tick of last TX */
 static uint32_t last_actual_tx_tick = 0;
 static uint32_t current_interval_ms = 0;   /**< Current interval between TXs in ms */
 static bool     surface_tx_pending = false; /**< Immediate TX needed on surface detection */
+/* TX veto retry holdoff (fix 2026-07). surface_tx_pending is consumed at
+ * DISPATCH (transition to SURFACE_TX), NOT at the gate-1 check anymore: a veto
+ * by a later gate (battery / rate / backoff / gesture / hard-min floor) used to
+ * clear the flag with tx_count still 0, silencing the WHOLE surface window —
+ * permanently for an animal floating at the surface, because the seq-restart
+ * timer only re-arms after a COMPLETED sequence (tx_count >= cap). Gates with a
+ * known time horizon park their retry deadline here so the tag can deep-sleep
+ * until then instead of spinning awake. Applies to BOTH the first TX of a
+ * window and the mid-sequence schedule (a vetoed mid-burst TX used to
+ * re-attempt every loop pass); uw_ms_until_next_action() folds it into the
+ * sleep deadline. 0 = no holdoff (retry next loop pass). Compared wrap-safe;
+ * cleared by reset_tx_scheduling() and on dispatch. */
+static uint32_t first_tx_retry_tick = 0;
+#define FIRST_TX_BAT_RETRY_MS  60000u  /**< Battery-low veto retry cadence: a
+                                        * transient post-wake droop recovers in
+                                        * seconds, a genuinely low pack stays low
+                                        * for minutes+ — 60 s bounds the
+                                        * ADC/EVTLOG churn either way. */
+/* Wall-clock tick when the CURRENT continuous SURFACE stretch began (0 = not
+ * at surface / unknown). RTC-compensated across STOP2 like every tick here.
+ * Anchors the zero-TX safety net in MONITORING. */
+static uint32_t surface_since_tick = 0;
 /* One-shot: a fresh OPERATIONAL boot counts as the first surface event.
  * Consumed in MONITORING as soon as the SWS state is known; if the tag is
  * already at the surface a TX sequence starts without waiting for a
@@ -1115,6 +1178,16 @@ static uint32_t uw_ms_until_next_action(void)
 	    (cap == 0u || tx_count < cap)) {
 		uint32_t r = (since >= current_interval_ms)
 			? 0u : (current_interval_ms - since);
+		/* A parked veto-retry defers the effective TX deadline (fix
+		 * 2026-07): without this the scheduler saw an overdue TX (r=0)
+		 * on every pass of a vetoed burst, skipped the sleep, and the
+		 * loop span awake for the whole battery/rate/backoff wait. */
+		if (first_tx_retry_tick != 0u) {
+			int32_t hold =
+				(int32_t)(first_tx_retry_tick - HAL_GetTick());
+			if (hold > 0 && (uint32_t)hold > r)
+				r = (uint32_t)hold;
+		}
 		if (r < delta)
 			delta = r;
 	}
@@ -1172,6 +1245,13 @@ static uint32_t compute_next_interval_ms(uint32_t n)
 	return interval_ms;
 }
 
+/* Retry deadline helper: now + delay, avoiding the 0 "no holdoff" sentinel. */
+static uint32_t first_tx_retry_at(uint32_t delay_ms)
+{
+	uint32_t t = HAL_GetTick() + delay_ms;
+	return (t == 0u) ? 1u : t;
+}
+
 static void reset_tx_scheduling(void)
 {
 	tx_count = 0;
@@ -1181,6 +1261,7 @@ static void reset_tx_scheduling(void)
 	 * first TX of a burst fast. */
 	current_interval_ms = 0;
 	surface_tx_pending = false;
+	first_tx_retry_tick = 0;
 }
 
 /* ---- Linkit-v4 compatible Argos packet helpers ---- */
@@ -1592,8 +1673,26 @@ static bool process_mac_events(void)
 			}
 			if (uw_doppler_state == UW_DOPPLER_WAIT_TX_DONE)
 				transition_to(UW_DOPPLER_MONITORING);
-			else if (uw_doppler_state == UW_DOPPLER_WAIT_MAC_READY)
+			else if (uw_doppler_state == UW_DOPPLER_WAIT_MAC_READY) {
+				/* Fix 2026-07: count error-driven init retries like the
+				 * timeout-driven ones. transition_to() resets
+				 * state_enter_tick, so a MAC that re-emits KNS_MAC_ERROR
+				 * quickly restarted the 30 s timeout forever — an
+				 * unbounded INIT_MAC<->WAIT_MAC_READY hot loop that never
+				 * slept, never escalated and drained the pack, while the
+				 * SAME fault expressed as a timeout was bounded at 3
+				 * retries. Same ladder as the timeout path: 3 strikes ->
+				 * logAndReset -> boot-loop guard (now live thanks to the
+				 * PINRSTF fix) escalates if the fault persists. */
+				if (++mac_init_retries >= MAX_MAC_INIT_RETRIES) {
+					MGR_LOG_ERR("[UW_DPL] MAC error-loop: init failed %u times, resetting\r\n",
+						MAX_MAC_INIT_RETRIES);
+					MGR_EVTLOG_log(EVT_ERROR, (uint16_t)ERR_MAC_INIT_FAIL);
+					MGR_ERR_logAndReset(ERR_MAC_INIT_FAIL);
+					/* Never reaches here */
+				}
 				transition_to(UW_DOPPLER_INIT_MAC); /* retry */
+			}
 			break;
 
 		default:
@@ -1993,6 +2092,46 @@ void KNS_APP_uw_doppler_loop(void)
 		}
 	}
 
+	/* CONFIG auto-revert (fix 2026-07): a tag left — or accidentally
+	 * gestured — into CONFIG in the field suspends the whole mission:
+	 * SWS paused, TX gated, STOP2 vetoed (always-awake ~mA), with NO
+	 * autonomous exit; the pack drains until a human re-gestures. Bound
+	 * it: after UW_CONFIG_IDLE_REVERT_MS with neither AT activity nor
+	 * gesture interaction, return to OPERATIONAL exactly like the AT
+	 * exit (log-gate reset + UART teardown in production). A live bench
+	 * session refreshes via AT activity; 30 min is far beyond any
+	 * legitimate hands-off gap during commissioning. */
+#define UW_CONFIG_IDLE_REVERT_MS  (30u * 60u * 1000u)
+	{
+		static uint32_t s_config_since = 0u;
+
+		if (MGR_GESTURE_getMode() != MGR_GESTURE_MODE_CONFIG) {
+			s_config_since = 0u;
+		} else if (!MGR_GESTURE_isInteracting()) {
+			const uint32_t now = HAL_GetTick();
+
+			if (s_config_since == 0u)
+				s_config_since = (now == 0u) ? 1u : now;
+			/* Idle reference = the later of CONFIG entry and the last
+			 * AT byte (wrap-safe compare). CONFIG never sleeps, so the
+			 * tick runs plainly here. */
+			uint32_t ref = s_config_since;
+			const uint32_t last_at = MGR_AT_CMD_getLastActivityTick();
+
+			if (last_at != 0u && (int32_t)(last_at - ref) > 0)
+				ref = last_at;
+			if ((now - ref) >= UW_CONFIG_IDLE_REVERT_MS) {
+				MGR_LOG_WARN("[UW_DPL] CONFIG idle 30 min — auto-revert to OPERATIONAL\r\n");
+				(void)MGR_GESTURE_requestMode(
+					MGR_GESTURE_MODE_OPERATIONAL);
+				MGR_LOG_flush_all();
+				if (!vMGR_LOG_isEnabled())
+					APP_UART_setEnabled(false);
+				s_config_since = 0u;
+			}
+		}
+	}
+
 	/* ----- Steady-state LED indicator --------------------------------
 	 * Background colour while gesture FSM is idle in MONITORING. Priority:
 	 *   1. Low-battery   → YELLOW slow blink (250 ms / 1750 ms) urgent
@@ -2185,17 +2324,20 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 		/* OPERATIONAL + no recoverable identity (sealed, no operator): fail loud
 		 * (solid red, TX refused) then, once the awake window elapsed and AT has
-		 * been idle, drop to STOP2 with a periodic RTC re-check instead of
-		 * draining the pack awake. LPM_shutdownWithAutoWake tears down SubGHz
-		 * and keeps PB7 latched. Duty-average ~0.2 mA vs ~10 mA always-awake. */
+		 * been idle, drop to a STOP2 park with a periodic RTC re-check instead of
+		 * draining the pack awake. Fix 2026-07: the park is now genuinely STOP2
+		 * (the old LPM_shutdownWithAutoWake entered true SHUTDOWN despite this
+		 * comment) — the reed magnet answers instantly during the park instead of
+		 * being dead for up to an hour, and the RTC wake works on the LSI
+		 * fallback too. Duty-average unchanged (~uA between re-checks). */
 		MGR_LED_setForced(MGR_LED_RED);
 		if (state_elapsed_ms() > CRED_FAIL_AWAKE_MS &&
 		    (HAL_GetTick() - MGR_AT_CMD_getLastActivityTick()) > CRED_FAIL_AT_IDLE_MS) {
-			MGR_LOG_WARN("[UW_DPL] CRED_FAIL: low-power, RTC re-check in %us\r\n",
+			MGR_LOG_WARN("[UW_DPL] CRED_FAIL: STOP2 park, re-check in %us\r\n",
 				(unsigned)CRED_FAIL_RETRY_S);
 			MGR_LED_off();
-			LPM_shutdownWithAutoWake(CRED_FAIL_RETRY_S);
-			/* never returns — cold-boots on RTC wake */
+			MGR_LPM_UW_parkStop2AutoWake(CRED_FAIL_RETRY_S);
+			/* never returns — reboots on RTC wake or magnet */
 		}
 		return;
 	}
@@ -2229,6 +2371,17 @@ void KNS_APP_uw_doppler_loop(void)
 
 		/* Feed the sliding-window episode statistics (minimal payload). */
 		stat_observe(sws_state);
+
+		/* Anchor of the current continuous SURFACE stretch — wall-clock
+		 * reference for the zero-TX safety net below (HAL tick is RTC-
+		 * compensated across STOP2, so this measures real elapsed time). */
+		if (sws_state == MGR_SWS_STATE_SURFACE) {
+			if (surface_since_tick == 0u)
+				surface_since_tick =
+				    (HAL_GetTick() == 0u) ? 1u : HAL_GetTick();
+		} else {
+			surface_since_tick = 0u;
+		}
 
 		/* Cold-boot UW→SURFACE detection: compares the freshly-sampled
 		 * SWS state against the one persisted by the previous duty cycle
@@ -2407,6 +2560,14 @@ void KNS_APP_uw_doppler_loop(void)
 		    !gesture_in_config) {
 			bool should_tx = false;
 			uint32_t since_last_tx = HAL_GetTick() - last_tx_tick;
+			/* Veto-retry holdoff gate — applies to BOTH the first-TX arm
+			 * and the mid-sequence schedule (fix 2026-07: a mid-burst
+			 * battery/rate/backoff veto used to re-attempt every loop
+			 * pass, spinning awake at MONITORING current with an ADC
+			 * read + EVTLOG entry per pass until the veto cleared —
+			 * self-reinforcing on a sagging pack). Wrap-safe. */
+			bool retry_ok = (first_tx_retry_tick == 0u) ||
+				((int32_t)(HAL_GetTick() - first_tx_retry_tick) >= 0);
 
 			if (surface_tx_pending) {
 				/* First TX of a surface event. Two gates, both must pass:
@@ -2429,14 +2590,35 @@ void KNS_APP_uw_doppler_loop(void)
 				bool cooldown_ok = (cooldown_ms == 0u) ||
 					(last_actual_tx_tick == 0u) ||
 					((HAL_GetTick() - last_actual_tx_tick) >= cooldown_ms);
-				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok) {
+				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok &&
+				    retry_ok) {
 					should_tx = true;
-					surface_tx_pending = false;
+					/* surface_tx_pending is consumed at DISPATCH (bottom of
+					 * this block), NOT here: a veto by any later gate must
+					 * leave the first TX armed, otherwise a floating animal
+					 * that never re-dives loses its whole surface window —
+					 * permanently, since the seq-restart timer requires a
+					 * COMPLETED sequence (tx_count >= cap). */
+				} else if (!cooldown_ok && first_tx_retry_tick == 0u) {
+					/* The cooldown wait has a known horizon — park it as a
+					 * retry holdoff so the sleep gate below can STOP2
+					 * through the wait instead of spinning awake (pre-fix
+					 * the loop span the whole cooldown at MONITORING
+					 * current on every quick re-surface). The random
+					 * offset wait (<= 500 ms) is deliberately NOT parked:
+					 * first-frame latency requirement. */
+					uint32_t since_actual =
+						HAL_GetTick() - last_actual_tx_tick;
+					first_tx_retry_tick =
+						first_tx_retry_at(cooldown_ms - since_actual);
 				}
 			} else if (tx_count > 0 && current_interval_ms > 0) {
 				/* Periodic TX while still SURFACE — use the schedule's
-				 * current_interval_ms (which grows with tx_count). */
-				if (since_last_tx >= current_interval_ms)
+				 * current_interval_ms (which grows with tx_count). Also
+				 * gated on the veto-retry holdoff so a vetoed mid-burst
+				 * TX waits at the veto's own horizon instead of
+				 * re-attempting every pass. */
+				if (since_last_tx >= current_interval_ms && retry_ok)
 					should_tx = true;
 			}
 
@@ -2477,16 +2659,70 @@ void KNS_APP_uw_doppler_loop(void)
 				}
 			}
 
+			/* Zero-TX safety net (fix 2026-07, defense in depth). A surface
+			 * window whose FIRST TX was lost by ANY path has tx_count == 0
+			 * and no pending flag — the seq-restart timer above cannot
+			 * fire (it needs a completed sequence), so a floating animal
+			 * would stay silent for the rest of the deployment. Invariant:
+			 * a deployed tag continuously at SURFACE never goes more than
+			 * tx_seq_restart_s without ATTEMPTING a TX. The re-armed
+			 * attempt still runs every normal gate (battery, rate limiter,
+			 * backoff, cooldown), so this cannot bypass any protection. */
+			if (tx_cfg.tx_seq_restart_s > 0u &&
+			    !surface_tx_pending && tx_count == 0u &&
+			    surface_since_tick != 0u) {
+				const uint32_t rst_ms =
+					(uint32_t)tx_cfg.tx_seq_restart_s * 1000u;
+				/* Anchor = the later of "surface stretch began" and
+				 * "last actual TX" (both RTC-compensated wall clock). */
+				uint32_t anchor = surface_since_tick;
+				if (last_actual_tx_tick != 0u &&
+				    (int32_t)(last_actual_tx_tick - anchor) > 0)
+					anchor = last_actual_tx_tick;
+				if ((HAL_GetTick() - anchor) >= rst_ms) {
+					MGR_LOG_WARN("[UW_DPL] Zero-TX at surface >= %us — re-arming first TX\r\n",
+						(unsigned)tx_cfg.tx_seq_restart_s);
+					MGR_EVTLOG_log(EVT_TX_REARM, 0);
+					surface_tx_pending = true;
+					first_tx_random_offset_ms =
+						prng_next() % FIRST_TX_RANDOM_WINDOW_MS;
+					first_tx_retry_tick = 0;
+					last_tx_tick = 0;
+				}
+			}
+
 			if (should_tx) {
 #if defined(BSP_HAS_VBAT_ADC)
 				last_vbat_mV = MGR_BAT_readVoltage_mV();
 				MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
 				/* Update LB hysteretic state on every fresh reading. */
 				lb_update(last_vbat_mV);
+				/* Re-check the TX-count cap with the FRESH LB state
+				 * (fix 2026-07): the cap gate earlier in this pass ran
+				 * before this reading, so the very TX whose measurement
+				 * trips LB used to dispatch under the stale (larger)
+				 * normal cap — one extra PA burst on a pack that is by
+				 * definition sagging. */
+				{
+					uint8_t cap_now = lb_active
+						? lb_cfg.lb_tx_max_count
+						: tx_cfg.tx_max_count;
+
+					if (cap_now > 0u && tx_count >= cap_now)
+						should_tx = false;
+				}
 				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
 					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
 						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
 					should_tx = false;
+					/* TX veto: keep the schedule armed, retry in 60 s.
+					 * A transient post-STOP2 droop recovers on the
+					 * retry; a genuinely low pack stays correctly
+					 * inhibited at one cheap ADC read per minute
+					 * (instead of one per loop pass, which kept the
+					 * chip awake and accelerated the sag). */
+					first_tx_retry_tick =
+						first_tx_retry_at(FIRST_TX_BAT_RETRY_MS);
 				}
 #endif
 			}
@@ -2500,6 +2736,9 @@ void KNS_APP_uw_doppler_loop(void)
 					MGR_EVTLOG_log(EVT_RATE_BLOCKED,
 						(uint16_t)(retry_in_s > 0xFFFFu ? 0xFFFFu : retry_in_s));
 					should_tx = false;
+					/* TX veto: retry at the limiter's own horizon. */
+					first_tx_retry_tick = first_tx_retry_at(
+						((retry_in_s != 0u) ? retry_in_s : 1u) * 1000u);
 				}
 			}
 			if (should_tx) {
@@ -2510,12 +2749,19 @@ void KNS_APP_uw_doppler_loop(void)
 					MGR_LOG_WARN("[UW_DPL] Backoff active, retry in %lus\r\n",
 						(unsigned long)retry_in_s);
 					should_tx = false;
+					/* TX veto: retry when the backoff expires. */
+					first_tx_retry_tick = first_tx_retry_at(
+						((retry_in_s != 0u) ? retry_in_s : 1u) * 1000u);
 				}
 			}
 			/* Defer the first TX while a magnet gesture is still showing its
 			 * confirm blink (e.g. CONFIG->OPERATIONAL green): the TX path stomps
 			 * the LED. A 2-3 s defer is invisible in the field (no operator) and
-			 * lets the operator actually see the OPERATIONAL confirm before sealing. */
+			 * lets the operator actually see the OPERATIONAL confirm before sealing.
+			 * Since the fix that consumes surface_tx_pending at dispatch this is
+			 * a true defer (retried next pass), no longer a silent drop of the
+			 * window's first TX. No holdoff: the gesture ends within seconds and
+			 * its own g_busy gate keeps the loop awake anyway. */
 			if (should_tx && MGR_GESTURE_isInteracting())
 				should_tx = false;
 			/* ABSOLUTE inter-TX floor (defends against tx_cooldown_s==0 and a
@@ -2530,8 +2776,16 @@ void KNS_APP_uw_doppler_loop(void)
 				MGR_LOG_WARN("[UW_DPL] Inter-TX floor (%ums), skipping\r\n",
 					(unsigned)TX_HARD_MIN_INTERVAL_MS);
 				should_tx = false;
+				/* TX veto: retry exactly when the floor clears. */
+				first_tx_retry_tick = first_tx_retry_at(
+					TX_HARD_MIN_INTERVAL_MS -
+					(HAL_GetTick() - last_actual_tx_tick));
 			}
 			if (should_tx) {
+				/* Consume the first-TX arm ONLY here, where the TX really
+				 * dispatches — every veto above leaves it armed. */
+				surface_tx_pending = false;
+				first_tx_retry_tick = 0;
 				UWDPL_TRACE("TX should=yes");
 				LAT_TRACE("SURF_TX");  /* T1: enter SURFACE_TX state */
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
@@ -2542,7 +2796,17 @@ void KNS_APP_uw_doppler_loop(void)
 				 * whether to drop to STANDBY / SHUTDOWN+RTC. Gates
 				 * (gesture, CONFIG, test burst, surface_tx_pending,
 				 * stabilization window) are all inside the module. */
-				if (test_tx_remaining == 0u && !surface_tx_pending) {
+				/* A first-TX armed but parked on a veto-retry holdoff must
+				 * not block deep sleep: sleep until min(next action, retry
+				 * deadline). Without this the `!surface_tx_pending` gate
+				 * would spin the loop awake (MONITORING current) for the
+				 * whole battery/rate/backoff/cooldown wait. */
+				const bool pending_hold =
+				    surface_tx_pending &&
+				    first_tx_retry_tick != 0u &&
+				    (int32_t)(first_tx_retry_tick - HAL_GetTick()) > 0;
+				if (test_tx_remaining == 0u &&
+				    (!surface_tx_pending || pending_hold)) {
 #if defined(UW_DOPPLER_HAS_GESTURE)
 					const bool g_busy   = MGR_GESTURE_isInteracting();
 					const bool g_config = (MGR_GESTURE_getMode() ==
@@ -2552,12 +2816,19 @@ void KNS_APP_uw_doppler_loop(void)
 #endif
 					/* Event-driven LPM: sleep exactly until the next
 					 * scheduled action (next SWS sample, next TX of
-					 * the sequence, or the seq-restart deadline —
-					 * whichever comes first). spin / SLEEP / STOP2 is
-					 * picked from AT+LPMTHR thresholds. delta==0 means
-					 * an action is due now: skip the sleep, the state
-					 * machine handles it on the next pass. */
-					const uint32_t delta_ms = uw_ms_until_next_action();
+					 * the sequence, the seq-restart deadline, or the
+					 * first-TX retry — whichever comes first). spin /
+					 * SLEEP / STOP2 is picked from AT+LPMTHR thresholds.
+					 * delta==0 means an action is due now: skip the
+					 * sleep, the state machine handles it on the next
+					 * pass. */
+					uint32_t delta_ms = uw_ms_until_next_action();
+					if (pending_hold) {
+						const uint32_t r =
+						    first_tx_retry_tick - HAL_GetTick();
+						if (r < delta_ms)
+							delta_ms = r;
+					}
 					if (delta_ms > 0u)
 						MGR_LPM_UW_idleTick((int)sws_state, delta_ms,
 						                    g_busy, g_config);
@@ -2702,6 +2973,12 @@ void KNS_APP_uw_doppler_loop(void)
 
 			MGR_TXSTATS_recordAttempt();  /* Sprint 4 — count the request */
 			last_tx_tick = HAL_GetTick();
+			/* 0 is the "fire fast" sentinel the surface paths set — a push
+			 * landing on the EXACT 49.7-day wrap tick must not re-arm it
+			 * (sim-proven: it killed the seq-restart timer and every
+			 * restart deadline for a floating tag). */
+			if (last_tx_tick == 0u)
+				last_tx_tick = 1u;
 			last_actual_tx_tick = last_tx_tick;  /* cooldown reference */
 			current_interval_ms = compute_next_interval_ms(tx_count);
 			tx_count++;
@@ -2740,6 +3017,23 @@ void KNS_APP_uw_doppler_loop(void)
 			/* MAC stack never fired TX_DONE/TIMEOUT/ERROR. PA may have been
 			 * left enabled (drains ~60 mA continuously). Force cleanup. */
 			MCU_MISC_turn_off_pa();
+			/* Count the silent-MAC failure like a REPORTED one (fix
+			 * 2026-07, sim-proven): this path used to bypass the error
+			 * counter, the backoff AND the rate limiter (TX_DONE never
+			 * fired), so a wedged MAC re-pushed 9x/h forever with up to
+			 * 10 s of PA-armed current per cycle and zero throttling —
+			 * the design comment on TX_DONE explicitly assumes "the
+			 * backoff path handles their throttling". */
+			if (consecutive_tx_errors < 0xFFu)
+				consecutive_tx_errors++;
+			tx_backoff_arm();
+			/* A test burst must not outlive a silent MAC either (fix
+			 * 2026-07): the burst decrements only on MAC events, so this
+			 * deadman used to leave AT+TEST spinning an unbounded awake
+			 * TX-retry loop — the test dispatch bypasses the very backoff
+			 * armed above. Consume one slot per silent timeout. */
+			if (test_tx_remaining > 0)
+				test_tx_remaining--;
 			/* Restore TCXO warmup: TX_DONE never fired, MAC may be stuck */
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);

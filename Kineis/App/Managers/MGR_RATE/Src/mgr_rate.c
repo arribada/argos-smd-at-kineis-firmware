@@ -105,8 +105,19 @@ void MGR_RATE_init(void)
 		ring_commit();  /* sets magic + mono_base_s + crc32 */
 	} else {
 		/* Resume the limiter clock from the last committed snapshot so
-		 * retained timestamps stay comparable across soft resets. */
-		mono_s = ring.mono_base_s;
+		 * retained timestamps stay comparable across soft resets.
+		 *
+		 * +1 s round-up (fix 2026-07, sim-proven): mono_rem_ms is a plain
+		 * static wiped every boot and mono_s only advances on WHOLE
+		 * accumulated seconds — a crash loop whose per-boot awake time
+		 * stays under 1 s therefore never advanced the clock at all
+		 * (sim: 374 h of cumulative sub-second boots, window never aged,
+		 * full quota = permanent zero-TX block). Crediting one second per
+		 * reboot bounds that regime: the window drains after at most
+		 * window_s reboots. Cost in normal operation: entries age 1 s
+		 * early per reboot — negligible against the 3600 s window and in
+		 * the conservative direction for battery (never blocks longer). */
+		mono_s = ring.mono_base_s + 1u;
 		MGR_LOG_DEBUG("[RATE] Retention OK, count=%u head=%u base=%lus\r\n",
 			ring.count, ring.head, (unsigned long)mono_s);
 	}
@@ -157,6 +168,17 @@ bool MGR_RATE_isBlocked(uint32_t *retry_in_s)
 {
 	uint32_t now_s = MGR_RATE_nowS();
 	trim_window(now_s, cfg_window_s);
+	/* Persist clock progress even while BLOCKED (fix 2026-07). Commits used
+	 * to happen only in recordTx — but a blocked quota never records, so
+	 * under a periodic-reset fault (crash loop with period < window_s) each
+	 * boot resumed from the SAME mono_base_s, the window never aged, and a
+	 * full quota froze into a permanent zero-TX deadlock on a sealed unit.
+	 * Committing here makes awake-time progress cumulative across resets:
+	 * entries age out after window_s of TOTAL awake time regardless of the
+	 * reset cadence. Cheap (RAM + CRC32, no flash); also keeps the CRC
+	 * consistent with trim_window's count mutation. */
+	if (mono_s != ring.mono_base_s)
+		ring_commit();
 	if (retry_in_s)
 		*retry_in_s = 0;
 

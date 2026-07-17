@@ -195,14 +195,31 @@ uint16_t MGR_PMLOG_count(void)
 
 const MGR_PMLOG_Entry_t *MGR_PMLOG_get(uint16_t index)
 {
-	/* Oldest-first iteration: entries are written linearly from slot 0 up
-	 * to s_next_slot - 1. After a wrap (erase + restart), the same property
-	 * holds since the page is fresh. So index maps directly to slot index
-	 * AMONG VALID ENTRIES. The first index valid_count entries are guaranteed
-	 * contiguous from slot 0 (no holes possible in append-only flash). */
+	/* Oldest-first iteration over VALID slots only (fix 2026-07). Slots are
+	 * written linearly, but the torn-slot skip logic (init scan + append)
+	 * deliberately leaves HOLES: a slot whose write was interrupted keeps
+	 * magic erased with dw1 programmed, is never reused, and later entries
+	 * land AFTER it. The old direct index->slot mapping (its comment claimed
+	 * "no holes possible") returned the torn slot's garbage as a record and
+	 * hid the NEWEST valid entries past it — on the post-mortem log whose
+	 * whole purpose is forensics on a recovered dead tag. Walk the physical
+	 * slots and count only MAGIC_VALID ones; O(128) flash reads per call is
+	 * trivial for the AT-dump usage. */
 	if (index >= s_valid_count)
 		return NULL;
-	return slot_at(index);
+
+	uint16_t seen = 0;
+
+	for (uint16_t i = 0; i < MGR_PMLOG_MAX_ENTRIES; i++) {
+		const MGR_PMLOG_Entry_t *e = slot_at(i);
+
+		if (e->magic != MGR_PMLOG_MAGIC_VALID)
+			continue;
+		if (seen == index)
+			return e;
+		seen++;
+	}
+	return NULL;   /* count/slot mismatch — defensive */
 }
 
 void MGR_PMLOG_clear(void)

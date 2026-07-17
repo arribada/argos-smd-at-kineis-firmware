@@ -302,6 +302,18 @@ void LPM_compensateTick(void)
 {
 	RTC_TimeTypeDef sTime;
 	RTC_DateTypeDef sDate;
+
+	/* Post-STOP shadow resync (fix 2026-07): after Stop mode the calendar
+	 * shadow registers hold FROZEN pre-sleep values for up to 2 RTCCLK
+	 * (~61 us on LSE) once APB resumes — an EXTI-source wake that reads
+	 * immediately gets the OLD time, elapsed computes ~0, and the WHOLE
+	 * sleep silently vanishes from uwTick (every wall-clock deadline then
+	 * stretches by one sleep window). HAL_RTC_WaitForSynchro clears RSF and
+	 * waits for the re-sync; on failure (RTC dead) skip compensation — the
+	 * STOP2 liveness gate owns that failure mode. */
+	if (HAL_RTC_WaitForSynchro(&hrtc) != HAL_OK)
+		return;
+
 	HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
 	HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
@@ -412,8 +424,11 @@ static void LPM_stop_exit() {
 	MCU_SPI_DRIVER_read();
 	/* Arm the STOP-over-SPI grace window so the idle loop won't re-enter STOP
 	 * before the host can complete its retried transaction (the frame that
-	 * triggered this NSS-EXTI wake was lost). */
+	 * triggered this NSS-EXTI wake was lost). 0 = disarmed sentinel: nudge
+	 * to 1 if now+grace lands exactly on the 49.7-day tick wrap. */
 	spi_stop_grace_until_tick = HAL_GetTick() + SPI_STOP_GRACE_MS;
+	if (spi_stop_grace_until_tick == 0u)
+		spi_stop_grace_until_tick = 1u;
 #endif
 
 	HAL_UARTEx_DisableStopMode(&hlpuart1);
@@ -829,8 +844,17 @@ enum MgrLpm_LPM_t LPM_getForcedMode(void)
 #if defined(USE_SPI_DRIVER)
 bool LPM_spiStopGraceActive(void)
 {
-	/* Wrap-safe tick compare: true while now precedes the armed deadline. */
-	return (int32_t)(spi_stop_grace_until_tick - HAL_GetTick()) > 0;
+	/* Wrap-safe tick compare with clear-on-expiry (fix 2026-07): a stale
+	 * deadline left armed re-engages 2^31 ms (24.8 days) after the last
+	 * STOP exit and then blocks STOP for ~24.8 days. Clearing on expiry
+	 * (0 = disarmed) removes the periodic re-trigger — same pattern as
+	 * the reed/SWS blank windows. */
+	if (spi_stop_grace_until_tick == 0u)
+		return false;
+	if ((int32_t)(spi_stop_grace_until_tick - HAL_GetTick()) > 0)
+		return true;
+	spi_stop_grace_until_tick = 0u;
+	return false;
 }
 #endif
 
@@ -919,7 +943,16 @@ void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 			: RTC_WAKEUPCLOCK_CK_SPRE_16BITS;
 		uint16_t counter = (uint16_t)((wakeup_seconds - 1u) & 0xFFFFu);
 
-		(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0);
+		if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0)
+		    != HAL_OK) {
+			/* Fix 2026-07: the arm result was discarded. A failed arm
+			 * (WUTWF timeout on a stalling crystal that still passed the
+			 * synchro gate an instant earlier) followed by SHUTDOWN is a
+			 * ONE-WAY park: no IWDG, no EXTI, and the magnet cannot wake
+			 * SHUTDOWN on this board. Reset instead — the cold boot
+			 * re-evaluates the caller's state under IWDG cover. */
+			NVIC_SystemReset();
+		}
 
 		/* Enable the internal wake-up line so RTC wake reaches the PWR
 		 * controller. Without this the timer fires but the chip doesn't

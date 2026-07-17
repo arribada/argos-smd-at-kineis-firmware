@@ -98,6 +98,7 @@
 #include "mgr_reed.h"
 #endif
 #include "mgr_err.h"
+#include "mgr_wdg.h"  /* early IWDG arm (fix 2026-07) */
 #endif
 #ifdef USE_DOPPLER_APP
 #include "kns_app_doppler.h"
@@ -1044,10 +1045,26 @@ int main(void)
 #endif
 #if defined(USE_UW_DOPPLER_APP)
   MGR_ERR_init();
-  MGR_ERR_checkCrashLoop();  /* Safe sleep if crash loop detected */
+  /* Arm the IWDG as early as possible (fix 2026-07, sim-proven gap): a
+   * persistent wedge in the ~2.5 s of init before the app-level arm had NO
+   * reset source at all — a potted tag froze forever at run current with
+   * zero recovery path. The arm is OPTR-gated inside (skips the one
+   * degraded first-deploy boot where the IWDG_STOP option byte is not yet
+   * programmed) and idempotent for the later app-init call. Everything
+   * between here and the first main-loop refresh (~2.5 s incl. the 1.6 s
+   * LED boot test) is well inside the 16 s window. */
+  MGR_WDG_init();
 #if defined(BSP_HAS_REED_SWITCH)
+  /* Reed BEFORE the crash-loop safe sleep (fix 2026-07): checkCrashLoop can
+   * park the chip in STOP2 for 1 h, and the preceding reset wiped the EXTI
+   * config — with the reed armed only later, a recovery magnet on a potted
+   * unit did NOTHING for up to an hour (looks dead, invites scrapping).
+   * With PB6 EXTI armed first, a magnet edge wakes the safe sleep early and
+   * the boot simply continues — harmless (the crash counter was already
+   * reset before the sleep). */
   MGR_REED_init();
 #endif
+  MGR_ERR_checkCrashLoop();  /* Safe sleep if crash loop detected */
 #if defined(BSP_HAS_LED_RGB)
   MGR_LED_init();
   /* HW sanity: cycle R, G, B, WHITE for 400ms each (blocking, ~1.6s).

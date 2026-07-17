@@ -19,12 +19,15 @@
 #include <stdbool.h>
 
 /* TAMP backup register addresses (STM32WL55) */
-#define TAMP_BKP2R_ADDR  0x4000B108UL
-#define TAMP_BKP3R_ADDR  0x4000B10CUL
-#define TAMP_BKP4R_ADDR  0x4000B110UL
-#define TAMP_BKP5R_ADDR  0x4000B114UL
-#define TAMP_BKP6R_ADDR  0x4000B118UL
-#define TAMP_BKP7R_ADDR  0x4000B11CUL
+/* Raw addresses for the ISR-safe fault macro below. REMAPPED with the module
+ * (fix 2026-07, see the TAMP allocation table in mgr_err.c): the old
+ * BKP4R/5R/6R addresses alias the LINKER-placed lpm_ctxt (BKP4R) and the live
+ * Kineis Argos message_counter (BKP5R) — every CPU fault was clobbering the
+ * on-air MC and blinding the crash-loop ladder. These MUST stay in sync with
+ * the ERR_BKP_CODE/STATE/TICK registers in mgr_err.c (BKP14R/15R/16R). */
+#define TAMP_ERR_CODE_ADDR   0x4000B138UL  /* TAMP->BKP14R = ERR_BKP_CODE  */
+#define TAMP_ERR_STATE_ADDR  0x4000B13CUL  /* TAMP->BKP15R = ERR_BKP_STATE */
+#define TAMP_ERR_TICK_ADDR   0x4000B140UL  /* TAMP->BKP16R = ERR_BKP_TICK  */
 
 /* Register layout:
  * BKP2R = reset counter (incremented each boot)
@@ -39,6 +42,11 @@
 #define MGR_ERR_CRASH_LOOP_MAX       10    /**< Max consecutive short-lived boots */
 #define MGR_ERR_CRASH_LOOP_MIN_UP_MS 30000 /**< Min uptime (ms) to consider boot "stable" */
 #define MGR_ERR_CRASH_LOOP_SLEEP_S   3600  /**< Sleep duration (s) when crash loop detected */
+#define MGR_ERR_FAULT_STREAK_MAX     20    /**< Consecutive fault-terminated boots (ANY
+                                            *   uptime) before the 1 h safe sleep — closes
+                                            *   the post-MONITORING >=30 s blind spot the
+                                            *   <30 s crash counter cannot see (fix 2026-07,
+                                            *   sim: 1439 boots/day at 100% awake, forever). */
 
 typedef enum {
 	ERR_NONE = 0,
@@ -124,9 +132,9 @@ bool MGR_ERR_checkCrashLoop(void);
  */
 #define MGR_ERR_LOG_FAULT(code, state) do { \
 	extern volatile uint32_t uwTick; \
-	*((volatile uint32_t *)TAMP_BKP4R_ADDR) = (uint32_t)(code); \
-	*((volatile uint32_t *)TAMP_BKP5R_ADDR) = (uint32_t)(state); \
-	*((volatile uint32_t *)TAMP_BKP6R_ADDR) = uwTick; \
+	*((volatile uint32_t *)TAMP_ERR_CODE_ADDR)  = (uint32_t)(code); \
+	*((volatile uint32_t *)TAMP_ERR_STATE_ADDR) = (uint32_t)(state); \
+	*((volatile uint32_t *)TAMP_ERR_TICK_ADDR)  = uwTick; \
 } while (0)
 
 /* ---- HardFault forensics ----------------------------------------------- */

@@ -88,9 +88,19 @@ static uint16_t u16_get_padded_bitlen(uint16_t u16_actual_bitlen)
 			return 0;
 		return 24;
 	case KNS_TX_MOD_LDA2L:
-		if (u16_actual_bitlen > 192)
+		/* 196 bits — the ONE LDA2L frame size used by every other producer
+		 * in the tree, verified 2026-07: the Kineis reference example app
+		 * kns_app.c:236, the UW build_tx_payload (kns_app_uw_doppler.c:1462
+		 * F.6 and :1501 legacy), and the DOPPLER build_tx_payload
+		 * (kns_app_doppler.c:549) all set usrdata_bitlen=196 for LDA2L.
+		 * This AT handler was the sole outlier at 192 (a pre-existing
+		 * inconsistency): it rejected full-length LDA2L payloads and
+		 * under-padded shorter ones vs the working frame. Aligned to 196
+		 * so the AT/GUI path emits the SAME frame the reference and the
+		 * deployed apps do. */
+		if (u16_actual_bitlen > 196)
 			return 0;
-		return 192;
+		return 196;
 	case KNS_TX_MOD_LDA2: {
 		/* Valid sizes: 32, 64, 96, 128, 160, 192 bits (multiples of 32) */
 		static const uint16_t valid[] = {32, 64, 96, 128, 160, 192};
@@ -191,6 +201,16 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 			u16UserDataBitlen = u16_get_padded_bitlen(u16UserDataBitlen);
 			if (u16UserDataBitlen == 0) {
 				MGR_LOG_VERBOSE("[ERROR] Payload too large for current modulation\r\n");
+				/* Fix 2026-07: release the reserved FIFO element and
+				 * the TCXO force. The old path leaked BOTH — 4 bad
+				 * commands consumed every FIFO slot (TX dead until
+				 * reboot: reserve marks the slot used without chaining
+				 * it, so flush can never reclaim it) and the forced
+				 * HSE/VDDTCXO kept draining mA until a full TX cycle.
+				 * The SPI handler had these releases; the AT path never
+				 * got them. */
+				USERDATA_txFifoRemoveElt(spUserDataMsg);
+				MCU_MISC_TCXO_Force_State(false);
 				return bMGR_AT_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH);
 			}
 			/* Buffer already zeroed, padding bytes are 0 */
@@ -210,19 +230,31 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 				/** @note appEvt.send_ctxt already filled-up at declaration */
 				appEvt.id = KNS_MAC_SEND_DATA;
 				status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
-				if (status != KNS_STATUS_OK)
+				if (status != KNS_STATUS_OK) {
+					/* Fix 2026-07: the element was already CHAINED
+					 * (AddElt above) — leaving it desynchronised the
+					 * head-of-FIFO completion matching for every
+					 * later TX. RemoveElt unchains and frees it. */
+					USERDATA_txFifoRemoveElt(spUserDataMsg);
+					MCU_MISC_TCXO_Force_State(false);
 					return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
+				}
 				return true;
 			}
 			MGR_LOG_VERBOSE("[ERROR] User data is badly formatted (check length)\r\n");
+			USERDATA_txFifoRemoveElt(spUserDataMsg);   /* fix 2026-07 */
+			MCU_MISC_TCXO_Force_State(false);
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH);
 		case 0: /* Case ARGOS Message without user data */
 		default:
 			MGR_LOG_VERBOSE("[ERROR] AT+TX command is badly formatted\r\n");
+			USERDATA_txFifoRemoveElt(spUserDataMsg);   /* fix 2026-07 */
+			MCU_MISC_TCXO_Force_State(false);
 			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
 		}
 	} else {
 		MGR_LOG_VERBOSE("[ERROR] TX FIFO full, cannot get extra data.\r\n");
+		MCU_MISC_TCXO_Force_State(false);   /* fix 2026-07: no TX will clear it */
 		return bMGR_AT_CMD_logFailedMsg(ERROR_DATA_QUEUE_FULL);
 	}
 }

@@ -35,11 +35,23 @@ void MX_RTC_Init(void)
   switch (LPM_getMode()) {
   case LOW_POWER_MODE_SHUTDOWN:
   case LOW_POWER_MODE_STANDBY:
+  case LOW_POWER_MODE_SLEEP:
+  case LOW_POWER_MODE_STOP:
    /* Init from Shutdown/Standby mode wake-up. All registers (except the ones in the Backup
     * domain: RTC,the Backup registers, RCC Backup domain control register) are reset.
     * Global variable 'hrtc' was reset as part of RAM, need to init it again. An alternative
     * could be to store this global variable 'hrtc' in retention area (i.e. rtc backup registers)
-    */
+    *
+    * Fix 2026-07: SLEEP/STOP used to bare-return here on the assumption that
+    * hrtc survived — but hrtc is a plain .bss global, zeroed on EVERY reset
+    * class, and MX_RTC_Init only ever runs post-reset. A reset taken while
+    * the TAMP LPM word still said SLEEP/STOP (reset during STOP, IWDG before
+    * the mode was rewritten, or the word clobbered) then left hrtc.Instance
+    * == NULL and every subsequent RTC HAL call (WUT arming, tick
+    * compensation) dereferenced the flash alias at 0x0: writes silently
+    * dropped, a STOP2 armed with no wake source. Re-populating the handle +
+    * MspInit is idempotent and never touches the running calendar, so
+    * SLEEP/STOP now take the same safe path as SHUTDOWN/STANDBY. */
     hrtc.Instance = RTC;
     hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
     hrtc.Init.AsynchPrediv = 127;
@@ -63,10 +75,6 @@ void MX_RTC_Init(void)
     __HAL_RTC_ALARM_EXTI_ENABLE_IT();
     __HAL_RTC_WAKEUPTIMER_EXTI_ENABLE_IT();
 
-    return;
-  case LOW_POWER_MODE_SLEEP:
-  case LOW_POWER_MODE_STOP:
-    /* no impact on RTC peripheral nor hrtc global variable */
     return;
   case LOW_POWER_MODE_NONE:
   default:

@@ -258,6 +258,10 @@ static uint8_t coherence_high_count = 0;
 /* Stuck-state recovery */
 static uint8_t air_collapse_count = 0;
 
+/* Stale-high water recovery (section 4c): consecutive water-like readings
+ * while classified SURFACE. */
+static uint8_t water_like_surface_count = 0;
+
 /* Fast convergence (alpha=50% for first dive) */
 static uint8_t fast_convergence_count = 0;
 
@@ -589,9 +593,23 @@ static bool detector_state(void)
 	last_raw_adc = raw_value;
 	sws_fault_update(raw_value);
 
-	/* 1. Validate ADC */
+	/* 1. Over-range reading (fix 2026-07, revised after simulation).
+	 * Physically, raw > threshold_max on this sensor means EXTREMELY
+	 * conductive medium — i.e. water — not an invalid sample (the ADC
+	 * value is already masked to 12 bits; the default threshold_max of
+	 * 4095 makes this unreachable). The first fix returned `true`
+	 * (underwater) here, but the EARLY RETURN skipped sections 2-9 —
+	 * including the dive-timeout escalation and degraded beacon, so a
+	 * permanently over-range sensor was a permanent zero-TX wedge with
+	 * every backstop blind (sim: 8 h stuck over-range, 0 escalations).
+	 * CLAMP and continue instead: the full pipeline runs, the state
+	 * machine classifies UNDERWATER (clamped value > threshold_high),
+	 * time_in_state accumulates, and section 7 escalates to the degraded
+	 * beacon exactly like any other stuck-underwater condition. The
+	 * fault detector above already recorded the TRUE raw (OOR-high
+	 * latches if persistent, visible over AT). */
 	if (raw_value > sws_config.threshold_max)
-		return (sws_state == MGR_SWS_STATE_UNDERWATER);
+		raw_value = sws_config.threshold_max;
 
 	bool is_underwater = (sws_state == MGR_SWS_STATE_UNDERWATER);
 
@@ -834,8 +852,16 @@ static bool detector_state(void)
 				sum += surface_readings[i];
 			uint16_t avg = (uint16_t)(sum / surface_readings_count);
 
-			if (elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S) {
-				/* Periodic full air recalibration with FLOOR clamp */
+			if (elapsed_s(last_calib_tick) >= CALIB_INTERVAL_S &&
+			    avg < (uint32_t)air_baseline * MIN_WATER_AIR_RATIO) {
+				/* Periodic full air recalibration with FLOOR clamp.
+				 * Water-like guard (fix 2026-07, sim-proven): a plateau
+				 * >= air*3 while classified SURFACE is WATER seen through
+				 * a stale threshold (seawater->fresh transition) — the
+				 * hourly recalib used to adopt it as the new "air",
+				 * killing the section-4c stale-water recovery gate and
+				 * latching a permanent false SURFACE. Freeze air instead
+				 * and let 4c re-anchor the water baseline. */
 				uint16_t old __attribute__((unused)) = air_baseline;
 				uint16_t new_air = clamp_air_floor(avg);
 				air_baseline = new_air;
@@ -851,8 +877,19 @@ static bool detector_state(void)
 				MGR_LOG_DEBUG("[SWS] Air recalib %u -> %u%s\r\n", old, air_baseline,
 					(avg < AIR_BASELINE_FLOOR) ? " (floored)" : "");
 			} else if (avg * 10 > (uint32_t)air_baseline * SURFACE_ADAPT_THRESHOLD_X10 &&
-			           avg < threshold_current) {
-				/* Upward adaptation: biofouling raising air level (slow 10%) */
+			           avg < threshold_current &&
+			           avg < (uint32_t)air_baseline * MIN_WATER_AIR_RATIO) {
+				/* Upward adaptation: biofouling raising air level (slow 10%).
+				 * Water-like guard (fix 2026-07, sim-proven): the upward
+				 * EMA used to chase a fresh-water submersion plateau
+				 * (readings below the STALE seawater threshold), dragging
+				 * air to ~the plateau within ~20 s and permanently
+				 * disarming the section-4c recovery gate (raw >= air*3
+				 * never true again). Genuine biofouling creeps at
+				 * 1.3-2.9x per adaptation step and still passes; a >=3x
+				 * jump is water — freeze air and let 4c re-anchor the
+				 * water baseline instead (worst case a real >=3x air jump
+				 * classifies UW and the dive-timeout beacon bounds it). */
 				uint16_t new_air;
 				if (air_baseline < AIR_BASELINE_FLOOR) {
 					new_air = AIR_BASELINE_FLOOR;
@@ -918,6 +955,50 @@ static bool detector_state(void)
 		}
 	} else {
 		air_collapse_count = 0;
+	}
+
+	/* 4c. STALE-HIGH WATER RECOVERY (fix 2026-07). The EMA below can only
+	 * LOWER water_baseline while classified UNDERWATER — but a stale-high
+	 * baseline (seawater calibration carried into brackish/fresh water, or
+	 * a coherence spike) makes every submerged reading classify SURFACE, so
+	 * the downward path was unreachable and the false-SURFACE latch was
+	 * PERMANENT, with the dive-timeout backstop UW-gated and thus blind.
+	 * Symmetric to the "continuous coherence" upward adaptation: a
+	 * sustained plateau of water-like readings (>= air*MIN_WATER_AIR_RATIO)
+	 * while classified SURFACE is physically water seen through a stale
+	 * threshold. After WATER_LIKE_RECAL_SAMPLES consecutive such samples,
+	 * re-anchor water_baseline just above the plateau so the thresholds
+	 * re-converge and dive detection resumes. A splashing surface electrode
+	 * oscillates in and out of the band and never accumulates the run; the
+	 * false-trigger worst case (biofouled-in-air plateau) converts a
+	 * backstop-less false-SURFACE into a false-UW that the max_dive_time
+	 * escalation resolves into a beacon — strictly safer.
+	 * BENCH-VALIDATE against a real electrode before fleet deployment. */
+#define WATER_LIKE_RECAL_SAMPLES  60u   /* ~1 min at surface cadence */
+	if (!is_underwater && !surface_lockout_active() && !degraded_mode &&
+	    (uint32_t)raw_value >=
+	        (uint32_t)air_baseline * MIN_WATER_AIR_RATIO) {
+		if (water_like_surface_count < 0xFFu)
+			water_like_surface_count++;
+		if (water_like_surface_count >= WATER_LIKE_RECAL_SAMPLES) {
+			uint16_t floor_w = (uint16_t)((uint32_t)air_baseline *
+			                              MIN_WATER_AIR_RATIO);
+			uint32_t cand = (uint32_t)raw_value * 115u / 100u;
+			uint16_t new_water = (cand > 4095u) ? 4095u
+			                                    : (uint16_t)cand;
+			if (new_water < floor_w)
+				new_water = floor_w;
+			if (new_water < water_baseline) {
+				MGR_LOG_INFO("[SWS] Stale water recovery: water %u->%u (plateau raw=%u)\r\n",
+					water_baseline, new_water, raw_value);
+				water_baseline = new_water;
+				update_dynamic_threshold();
+				mark_calib_dirty();
+			}
+			water_like_surface_count = 0;
+		}
+	} else {
+		water_like_surface_count = 0;
 	}
 
 	/* 5. WATER BASELINE EMA (when underwater, not during lockout) */
@@ -1148,6 +1229,7 @@ void MGR_SWS_init(void)
 	consecutive_spike_rejects = 0;
 	coherence_high_count = 0;
 	air_collapse_count = 0;
+	water_like_surface_count = 0;
 	fast_convergence_count = 0;
 	last_calib_tick = HAL_GetTick();
 	first_sample_done = false;
@@ -1200,9 +1282,19 @@ void MGR_SWS_task(void)
 	/* TX-transient blanking: skip the read while a TX + settle window is active
 	 * so the PA coupling into PA11 is never sampled as an underwater spike. Do
 	 * NOT advance last_measurement_tick here — the next non-blanked pass then
-	 * samples as soon as the window clears. */
-	if ((int32_t)(s_tx_blank_until_tick - now) > 0)
-		return;
+	 * samples as soon as the window clears.
+	 *
+	 * Clear-on-expiry (fix 2026-07): a stale deadline left armed would
+	 * re-engage 2^31 ms (24.85 days) after the last TX and silence ALL SWS
+	 * sampling (no surface detection, no dive-timeout escalation, ignores
+	 * forceMeasurement) for the next 24.85 days. The 0 sentinel also honors
+	 * the "0 = inactive" contract at the declaration — without it a tag
+	 * that never TX'd went SWS-deaf from uptime 24.85 d to 49.7 d. */
+	if (s_tx_blank_until_tick != 0u) {
+		if ((int32_t)(s_tx_blank_until_tick - now) > 0)
+			return;
+		s_tx_blank_until_tick = 0u;    /* expired — disarm for good */
+	}
 
 	uint32_t elapsed_ms = now - last_measurement_tick;
 	uint32_t interval_ms = current_test_interval_ms();
@@ -1313,8 +1405,10 @@ void MGR_SWS_blankUntil(uint32_t until_tick)
 {
 	/* Suppress SWS sampling until `until_tick` (see s_tx_blank_until_tick) so
 	 * the SubGHz PA transient coupled into the electrode is not read as UW. The
-	 * app refreshes this across a TX-in-flight window + settle tail. */
-	s_tx_blank_until_tick = until_tick;
+	 * app refreshes this across a TX-in-flight window + settle tail.
+	 * 0 is the "inactive" sentinel — if now+tail lands exactly on 0 at the
+	 * 49.7-day tick wrap, nudge to 1 (worst case: one sample 1 ms early). */
+	s_tx_blank_until_tick = (until_tick == 0u) ? 1u : until_tick;
 }
 
 bool MGR_SWS_stateChanged(void)

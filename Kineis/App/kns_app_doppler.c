@@ -449,6 +449,30 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 
 	__HAL_RCC_CLEAR_RESET_FLAGS();
 
+	/* LSI-fallback guard (fix 2026-07, same class as the UW parks): the LSI
+	 * oscillator is powered OFF in Shutdown mode (RM0453 — only LSE can
+	 * clock the RTC there). A tracker running on the LSE-death LSI fallback
+	 * would arm the WUT above, enter SHUTDOWN, and NEVER wake — the timer
+	 * freezes and the only remaining wake is a manual PB3/WKUP3 edge,
+	 * absent in the field: permanent brick of an otherwise-working unit.
+	 * Park in STOP2 instead (the LSI keeps running there) and exit through
+	 * a clean reset, preserving the "never returns, cold boot on wake"
+	 * contract. Trade-off: the WKUP3 edge wake is lost for the LSI-park
+	 * case only (STOP2 has no WKUP circuitry on PB3 without an EXTI, which
+	 * this path never armed) — acceptable, nothing drives PB3 in the field. */
+	{
+		extern volatile uint8_t g_rtc_use_lsi;
+
+		if (g_rtc_use_lsi) {
+			MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS,
+			           PWR_LOWPOWERMODE_SHUTDOWN);
+			HAL_SuspendTick();
+			HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+			NVIC_SystemReset();
+			/* never returns */
+		}
+	}
+
 	/* Enter SHUTDOWN -- never returns */
 	HAL_PWREx_EnterSHUTDOWNMode();
 }
@@ -609,8 +633,19 @@ static bool process_mac_events(void)
 			MGR_EVTLOG_log(EVT_MAC_ERROR, (uint16_t)srvcEvt.status);
 			if (doppler_state == DOPPLER_WAIT_TX_DONE)
 				transition_to(DOPPLER_SEQUENCE_DONE);
-			else if (doppler_state == DOPPLER_WAIT_MAC_READY)
+			else if (doppler_state == DOPPLER_WAIT_MAC_READY) {
+				/* Count error-driven init retries (fix 2026-07, mirror of
+				 * the UW fix): transition_to resets state_enter_tick, so a
+				 * lib that re-emits KNS_MAC_ERROR fast restarted the 30 s
+				 * timeout forever — an unbounded awake INIT loop that never
+				 * transmits, never sleeps, never escalates (e.g. corrupted
+				 * radioconf). 3 strikes -> reset like the timeout path. */
+				if (++mac_init_retries >= MAX_MAC_INIT_RETRIES) {
+					MGR_LOG_DEBUG("[DPL] MAC error-loop, resetting\r\n");
+					MGR_ERR_logAndReset(ERR_MAC_INIT_FAIL);
+				}
 				transition_to(DOPPLER_INIT_MAC);
+			}
 			break;
 
 		default:
@@ -625,7 +660,23 @@ static bool process_mac_events(void)
 
 static enum MgrLpm_LPM_t doppler_lpmReq(void)
 {
+#if !defined(MCU_DONE_Pin) && !defined(USE_MAC_PRFL_BLIND)
+	/* RTC-mode BASIC DOPPLER (the shipped config on SMD_PA/NOPA/OP, where
+	 * MCU_DONE is not populated) — fix 2026-07: NEVER request an autonomous
+	 * STOP. BASIC has no MAC-owned RTC wake-up timer, and this app arms none
+	 * for the DOPPLER_WAIT_INTERVAL busy-wait — so entering STOP froze
+	 * HAL_GetTick with NO wake source and the tracker STRANDED (even during
+	 * the boot window, before its first message: sim-confirmed critical
+	 * brick). The between-SEQUENCE sleep is the deliberate enter_deep_sleep
+	 * (SHUTDOWN, hours) reached via finish_sequence; the short in-sequence
+	 * msg_interval is busy-waited at active current, which is correct and
+	 * NON-bricking. Proper in-interval duty-cycling would need an armed WUT
+	 * + tick compensation (as MGR_LPM_UW does) — a deferred enhancement, not
+	 * a brick fix. BLIND keeps STOP (the MAC owns the periodic WUT). */
+	return LOW_POWER_MODE_NONE;
+#else
 	return doppler_lpm_mode;
+#endif
 }
 
 static bool doppler_lpmNotifEnter(__attribute__((unused)) enum MgrLpm_LPM_t lpm)

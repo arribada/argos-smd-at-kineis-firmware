@@ -178,7 +178,14 @@ void bl_run(void)
                 bl_dfu_activity_tick = HAL_GetTick();
             } else if ((HAL_GetTick() - bl_dfu_activity_tick) >
                            BL_DFU_INACTIVITY_TIMEOUT_MS &&
-                       bl_check_app_valid()) {
+                       bl_check_app_valid_strict()) {
+                /* STRICT check (fix 2026-07): the lenient bl_check_app_valid
+                 * falls back to SP/PC plausibility, which a torn half-flashed
+                 * image passes (vector table written early in an ascending
+                 * DFU) — the auto-exit then jumped into erased flash and the
+                 * unit crash-looped, SWD-only recovery. Auto-exit now requires
+                 * a CRC-proven image; a torn image keeps the unit in DFU where
+                 * the host can reflash it. */
                 BL_DBG("[BL] DFU inactivity timeout — valid app present, jumping\r\n");
                 current_state = BL_STATE_JUMP_APP;
             }
@@ -360,7 +367,12 @@ static void bl_state_dfu_uart(void)
     /* cmd_buffer sized in bl_config.h to hold a full WRITE line (largest chunk) */
     static char cmd_buffer[BL_CMD_BUFFER_SIZE];
     static uint8_t response[BL_TX_BUFFER_SIZE];
-    static uint8_t payload[BL_CHUNK_SIZE];
+    /* 4-byte address + a FULL chunk (fix 2026-07): sized at BL_CHUNK_SIZE
+     * total, the WRITE parser silently truncated a nominal 248-byte chunk
+     * to 244 data bytes — the truncated chunk programmed fine but VERIFY
+     * then deterministically failed with CRC_ERROR ("flash always fails at
+     * verify" with no clue). bl_dfu_cmd_write accepts addr+BL_CHUNK_SIZE. */
+    static uint8_t payload[4 + BL_CHUNK_SIZE];
 
     if (bl_uart_process()) {
         uint16_t cmd_len = bl_uart_get_command(cmd_buffer, sizeof(cmd_buffer));
@@ -406,7 +418,7 @@ static void bl_state_dfu_uart(void)
                 memcpy(payload, &addr, 4);
                 payload_len = 4;
 
-                while (*params && payload_len < BL_CHUNK_SIZE) {
+                while (*params && payload_len < sizeof(payload)) {
                     if (!((params[0] >= '0' && params[0] <= '9') ||
                           (params[0] >= 'A' && params[0] <= 'F') ||
                           (params[0] >= 'a' && params[0] <= 'f'))) {
@@ -696,6 +708,16 @@ void bl_jump_to_app(void)
 
     __set_MSP(app_stack);
 
+    /* PRIMASK must be CLEAR when entering the app (fix 2026-07): the
+     * __disable_irq() above sets it and neither the branch below nor the
+     * app's HAL_Init clears it — the app would run fully IRQ-masked
+     * (SysTick dead, uwTick frozen) and hang in its first HAL_Delay until
+     * the inherited IWDG fires ~16 s later. Safe to re-enable here: every
+     * NVIC enable is cleared and all pendings flushed above, so nothing
+     * can preempt between this point and the app's own init. (The reverse
+     * app->bootloader jump already did this correctly.) */
+    __enable_irq();
+
     pFunction app_reset_handler = (pFunction)app_entry;
     app_reset_handler();
 
@@ -725,6 +747,36 @@ bool bl_check_app_valid(void)
     }
 
     return true;
+}
+
+bool bl_check_app_valid_strict(void)
+{
+    /* Header magic + full-image CRC only — no SP/PC fallback. See bl_main.h. */
+    const app_header_t* header = bl_get_app_header();
+
+    return bl_validate_app_header(header) && bl_validate_app_crc(header);
+}
+
+/**
+ * @brief NMI handler — flash ECC double-error aware (fix 2026-07).
+ *
+ * Overrides the startup weak default (infinite loop). A torn doubleword in
+ * the app image (interrupted DFU / brownout mid-write) raises an unmaskable
+ * NMI when the CRC check READS it; hanging (old behaviour) or resetting
+ * would loop forever. Clearing ECCD and RETURNING lets the interrupted load
+ * complete with garbage, so the CRC check simply fails and the bootloader
+ * stays in DFU — recoverable by the host. Non-ECC NMIs reset.
+ */
+void NMI_Handler(void)
+{
+    uint32_t eccr = FLASH->ECCR;
+
+    if (eccr & FLASH_ECCR_ECCD) {
+        FLASH->ECCR = eccr | FLASH_ECCR_ECCD;   /* write-1-to-clear */
+        return;   /* garbage read -> CRC fails -> stay in DFU */
+    }
+    NVIC_SystemReset();
+    while (1) {}
 }
 
 bool bl_validate_app_header(const app_header_t* header)

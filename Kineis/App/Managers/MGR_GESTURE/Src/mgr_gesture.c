@@ -323,9 +323,11 @@ bool MGR_GESTURE_requestMode(MGR_GESTURE_Mode_t mode)
 		s_pending_event = MGR_GESTURE_EVT_ENTER_OPERATIONAL;
 		gst_trace("[MODE] OPERATIONAL via AT t=%lu\r\n", now);
 		/* Mirror the gesture-FSM exit-from-CONFIG cleanup: restore the
-		 * cold-boot default log gate. UART teardown happens in the
-		 * app-loop event consumer; the AT response has already left
-		 * the wire by then. */
+		 * cold-boot default log gate. UART teardown is done by the AT
+		 * handler itself (bMGR_AT_CMD_MODE_cmd) AFTER the +OK response
+		 * has left the wire — the old "app-loop event consumer" is
+		 * compiled out under UW_DOPPLER_KEEP_UART_ALIVE=1 and must not
+		 * be relied on. */
 		vMGR_LOG_resetToDefault();
 		return true;
 
@@ -363,13 +365,18 @@ MGR_GESTURE_Event_t MGR_GESTURE_getEvent(void)
  * every tick and burn the 19 Ah battery in ~4 days. Any non-IDLE
  * window longer than this returns false so STOP2 can run; the FSM
  * stays where it is until the next reed event re-arms it. */
-#define GESTURE_NONIDLE_MAX_MS  15000u  /* 15 s. Longest legit gesture is
-                                         * 6 s hold + 2 s confirm + 1.5 s
-                                         * confirm blink ≈ 10 s, so 15 s
-                                         * leaves a 50 % margin while
-                                         * still recovering quickly enough
-                                         * that the operator notices the
-                                         * gesture failed. */
+#define GESTURE_NONIDLE_MAX_MS  30000u  /* 30 s (was 15 s — fix 2026-07). The
+                                         * budget is refreshed by every reed
+                                         * edge (see MGR_GESTURE_task), so it
+                                         * only caps a truly WEDGED FSM
+                                         * (glued / stuck-HIGH reed producing
+                                         * no edges). The old 15 s was shared
+                                         * with the ~2.5 s WAKE_BLINK prefix
+                                         * and the deliberately-elastic hold
+                                         * phases, force-aborting a slow but
+                                         * LEGITIMATE shutdown mid-blink — the
+                                         * operator read the dark LED as "off"
+                                         * and shipped a live tag. */
 static uint32_t s_nonidle_first_tick = 0u;
 
 bool MGR_GESTURE_isInteracting(void)
@@ -412,6 +419,15 @@ void MGR_GESTURE_task(void)
 	const uint32_t now = HAL_GetTick();
 	const bool magnet_present = MGR_REED_isMagnetPresent();
 
+	/* Fresh operator activity re-arms the non-idle watchdog budget (fix
+	 * 2026-07): the watchdog exists for a WEDGED FSM (stuck-HIGH Hall, no
+	 * edges), not for a slow-but-active operator. Any reed edge proves a
+	 * human is interacting, so the abort clock restarts — a cautious
+	 * operator can take as long as they need between gesture steps without
+	 * the FSM silently force-IDLE-ing a legitimate shutdown mid-blink. */
+	if (reed_evt != MGR_REED_EVT_NONE)
+		s_nonidle_first_tick = 0u;
+
 	/* ----- WAKE_BLINK: wait for the LED sequence to finish — but never
 	 * at the operator's expense. With the duty-cycle STOP2 sleeping the
 	 * LED task only steps during the short awake windows, so the 5-blink
@@ -434,11 +450,15 @@ void MGR_GESTURE_task(void)
 			 * handler can replay its side effects (SWS power, UART
 			 * gating) — previously hardcoded to OPERATIONAL which
 			 * left a tag booting in CONFIG in a half-configured
-			 * state. */
-			s_pending_event =
-			    (s_mode == MGR_GESTURE_MODE_CONFIG)
-			    ? MGR_GESTURE_EVT_ENTER_CONFIG
-			    : MGR_GESTURE_EVT_ENTER_OPERATIONAL;
+			 * state. Never clobber a pending REQUEST_SHUTDOWN though
+			 * (fix 2026-07): an AT power-off issued during the wake
+			 * blink has already replied +OK — silently dropping it
+			 * here would ship a live tag believed to be off. */
+			if (s_pending_event != MGR_GESTURE_EVT_REQUEST_SHUTDOWN)
+				s_pending_event =
+				    (s_mode == MGR_GESTURE_MODE_CONFIG)
+				    ? MGR_GESTURE_EVT_ENTER_CONFIG
+				    : MGR_GESTURE_EVT_ENTER_OPERATIONAL;
 		}
 		return;
 	}
@@ -476,7 +496,36 @@ void MGR_GESTURE_task(void)
 	 * 49.7-day uptime limit so no monotonic-check guard is needed. ----- */
 	if (s_fsm == GFSM_HOLDING) {
 		if (!magnet_present || reed_evt == MGR_REED_EVT_MAGNET_OFF) {
-			/* Release — classify by max phase reached. */
+			/* Release — classify by max phase reached.
+			 *
+			 * Debounce-inflation compensation (fix 2026-07, sim-proven
+			 * ~340 ms band): the confirmed OFF arrives ~200 ms (OFF
+			 * debounce) + 0-200 ms (Hall raw-HIGH tail) after the
+			 * PHYSICAL release, while s_press_tick is only ~50 ms late
+			 * (ON confirm) — so the measured hold runs ~150-350 ms long
+			 * and kept ESCALATING during the tail: a release at true-hold
+			 * 5.8 s (operator sees BLUE = mode switch) classified as
+			 * SHUTDOWN, and the naive confirm tap then powered off a tag
+			 * about to be deployed. Re-derive the phase from the
+			 * compensated hold and take the LOWER of the two; the fixed
+			 * 150 ms net subtraction leaves only the Hall-tail variance
+			 * (~±100 ms) as residual band, and the WAIT_CONFIRM colour
+			 * remains the operator's final tell. */
+#define MGR_GESTURE_OFF_COMP_MS  150u
+			{
+				uint32_t held = now - s_press_tick;
+
+				if (held > MGR_GESTURE_OFF_COMP_MS)
+					held -= MGR_GESTURE_OFF_COMP_MS;
+				HoldPhase_t rel_phase = HOLD_PHASE_NONE;
+
+				if (held >= MGR_GESTURE_SHUTDOWN_HOLD_MS)
+					rel_phase = HOLD_PHASE_SHUTDOWN;
+				else if (held >= MGR_GESTURE_LONG_HOLD_MS)
+					rel_phase = HOLD_PHASE_SWITCH;
+				if (rel_phase < s_max_phase)
+					s_max_phase = rel_phase;
+			}
 			gst_trace("[GST] OFF max_phase=%lu\r\n",
 			          (uint32_t)s_max_phase);
 			switch (s_max_phase) {
@@ -534,6 +583,20 @@ void MGR_GESTURE_task(void)
 	 *                 for MGR_GESTURE_ACK_BRIEF_MS so the user sees that the
 	 *                 magnet was registered. ----- */
 	if (s_fsm == GFSM_ACK_BRIEF) {
+		if (reed_evt == MGR_REED_EVT_MAGNET_ON) {
+			/* Re-press during the ack flash (fix 2026-07, sim-proven):
+			 * the event used to be popped and DISCARDED here — an
+			 * operator tapping then re-applying within ~290 ms got a
+			 * dead, feedback-less magnet for the whole next hold (a
+			 * 7 s shutdown hold produced no LED and no request during
+			 * the highest-stakes pre-sealing operation). Enter HOLDING
+			 * exactly as IDLE would. */
+			s_fsm = GFSM_HOLDING;
+			s_press_tick = now;
+			s_max_phase = HOLD_PHASE_NONE;
+			led_show_phase(HOLD_PHASE_NONE);
+			return;
+		}
 		if ((now - s_window_start_tick) >= MGR_GESTURE_ACK_BRIEF_MS) {
 			MGR_LED_off();
 			s_fsm = GFSM_IDLE;
@@ -604,6 +667,18 @@ void MGR_GESTURE_task(void)
 
 	/* ----- CONFIRMED: wait for confirm blink to finish, then idle ----- */
 	if (s_fsm == GFSM_CONFIRMED) {
+		if (reed_evt == MGR_REED_EVT_MAGNET_ON) {
+			/* New press during the confirm blink = a NEW gesture (fix
+			 * 2026-07): same silent-discard hole as ACK_BRIEF — the
+			 * confirmed mode change stands, the new hold starts
+			 * tracking immediately. */
+			s_fsm = GFSM_HOLDING;
+			s_press_tick = now;
+			s_max_phase = HOLD_PHASE_NONE;
+			s_pending_action = PENDING_NONE;
+			led_show_phase(HOLD_PHASE_NONE);
+			return;
+		}
 		if (MGR_LED_isBlinkDone()) {
 			s_fsm = GFSM_IDLE;
 			s_pending_action = PENDING_NONE;

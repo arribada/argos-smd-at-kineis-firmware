@@ -42,6 +42,8 @@
 #include "kns_app_uw_doppler.h"
 #include "main.h"
 #include "mgr_log.h"
+#include "usart.h"   /* APP_UART_setEnabled — AT+MODE=1 UART teardown */
+#include "mcu_misc.h" /* MCU_MISC_turn_off_pa — PA safety on AT+RESET */
 
 #if defined(BSP_HAS_LED_RGB)
 #include "mgr_led.h"
@@ -862,10 +864,29 @@ bool bMGR_AT_CMD_MODE_cmd(uint8_t *pu8_cmdParamString,
 
 		bMGR_AT_CMD_logSucceedMsg();
 
-		/* For OPERATIONAL switches in production builds, the next main
-		 * loop iter will tear down the UART. Give the +OK time to leave
-		 * the FIFO before that happens. */
+		/* Give the +OK time to physically leave the FIFO before any
+		 * teardown below. */
 		HAL_Delay(50);
+
+		if ((MGR_GESTURE_Mode_t)mode == MGR_GESTURE_MODE_OPERATIONAL) {
+			/* Fix 2026-07: the app-loop teardown consumer this exit used
+			 * to rely on is compiled out (UW_DOPPLER_KEEP_UART_ALIVE
+			 * defaults to 1), so an AT-driven switch to OPERATIONAL left
+			 * the UART enabled for the whole deployment — and every STOP2
+			 * then armed the PA3 RX-wake EXTI on a floating RX line, the
+			 * bench-confirmed EMI wake-storm (~5 mA, never re-sleeps) on a
+			 * sealed tag. Mirror the gesture-FSM OPERATIONAL exit exactly:
+			 * drain the ring, then tear the LPUART down ONLY when the
+			 * effective log state is off. NOTE: requestMode() above has
+			 * already reset the AT+UARTLOG override to the build default,
+			 * so on a production (DEBUG=0) build the console ALWAYS goes
+			 * down here — by design (the potted-tag behaviour); only
+			 * DEBUG builds (default-on logs) keep it. A bench session
+			 * that wants the console back re-enters CONFIG by gesture. */
+			MGR_LOG_flush_all();
+			if (!vMGR_LOG_isEnabled())
+				APP_UART_setEnabled(false);
+		}
 		return true;
 	}
 
@@ -881,6 +902,11 @@ bool bMGR_AT_CMD_RESET_cmd(uint8_t *pu8_cmdParamString,
 
 	MGR_LOG_INFO("[AT] RESET requested\r\n");
 	bMGR_AT_CMD_logSucceedMsg();
+	/* Force the external PA off before resetting (fix 2026-07): an AT+RESET
+	 * landing mid-TX left PA_PSU_EN driven/floating across the reboot —
+	 * ~60 mA of bias until the next boot re-drives PC0. Idempotent no-op
+	 * when the PA is already off. */
+	MCU_MISC_turn_off_pa();
 	/* Give the +OK response 100 ms to physically leave the UART before the
 	 * NVIC reset wipes the TX FIFO. The Cortex-M reset path is < 1 ms so
 	 * without this the host would see truncated output. */

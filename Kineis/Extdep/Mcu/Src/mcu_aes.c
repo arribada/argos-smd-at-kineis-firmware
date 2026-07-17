@@ -81,10 +81,18 @@ enum KNS_status_t MCU_AES_128_cbc_decrypt(const uint8_t *in, uint8_t *out, int32
 	return KNS_STATUS_OK;
 }
 
+/* Provisioning-intent hook — weak default lives in mcu_nvm.c, strong impl in
+ * mgr_cred.c. Declared here to mark the SECKEY write as deliberate. */
+extern void MGR_CRED_noteProvisioningWrite(void);
+
 enum KNS_status_t MCU_AES_set_device_sec_key(const uint8_t *key) {
     if (!key) return KNS_STATUS_ERROR;
 
-    return MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_SECKEY_OFFSET, key, FLASH_SECKEY_BYTE_SIZE);
+    enum KNS_status_t status =
+        MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_SECKEY_OFFSET, key, FLASH_SECKEY_BYTE_SIZE);
+    if (status == KNS_STATUS_OK)
+        MGR_CRED_noteProvisioningWrite();  /* deliberate cred write — see hook */
+    return status;
 }
 
 enum KNS_status_t MCU_AES_get_device_sec_key(uint8_t *key) {

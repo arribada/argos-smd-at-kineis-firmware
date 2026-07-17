@@ -28,6 +28,9 @@ TEST_EVTLOG = $(BUILD_DIR)/test_evtlog
 TEST_NVM = $(BUILD_DIR)/test_nvm
 TEST_TX_INTERVAL = $(BUILD_DIR)/test_tx_interval
 TEST_MEMORY_SAFETY = $(BUILD_DIR)/test_memory_safety
+TEST_FIRST_TX_VETO = $(BUILD_DIR)/test_first_tx_veto
+TEST_DEEP_AUDIT_FIXES = $(BUILD_DIR)/test_deep_audit_fixes
+TEST_CRED_MIRROR_SIM = $(BUILD_DIR)/test_cred_mirror_sim
 
 # Test executables - Phase A-F (reed/power-down/cooldown/self-test)
 TEST_COOLDOWN_MODES   = $(BUILD_DIR)/test_cooldown_modes
@@ -41,6 +44,7 @@ TEST_GESTURE_FSM      = $(BUILD_DIR)/test_gesture_fsm
 # All tests
 TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI) \
         $(TEST_EVTLOG) $(TEST_NVM) $(TEST_TX_INTERVAL) $(TEST_MEMORY_SAFETY) \
+        $(TEST_FIRST_TX_VETO) $(TEST_DEEP_AUDIT_FIXES) $(TEST_CRED_MIRROR_SIM) \
         $(TEST_COOLDOWN_MODES) $(TEST_REED_HOLD) $(TEST_BAT_AUTO_SHTDN) \
         $(TEST_SELFTEST_MASK) $(TEST_COOLDOWN_PERSIST) $(TEST_LED_SWAP) \
         $(TEST_GESTURE_FSM)
@@ -81,6 +85,15 @@ $(TEST_TX_INTERVAL): $(UNIT_DIR)/test_tx_interval.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 $(TEST_MEMORY_SAFETY): $(UNIT_DIR)/test_memory_safety.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_FIRST_TX_VETO): $(UNIT_DIR)/test_first_tx_veto.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_DEEP_AUDIT_FIXES): $(UNIT_DIR)/test_deep_audit_fixes.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_CRED_MIRROR_SIM): $(UNIT_DIR)/test_cred_mirror_sim.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 # Phase A-F build rules

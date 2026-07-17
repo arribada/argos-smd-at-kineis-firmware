@@ -48,6 +48,10 @@ typedef enum {
 	EVT_LB_EXIT,         /**< Left low-battery mode (data = bat_mV) */
 	EVT_STATE_HANG,      /**< State machine hung > MAX_STATE_HANG_MS (data = state) */
 	EVT_SWS_FAULT,       /**< SWS sensor fault detected (data = MGR_SWS_Fault_t bits) */
+	EVT_TX_REARM,        /**< Zero-TX safety net re-armed the first TX of a
+	                          surface window (data = 0). Appended LAST so
+	                          retained entries keep their type values across
+	                          a firmware update. */
 } MGR_EVTLOG_Type_t;
 
 /**

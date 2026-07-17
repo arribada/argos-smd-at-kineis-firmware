@@ -596,6 +596,23 @@ static void gather_config(NVM_Config_t *cfg)
 
 /* ---- Migration helpers ---- */
 
+/* Seed the CURRENT compile-time defaults into fields that did not exist in
+ * the SOURCE version (fleet-uniformity fix 2026-07). The old migrations left
+ * them 0 "to preserve legacy behaviour", but that silently split a mixed
+ * fleet into two on-air behaviours under ONE firmware: an upgraded unit kept
+ * transmitting the legacy 128-bit frame (payload_format 0) and never auto-
+ * restarted a surface sequence (tx_seq_restart_s 0), while a fresh unit
+ * ships the 24-bit F.6 frame and a 20-min seq-restart — and the ground
+ * decoder only expects one format. Same doctrine as the existing
+ * tx_cooldown_s=10 seeds below: 0 must be an OPERATOR choice (AT+...+SAVE),
+ * never a migration artefact. Runs once per upgrade; AT+SAVE re-persists
+ * whatever the operator wants afterwards, including 0. */
+static void migration_seed_v8_fields(NVM_Config_t *out)
+{
+	out->payload_format = 1;   /* minimal F.6 frame — the shipped default */
+	out->stat_window_h  = 12;  /* 12 h sliding stats window (app default) */
+}
+
 static void migrate_v1_to_v3(const NVM_Config_v1_t *v1, NVM_Config_t *out)
 {
 	memset(out, 0, sizeof(*out));
@@ -628,6 +645,8 @@ static void migrate_v1_to_v3(const NVM_Config_v1_t *v1, NVM_Config_t *out)
 	out->sws_enabled             = v1->sws_enabled;
 	out->bat_min_tx_mV           = MGR_BAT_DEFAULT_MIN_TX_MV;
 	/* Runtime calibration left at 0: not stored in v1 */
+	out->tx_seq_restart_s        = 1200;  /* app default — field unknown to v1 */
+	migration_seed_v8_fields(out);
 }
 
 static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
@@ -658,6 +677,8 @@ static void migrate_v2_to_v3(const NVM_Config_v2_t *v2, NVM_Config_t *out)
 	out->sws_sample_delay_default_us = 500;
 	out->sws_enabled             = v2->sws_enabled;
 	out->bat_min_tx_mV           = v2->bat_min_tx_mV;
+	out->tx_seq_restart_s        = 1200;  /* app default — field unknown to v2 */
+	migration_seed_v8_fields(out);
 }
 
 /* The prefix memcpy below is only correct while every v7 field up to crc32
@@ -670,19 +691,25 @@ _Static_assert(offsetof(NVM_Config_v7_t, crc32) == offsetof(NVM_Config_t, payloa
 static void migrate_v7_to_v8(const NVM_Config_v7_t *v7, NVM_Config_t *out)
 {
 	/* v7 is a strict prefix of v8: the new fields sit between
-	 * tx_seq_restart_s and crc32. payload_format/stat_window_h stay 0
-	 * from the memset = legacy frame + default 24 h window. */
+	 * tx_seq_restart_s and crc32. Fix 2026-07: the NEW v8 fields are seeded
+	 * with the shipped defaults (payload_format 1 / stat_window_h 12) —
+	 * see migration_seed_v8_fields. tx_seq_restart_s is NOT touched here:
+	 * v7 already had the field, so its stored value (including a deliberate
+	 * operator 0) is real intent and is carried through the prefix memcpy. */
 	memset(out, 0, sizeof(*out));
 	memcpy(out, v7, offsetof(NVM_Config_v7_t, crc32));
 	out->version = NVM_VERSION;
+	migration_seed_v8_fields(out);
 }
 
 static void migrate_v6_to_v7(const NVM_Config_v6_t *v6, NVM_Config_t *out)
 {
 	/* v6 is a strict prefix of v7: same fields plus tx_seq_restart_s.
-	 * Default the new field to 0 (= disabled, legacy behaviour) so an
-	 * existing deployment doesn't suddenly start auto-restarting
-	 * sequences after a firmware upgrade. */
+	 * Fix 2026-07: the new field is now seeded with the CURRENT app default
+	 * (1200 s) instead of 0 — see migration_seed_v8_fields' rationale. The
+	 * old "0 = legacy behaviour" choice silently made upgraded units of a
+	 * floating species emit only 3 frames per surfacing while fresh units
+	 * re-beacon every 20 min. */
 	memset(out, 0, sizeof(*out));
 	out->magic                          = NVM_MAGIC;
 	out->version                        = NVM_VERSION;
@@ -720,7 +747,8 @@ static void migrate_v6_to_v7(const NVM_Config_v6_t *v6, NVM_Config_t *out)
 	out->lpm_spin_ms                    = v6->lpm_spin_ms;
 	out->lpm_sleep_ms                   = v6->lpm_sleep_ms;
 	out->lpm_enabled                    = v6->lpm_enabled;
-	/* out->tx_seq_restart_s already 0 from memset — leave as disabled */
+	out->tx_seq_restart_s               = 1200;  /* app default — unknown to v6 */
+	migration_seed_v8_fields(out);
 }
 
 static void migrate_v5_to_v6(const NVM_Config_v5_t *v5, NVM_Config_t *out)
@@ -760,6 +788,8 @@ static void migrate_v5_to_v6(const NVM_Config_v5_t *v5, NVM_Config_t *out)
 	out->lb_tx_interval_s               = v5->lb_tx_interval_s;
 	out->lb_tx_max_s                    = v5->lb_tx_max_s;
 	out->lb_tx_max_count                = v5->lb_tx_max_count;
+	out->tx_seq_restart_s               = 1200;  /* app default — unknown to v5 */
+	migration_seed_v8_fields(out);
 }
 
 static void migrate_v4_to_v5(const NVM_Config_v4_t *v4, NVM_Config_t *out)
@@ -797,6 +827,8 @@ static void migrate_v4_to_v5(const NVM_Config_v4_t *v4, NVM_Config_t *out)
 	out->bat_min_tx_mV                  = v4->bat_min_tx_mV;
 	out->rate_window_s                  = v4->rate_window_s;
 	out->rate_max_tx                    = v4->rate_max_tx;
+	out->tx_seq_restart_s               = 1200;  /* app default — unknown to v4 */
+	migration_seed_v8_fields(out);
 }
 
 static void migrate_v3_to_v4(const NVM_Config_v3_t *v3, NVM_Config_t *out)
@@ -836,6 +868,8 @@ static void migrate_v3_to_v4(const NVM_Config_v3_t *v3, NVM_Config_t *out)
 	out->sws_run_water_baseline         = v3->sws_run_water_baseline;
 	out->sws_run_observed_peak          = v3->sws_run_observed_peak;
 	out->bat_min_tx_mV                  = v3->bat_min_tx_mV;
+	out->tx_seq_restart_s               = 1200;  /* app default — unknown to v3 */
+	migration_seed_v8_fields(out);
 }
 
 /* ---- Public API ---- */
@@ -946,7 +980,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v6_to_v7(&v6, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v6 -> v8 (tx_seq_restart_s defaults to 0)\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v6 -> v8 (new fields seeded to current defaults)\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;
@@ -962,7 +996,7 @@ bool MGR_NVM_load(void)
 			return false;
 		}
 		migrate_v7_to_v8(&v7, &cfg);
-		MGR_LOG_INFO("[NVM] Migrated v7 -> v8 (legacy payload, 24 h window)\r\n");
+		MGR_LOG_INFO("[NVM] Migrated v7 -> v8 (payload seeded to F.6 format 1, 12 h window)\r\n");
 		if (!validate_config(&cfg)) return false;
 		apply_config(&cfg);
 		return true;

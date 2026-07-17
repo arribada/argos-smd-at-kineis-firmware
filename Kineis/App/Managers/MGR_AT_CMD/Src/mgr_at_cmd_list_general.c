@@ -525,6 +525,14 @@ bool bMGR_AT_CMD_BOOT_cmd(uint8_t *pu8_cmdParamString __attribute__((unused)),
 		/* Small delay to ensure response is transmitted */
 		HAL_Delay(50);
 
+#if defined(SMD_PA) || defined(SMD_NOPA) || defined(SMD_STDALONE) || defined(SMD_OP)
+		/* Force the external PA off before handing over (fix 2026-07):
+		 * AT+BOOT mid-TX left PA_PSU_EN floating for the WHOLE DFU
+		 * session (HAL_DeInit returns PC0 to Hi-Z and the bootloader
+		 * never drives it) — minutes of PA bias on the bench supply. */
+		MCU_MISC_turn_off_pa();
+#endif
+
 		/* Jump to bootloader with UART protocol forced (no detection race) */
 		request_dfu_mode(DFU_PROTO_UART);
 
