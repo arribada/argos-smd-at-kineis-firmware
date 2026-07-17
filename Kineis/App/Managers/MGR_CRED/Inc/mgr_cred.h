@@ -81,14 +81,33 @@ typedef enum {
  *        credential read / MAC init (the boot path), and again from the
  *        CRED_FAIL wait state to detect AT re-provisioning.
  *
- * - page 0 fully provisioned + mirror current   -> OK_NOOP        (no write)
- * - page 0 fully provisioned + mirror stale/none -> MIRROR_WRITTEN (seed/update mirror)
- * - page 0 blank/partial     + mirror valid      -> RESTORED       (atomic page-0 rewrite)
- * - page 0 blank/partial     + no valid mirror   -> FAIL_LOUD      (caller must fail loud)
+ * - page 0 provisioned + mirror current                 -> OK_NOOP  (no write)
+ * - page 0 provisioned + mirror valid + DIFFERENT:
+ *     - provisioning intent declared -> MIRROR_WRITTEN  (mirror follows page 0)
+ *     - NO intent (fix 2026-07)      -> RESTORED        (MIRROR WINS: page 0
+ *       healed from the mirror — undeclared differences are torn-erase
+ *       garbage, and adopting them used to poison the good mirror)
+ * - page 0 provisioned + mirror invalid                 -> MIRROR_WRITTEN (seed)
+ * - page 0 blank/partial + mirror valid                 -> RESTORED (atomic rewrite)
+ * - page 0 blank/partial + no valid mirror              -> FAIL_LOUD
  *
  * @return the action taken (see MGR_CRED_Result_t).
  */
 MGR_CRED_Result_t MGR_CRED_syncAndRestore(void);
+
+/**
+ * @brief Declare a DELIBERATE page-0 credential write and reconcile at once.
+ *
+ * Called by every legitimate writer (MCU_NVM_setID/setAddr,
+ * MCU_AES_set_device_sec_key, MCU_NVM_setRadioConfZone) right after a
+ * successful flash write; a weak no-op default in mcu_nvm.c covers builds
+ * that do not link this manager. Sets the TAMP intent flag (survives resets
+ * in the write->sync window) then runs MGR_CRED_syncAndRestore() so the
+ * mirror adopts the new identity within the same transaction. Without a
+ * declared intent, a page 0 that differs from a valid mirror is treated as
+ * torn-erase garbage and HEALED FROM THE MIRROR — the mirror can never be
+ * poisoned by an undeclared change. */
+void MGR_CRED_noteProvisioningWrite(void);
 
 /** @brief Software CRC32 (poly 0xEDB88320, reflected) — exposed for unit tests. */
 uint32_t MGR_CRED_crc32(const void *buf, size_t len);

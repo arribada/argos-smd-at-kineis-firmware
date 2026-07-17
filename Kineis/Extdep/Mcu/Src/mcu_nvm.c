@@ -277,6 +277,17 @@ enum KNS_status_t MCU_NVM_getRadioConfZonePtr(void **ConfZonePtr)
 	return KNS_STATUS_OK;
 }
 
+/* Provisioning-intent hook (fix 2026-07). Every DELIBERATE write to the
+ * page-0 credential region (ID / ADDR / SECKEY / RADIOCONF — via AT, SPI or
+ * the Kineis lib) must be distinguishable from torn-erase garbage: MGR_CRED's
+ * mirror only ADOPTS a changed page 0 when a write was declared through this
+ * hook; otherwise the mirror WINS and heals page 0 (a torn wear-counter RMW
+ * could otherwise poison the mirror with stable non-FF garbage and the tag
+ * would transmit unattributable frames forever). Weak no-op default so builds
+ * that do not link MGR_CRED keep working; the strong implementation lives in
+ * mgr_cred.c and also reconciles the mirror immediately. */
+__attribute__((weak)) void MGR_CRED_noteProvisioningWrite(void) {}
+
 enum KNS_status_t MCU_NVM_setRadioConfZone(void *ConfZonePtr, uint16_t ConfZoneSize)
 {
 	if (ConfZonePtr == NULL || ConfZoneSize != FLASH_RADIOCONF_BYTE_SIZE) {
@@ -290,6 +301,7 @@ enum KNS_status_t MCU_NVM_setRadioConfZone(void *ConfZonePtr, uint16_t ConfZoneS
 		return status;
 	}
 
+	MGR_CRED_noteProvisioningWrite();
 	return KNS_STATUS_OK;
 }
 
@@ -330,7 +342,11 @@ enum KNS_status_t MCU_NVM_setID(uint32_t *id)
      * never over-reads past the caller's 4-byte uint32_t. */
     uint8_t slot[FLASH_ID_BYTE_SIZE] = {0};
     memcpy(slot, id, sizeof(*id));
-    return(MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, slot, FLASH_ID_BYTE_SIZE));
+    enum KNS_status_t status =
+        MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, slot, FLASH_ID_BYTE_SIZE);
+    if (status == KNS_STATUS_OK)
+        MGR_CRED_noteProvisioningWrite();  /* deliberate cred write — see hook */
+    return status;
 }
 
 
@@ -367,7 +383,11 @@ enum KNS_status_t MCU_NVM_setAddr(uint8_t addr[])
      * never over-reads past the caller's 4-byte array. */
     uint8_t slot[FLASH_ADDR_BYTE_SIZE] = {0};
     memcpy(slot, addr, 4);
-    return MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ADDR_OFFSET, slot, FLASH_ADDR_BYTE_SIZE);
+    enum KNS_status_t status =
+        MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ADDR_OFFSET, slot, FLASH_ADDR_BYTE_SIZE);
+    if (status == KNS_STATUS_OK)
+        MGR_CRED_noteProvisioningWrite();  /* deliberate cred write — see hook */
+    return status;
 }
 enum KNS_status_t MCU_NVM_getSN(uint8_t sn[])
 {

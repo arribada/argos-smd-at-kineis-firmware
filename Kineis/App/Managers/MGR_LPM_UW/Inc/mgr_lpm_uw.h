@@ -161,6 +161,18 @@ void MGR_LPM_UW_ensureRadioReady(void);
 __attribute__((noreturn))
 void MGR_LPM_UW_enterShutdownAutoWake(uint32_t wakeup_seconds);
 
+/** @brief Timed low-power park that stays MAGNET-WAKEABLE (fix 2026-07).
+ *
+ * STOP2 loop with RTC deadline + reed EXTI live, exiting through a clean
+ * NVIC_SystemReset on either the deadline or a magnet application. Replaces
+ * the SHUTDOWN auto-wake for the CRED_FAIL and boot-loop PERMANENT_OFF parks:
+ * SHUTDOWN kills the LSI (LSI-fallback units never woke = permanent brick)
+ * and PB6 cannot wake it (recovery magnet dead for the whole park). Never
+ * returns. Capped at 24 h per call — the caller re-parks on the next boot
+ * if its condition persists. */
+__attribute__((noreturn))
+void MGR_LPM_UW_parkStop2AutoWake(uint32_t wakeup_seconds);
+
 /* ---- Auto-cycle policy ---- */
 
 /** @brief Auto-cycle decision. Called once per MONITORING tick from

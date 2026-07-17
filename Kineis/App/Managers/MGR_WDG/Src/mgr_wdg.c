@@ -118,6 +118,15 @@ bool MGR_WDG_ensureIwdgStopOptionByte(void)
 
 void MGR_WDG_init(void)
 {
+	/* Idempotent (fix 2026-07): armed EARLY in main() so a wedge in the
+	 * ~2.5 s of init before the app-level arm is IWDG-covered (a potted
+	 * tag used to freeze forever at run current on a pre-arm hang), then
+	 * called again from the app init — the second call is a no-op. */
+	static bool s_armed = false;
+
+	if (s_armed)
+		return;
+
 	/* Do NOT arm the IWDG until OPTR.IWDG_STOP is FREEZE (bit 17 == 0). On a
 	 * fresh chip the bit is 1 (RUN), and MGR_WDG_ensureIwdgStopOptionByte() (run
 	 * just before us) may have DEFERRED the OB program on a marginal supply
@@ -157,6 +166,7 @@ void MGR_WDG_init(void)
 
 	/* First refresh */
 	IWDG->KR = IWDG_KEY_REFRESH;
+	s_armed = true;
 
 	/* Verify the IWDG freezes in Stop mode. RM0453 FLASH_OPTR bit 17
 	 * (IWDG_STOP): 0 = counter FROZEN in Stop, 1 = counter RUNNING in

@@ -1,17 +1,20 @@
 /**
  * @file    test_first_tx_veto.c
- * @brief   First TX of a surface window survives a veto (kns_app_uw_doppler.c,
- *          MONITORING scheduler).
+ * @brief   A vetoed TX at the surface is retried, never dropped
+ *          (kns_app_uw_doppler.c, MONITORING scheduler).
  *
- * Mirrors the first-TX arbitration:
+ * Mirrors the TX arbitration:
  *  - surface_tx_pending is consumed at dispatch only. A veto by a later gate
  *    (battery / rate / backoff / gesture / inter-TX floor) keeps it armed;
  *    before, it was cleared at gate 1 with tx_count == 0 and nothing re-armed
  *    it until the next dive.
- *  - Gates with a known horizon park first_tx_retry_tick; the surface idle
- *    path may then sleep until min(next SWS sample, retry).
- *  - Unchanged: cooldown / random-offset waits park nothing (no sleep while
- *    pending), a dive clears everything (reset_tx_scheduling).
+ *  - Gates with a known horizon park first_tx_retry_tick (first TX and
+ *    mid-sequence alike, cooldown wait included); the surface idle path may
+ *    then sleep until min(next action, retry). The random offset parks
+ *    nothing.
+ *  - Zero-TX safety net: at SURFACE with tx_count == 0 and nothing pending
+ *    for tx_seq_restart_s, the first TX is re-armed.
+ *  - A dive clears everything (reset_tx_scheduling).
  */
 
 #include "test_framework.h"
@@ -29,8 +32,11 @@ typedef struct {
 	uint32_t last_tx_tick;
 	uint32_t last_actual_tx_tick;
 	uint32_t tx_count;
+	uint32_t interval_ms;          /* current_interval_ms (0 = no schedule) */
+	uint32_t surface_since;        /* surface_since_tick (0 = not at surface) */
 	uint32_t offset_ms;            /* first_tx_random_offset_ms */
 	uint16_t cooldown_s;
+	uint16_t seq_restart_s;
 	/* per-pass gate inputs */
 	int      bat_ok;
 	int      rate_blocked;    uint32_t rate_retry_s;
@@ -38,6 +44,7 @@ typedef struct {
 	int      gesture;
 	/* per-pass outputs */
 	int      dispatched;
+	int      rearmed;
 	int      slept;
 	uint32_t slept_delta;
 } Sm;
@@ -61,19 +68,44 @@ static uint32_t retry_at_s(uint32_t s)
 	return retry_at(s * 1000u);
 }
 
-static int holding(const Sm *s)
+static int retry_holding(const Sm *s)
 {
-	return s->pending && s->retry_tick != 0u &&
-	       (int32_t)(s->retry_tick - fk_tick) > 0;
+	return s->retry_tick != 0u && (int32_t)(s->retry_tick - fk_tick) > 0;
+}
+
+static int first_holding(const Sm *s)
+{
+	return s->pending && retry_holding(s);
+}
+
+/* uw_ms_until_next_action (tx cap not modelled). */
+static uint32_t next_action_ms(const Sm *s)
+{
+	uint32_t delta = SWS_NEXT_SAMPLE_MS;
+	uint32_t since = fk_tick - s->last_tx_tick;
+
+	if (s->tx_count > 0u && s->interval_ms > 0u) {
+		uint32_t r = (since >= s->interval_ms) ? 0u : (s->interval_ms - since);
+
+		if (retry_holding(s) && (s->retry_tick - fk_tick) > r)
+			r = s->retry_tick - fk_tick;
+		if (r < delta)
+			delta = r;
+	}
+	if (first_holding(s) && (s->retry_tick - fk_tick) < delta)
+		delta = s->retry_tick - fk_tick;
+	return delta;
 }
 
 /* One MONITORING pass, deployed, at SURFACE. */
 static void step(Sm *s)
 {
-	int should_tx = 0, first_attempt = 0;
+	int should_tx = 0;
 	uint32_t since_last = fk_tick - s->last_tx_tick;
+	const int retry_ok = !retry_holding(s);
 
 	s->dispatched = 0;
+	s->rearmed = 0;
 	s->slept = 0;
 	s->slept_delta = 0;
 
@@ -83,26 +115,44 @@ static void step(Sm *s)
 			(s->last_actual_tx_tick == 0u) ||
 			((fk_tick - s->last_actual_tx_tick) >= cooldown_ms);
 
-		if (since_last >= s->offset_ms && cooldown_ok && !holding(s)) {
+		if (since_last >= s->offset_ms && cooldown_ok && retry_ok) {
 			should_tx = 1;
-			first_attempt = 1;
+		} else if (!cooldown_ok && !retry_holding(s)) {
+			s->retry_tick = retry_at(cooldown_ms -
+				(fk_tick - s->last_actual_tx_tick));
+		}
+	} else if (s->tx_count > 0u && s->interval_ms > 0u) {
+		if (since_last >= s->interval_ms && retry_ok)
+			should_tx = 1;
+	}
+
+	/* zero-TX safety net */
+	if (s->seq_restart_s > 0u && !s->pending && s->tx_count == 0u &&
+	    s->surface_since != 0u) {
+		uint32_t anchor = s->surface_since;
+
+		if (s->last_actual_tx_tick != 0u &&
+		    (int32_t)(s->last_actual_tx_tick - anchor) > 0)
+			anchor = s->last_actual_tx_tick;
+		if ((fk_tick - anchor) >= (uint32_t)s->seq_restart_s * 1000u) {
+			s->pending = 1;
+			s->retry_tick = 0;
+			s->last_tx_tick = 0;
+			s->rearmed = 1;
 		}
 	}
 
 	if (should_tx && !s->bat_ok) {
 		should_tx = 0;
-		if (first_attempt)
-			s->retry_tick = retry_at(FIRST_TX_BAT_RETRY_MS);
+		s->retry_tick = retry_at(FIRST_TX_BAT_RETRY_MS);
 	}
 	if (should_tx && s->rate_blocked) {
 		should_tx = 0;
-		if (first_attempt)
-			s->retry_tick = retry_at_s(s->rate_retry_s);
+		s->retry_tick = retry_at_s(s->rate_retry_s);
 	}
 	if (should_tx && s->backoff_blocked) {
 		should_tx = 0;
-		if (first_attempt)
-			s->retry_tick = retry_at_s(s->backoff_retry_s);
+		s->retry_tick = retry_at_s(s->backoff_retry_s);
 	}
 	if (should_tx && s->gesture)
 		should_tx = 0;
@@ -111,8 +161,7 @@ static void step(Sm *s)
 
 		if (floor_elapsed < TX_HARD_MIN_INTERVAL_MS) {
 			should_tx = 0;
-			if (first_attempt)
-				s->retry_tick = retry_at(TX_HARD_MIN_INTERVAL_MS - floor_elapsed);
+			s->retry_tick = retry_at(TX_HARD_MIN_INTERVAL_MS - floor_elapsed);
 		}
 	}
 
@@ -120,16 +169,16 @@ static void step(Sm *s)
 		s->pending = 0;
 		s->retry_tick = 0;
 		s->dispatched = 1;
-		s->last_tx_tick = fk_tick;
-		s->last_actual_tx_tick = (fk_tick == 0u) ? 1u : fk_tick;
+		s->last_tx_tick = (fk_tick == 0u) ? 1u : fk_tick;
+		s->last_actual_tx_tick = s->last_tx_tick;
 		s->tx_count++;
-	} else if (!s->pending || holding(s)) {
-		uint32_t delta = SWS_NEXT_SAMPLE_MS;
+	} else if (!s->pending || first_holding(s)) {
+		uint32_t delta = next_action_ms(s);
 
-		if (holding(s) && (s->retry_tick - fk_tick) < delta)
-			delta = s->retry_tick - fk_tick;
-		s->slept = 1;
-		s->slept_delta = delta;
+		if (delta > 0u) {
+			s->slept = 1;
+			s->slept_delta = delta;
+		}
 	}
 }
 
@@ -137,18 +186,23 @@ static void step(Sm *s)
 static void arm_surface(Sm *s, uint32_t offset_ms)
 {
 	s->tx_count = 0;
+	s->interval_ms = 0;
 	s->pending = 1;
 	s->retry_tick = 0;
 	s->last_tx_tick = 0;
 	s->offset_ms = offset_ms;
+	if (s->surface_since == 0u)
+		s->surface_since = (fk_tick == 0u) ? 1u : fk_tick;
 }
 
 /* SURF->UW: reset_tx_scheduling. */
 static void go_underwater(Sm *s)
 {
 	s->tx_count = 0;
+	s->interval_ms = 0;
 	s->pending = 0;
 	s->retry_tick = 0;
+	s->surface_since = 0;
 }
 
 static Sm mk(void)
@@ -158,6 +212,7 @@ static Sm mk(void)
 	memset(&s, 0, sizeof(s));
 	s.bat_ok = 1;
 	s.cooldown_s = 10;
+	s.seq_restart_s = 1200;
 	return s;
 }
 
@@ -197,7 +252,6 @@ static void test_battery_veto_keeps_window_and_retries(void)
 	step(&s);
 	ASSERT_FALSE(s.dispatched);
 	ASSERT_EQ(1, s.slept_delta);
-
 	fk_tick += 1u;
 	step(&s);
 	ASSERT_TRUE(s.dispatched);
@@ -307,19 +361,39 @@ static void test_hard_floor_retries_when_clear(void)
 	TEST_PASS();
 }
 
-static void test_cooldown_and_offset_unchanged(void)
+static void test_cooldown_wait_parked(void)
 {
 	Sm s = mk();
 
-	TEST_START("Cooldown / offset waits: unchanged (no holdoff, no sleep)");
+	TEST_START("Cooldown wait: parked as a retry, the loop sleeps through it");
 	fk_tick = 900000;
-	arm_surface(&s, 300);
+	arm_surface(&s, 0);
 	s.last_actual_tx_tick = fk_tick - 3000u;   /* 7 s of cooldown left */
+	step(&s);
+	ASSERT_FALSE(s.dispatched);
+	ASSERT_TRUE(s.pending);
+	ASSERT_EQ(fk_tick + 7000u, s.retry_tick);
+	ASSERT_TRUE(s.slept);
+	ASSERT_EQ(SWS_NEXT_SAMPLE_MS, s.slept_delta);
+	fk_tick += 7000u;
+	step(&s);
+	ASSERT_TRUE(s.dispatched);
+	TEST_PASS();
+}
+
+static void test_offset_wait_not_parked(void)
+{
+	Sm s = mk();
+
+	TEST_START("Random-offset wait: no holdoff, no sleep while pending");
+	fk_tick = 950000;
+	arm_surface(&s, 300);
+	s.last_tx_tick = fk_tick;               /* offset counted from now */
 	step(&s);
 	ASSERT_FALSE(s.dispatched);
 	ASSERT_EQ(0, s.retry_tick);
 	ASSERT_FALSE(s.slept);
-	fk_tick += 7000u;
+	fk_tick += 300u;
 	step(&s);
 	ASSERT_TRUE(s.dispatched);
 	TEST_PASS();
@@ -338,6 +412,7 @@ static void test_dive_clears_pending_and_holdoff(void)
 	go_underwater(&s);
 	ASSERT_FALSE(s.pending);
 	ASSERT_EQ(0, s.retry_tick);
+	ASSERT_EQ(0, s.surface_since);
 	s.bat_ok = 1;
 	fk_tick += 5000u;
 	arm_surface(&s, 0);
@@ -346,22 +421,96 @@ static void test_dive_clears_pending_and_holdoff(void)
 	TEST_PASS();
 }
 
-static void test_mid_sequence_veto_parks_nothing(void)
+static void test_mid_sequence_veto_parks_retry(void)
 {
 	Sm s = mk();
 
-	TEST_START("Periodic TX (tx_count > 0) never parks a first-TX holdoff");
+	TEST_START("Mid-sequence veto: retry parked, periodic TX gated, loop sleeps");
 	fk_tick = 1100000;
 	arm_surface(&s, 0);
 	step(&s);
 	ASSERT_TRUE(s.dispatched);
-	/* periodic TXs are not modelled; a veto with pending == 0 parks nothing */
+	s.interval_ms = 30000u;
+
+	/* periodic TX due, battery vetoes it */
 	s.bat_ok = 0;
-	fk_tick += 60000u;
+	fk_tick += 30000u;
 	step(&s);
 	ASSERT_FALSE(s.dispatched);
-	ASSERT_EQ(0, s.retry_tick);
+	ASSERT_EQ(fk_tick + FIRST_TX_BAT_RETRY_MS, s.retry_tick);
+	ASSERT_TRUE(s.slept);                   /* overdue TX no longer spins */
+	ASSERT_EQ(SWS_NEXT_SAMPLE_MS, s.slept_delta);
+
+	/* recovered but still parked */
+	s.bat_ok = 1;
+	fk_tick += 30000u;
+	step(&s);
+	ASSERT_FALSE(s.dispatched);
 	ASSERT_TRUE(s.slept);
+	fk_tick += 30000u;
+	step(&s);
+	ASSERT_TRUE(s.dispatched);
+	ASSERT_EQ(2, s.tx_count);
+	ASSERT_EQ(0, s.retry_tick);
+	TEST_PASS();
+}
+
+static void test_zero_tx_net_rearms(void)
+{
+	Sm s = mk();
+
+	TEST_START("Zero-TX net: first TX re-armed after tx_seq_restart_s at surface");
+	fk_tick = 1200000;
+	s.surface_since = fk_tick;              /* first TX lost by some path */
+	fk_tick += (uint32_t)s.seq_restart_s * 1000u - 1u;
+	step(&s);
+	ASSERT_FALSE(s.rearmed);
+	fk_tick += 1u;
+	step(&s);
+	ASSERT_TRUE(s.rearmed);
+	ASSERT_TRUE(s.pending);
+	step(&s);
+	ASSERT_TRUE(s.dispatched);
+	TEST_PASS();
+}
+
+static void test_zero_tx_net_anchor_and_guards(void)
+{
+	Sm s = mk();
+	Sm t = mk();
+	Sm u = mk();
+	Sm v = mk();
+
+	TEST_START("Zero-TX net: later anchor wins, disabled/tx_count/pending guards");
+	fk_tick = 3000000;
+	s.surface_since = fk_tick - 2000000u;
+	s.last_actual_tx_tick = fk_tick - 600000u;  /* last TX 10 min ago */
+	step(&s);
+	ASSERT_FALSE(s.rearmed);
+	fk_tick += 600000u;
+	step(&s);
+	ASSERT_TRUE(s.rearmed);
+
+	fk_tick = 20000000;
+	t.seq_restart_s = 0;                    /* net disabled */
+	t.surface_since = fk_tick - 10000000u;
+	step(&t);
+	ASSERT_FALSE(t.rearmed);
+
+	u.surface_since = fk_tick - 10000000u;  /* a sequence ran */
+	u.tx_count = 3;
+	step(&u);
+	ASSERT_FALSE(u.rearmed);
+
+	v.surface_since = fk_tick - 10000000u;  /* re-armed attempt obeys backoff */
+	v.backoff_blocked = 1;
+	v.backoff_retry_s = 120;
+	step(&v);
+	ASSERT_TRUE(v.rearmed);
+	step(&v);
+	ASSERT_FALSE(v.dispatched);
+	ASSERT_TRUE(v.pending);
+	ASSERT_EQ(fk_tick + 120000u, v.retry_tick);
 	TEST_PASS();
 }
 
@@ -393,7 +542,7 @@ static void test_holdoff_wrap_safe(void)
 
 int main(void)
 {
-	printf("\n=== First TX survives a veto ===\n");
+	printf("\n=== Vetoed TX is retried, never dropped ===\n");
 	test_happy_path_first_pass_dispatch();
 	test_battery_veto_keeps_window_and_retries();
 	test_floating_animal_not_silenced();
@@ -401,9 +550,12 @@ int main(void)
 	test_long_horizon_clamped_to_one_hour();
 	test_gesture_defers_without_holdoff();
 	test_hard_floor_retries_when_clear();
-	test_cooldown_and_offset_unchanged();
+	test_cooldown_wait_parked();
+	test_offset_wait_not_parked();
 	test_dive_clears_pending_and_holdoff();
-	test_mid_sequence_veto_parks_nothing();
+	test_mid_sequence_veto_parks_retry();
+	test_zero_tx_net_rearms();
+	test_zero_tx_net_anchor_and_guards();
 	test_holdoff_wrap_safe();
 
 	printf("\nResults: %d/%d passed\n", tests_passed, tests_run);

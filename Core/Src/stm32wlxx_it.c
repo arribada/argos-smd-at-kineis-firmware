@@ -23,6 +23,27 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>  /* snprintf in HardFault_Handler */
+#include "mcu_flash.h"  /* FLASH_USER_* bounds for the ECC-NMI heal path */
+/* The PMLOG ring (page 100) and the credential mirror (page 101) sit BETWEEN
+ * the app image and the bootloader: they are pure CRC/magic-guarded data and
+ * must be inside the ECC-NMI heal window — the first fix only covered
+ * FLASH_USER and a torn PMLOG write (which happens during the shutdown log
+ * flush, i.e. exactly while power is being removed) still reset-looped.
+ * __has_include: the MGR_PMLOG/MGR_CRED include dirs are only on the include
+ * path for the app variants that link those managers (matrix-build proven:
+ * a bare #include broke every GUI/DOPPLER/STDLN build). Variants without
+ * them keep the FLASH_USER-only heal window — those products do not run the
+ * potted-tag mission the extension exists for. */
+#if defined(__has_include)
+#  if __has_include("mgr_pmlog.h") && __has_include("mgr_cred.h")
+#    include "mgr_pmlog.h"  /* MGR_PMLOG_FLASH_ADDR — page 100 is app data too */
+#    include "mgr_cred.h"   /* MGR_CRED_MIRROR_ADDR — page 101, ditto */
+#    define ECC_HEAL_HAS_DATA_PAGES 1
+_Static_assert(MGR_CRED_MIRROR_ADDR >= MGR_PMLOG_FLASH_ADDR &&
+               MGR_CRED_MIRROR_ADDR < MGR_PMLOG_FLASH_ADDR + 2u * FLASH_PAGE_SIZE,
+               "cred mirror moved out of the 2-page data window — update NMI heal range");
+#  endif
+#endif
 #if defined(USE_UW_DOPPLER_APP) || defined(USE_DOPPLER_APP)
 #include "mgr_err.h"
 #include "mgr_log.h"
@@ -104,7 +125,41 @@ extern TIM_HandleTypeDef htim16;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+  /* Flash ECC double-bit error (ECCD) — raised as an UNMASKABLE NMI on the
+   * READ of a doubleword whose program/erase was interrupted (brownout or
+   * power-cut mid-write). The historic behaviour (reset) was an unrecoverable
+   * brick: the next boot re-read the same torn word and reset-looped forever —
+   * even the factory-reset heal path RMW-reads the torn page before erasing.
+   *
+   * Recovery contract (fix 2026-07): every consumer of user-data flash in
+   * this firmware validates AFTER the raw read (NVM CRC32, cred mirror CRC,
+   * PMLOG magic, WL-slot scan), so for a fault inside FLASH_USER we record a
+   * sticky breadcrumb, clear ECCD and RETURN — the interrupted load completes
+   * with garbage, the CRC/magic layer rejects it, and the normal heal paths
+   * (defaults, mirror restore, page rewrite) repair the page. A fault OUTSIDE
+   * FLASH_USER (torn executable image, system flash) cannot be healed by
+   * returning: keep the breadcrumb and fall through to the reset below. */
+  {
+    uint32_t eccr = FLASH->ECCR;
 
+    if (eccr & FLASH_ECCR_ECCD) {
+      uint32_t fail_addr = FLASH_BASE +
+          ((eccr & FLASH_ECCR_ADDR_ECC) << 3U);
+      /* Forensic breadcrumb: 0xEC marker + low 24 address bits. BKP18R is
+       * reserved for this — see the TAMP allocation table in mgr_err.c. */
+      TAMP->BKP18R = 0xEC000000UL | (fail_addr & 0x00FFFFFFUL);
+      FLASH->ECCR = eccr | FLASH_ECCR_ECCD;   /* write-1-to-clear */
+      if (((eccr & FLASH_ECCR_SYSF_ECC) == 0U) &&
+          (((fail_addr >= FLASH_USER_START_ADDR) &&
+            (fail_addr <= FLASH_USER_END_ADDR))
+#if defined(ECC_HEAL_HAS_DATA_PAGES)
+           || ((fail_addr >= MGR_PMLOG_FLASH_ADDR) &&
+               (fail_addr < MGR_PMLOG_FLASH_ADDR + 2u * FLASH_PAGE_SIZE))
+#endif
+          ))
+        return;   /* data page: garbage read -> CRC rejects -> heals */
+    }
+  }
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
   while (1)

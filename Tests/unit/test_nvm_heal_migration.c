@@ -152,8 +152,12 @@ static v8_t migrate_v7_to_v8(const v7_t *v7)
 	memset(&out, 0, sizeof(out));
 	/* prefix = everything before v7's crc32, i.e. up to v8's first new field */
 	memcpy(&out, v7, offsetof(v7_t, prefix_crc));
-	out.payload_format = 0;   /* not copied -> stays 0 (legacy frame) */
-	out.stat_window_h  = 0;   /* 0 -> apply_config maps to 24h default */
+	/* Fleet-uniformity contract (fix 2026-07): NEW fields are seeded with
+	 * the CURRENT shipped defaults so an upgraded unit transmits the same
+	 * on-air format as a fresh one. 0 must be an operator choice, never a
+	 * migration artefact (mirrors migration_seed_v8_fields in mgr_nvm.c). */
+	out.payload_format = 1;   /* minimal F.6 frame — the shipped default */
+	out.stat_window_h  = 12;  /* 12 h stats window — the app default */
 	return out;
 }
 
@@ -167,8 +171,8 @@ static void test_migrate_v7_to_v8_defaults_new_fields(void)
 	ASSERT_EQ_HEX(0x434F4E46, v8.magic);    /* prefix preserved */
 	ASSERT_EQ(0x1234, v8.a);
 	ASSERT_EQ(0x5678, v8.b);
-	ASSERT_EQ(0, v8.payload_format);         /* new field defaults to legacy */
-	ASSERT_EQ(0, v8.stat_window_h);          /* 0 -> 24h at apply_config */
+	ASSERT_EQ(1, v8.payload_format);         /* seeded to shipped default */
+	ASSERT_EQ(12, v8.stat_window_h);         /* seeded to shipped default */
 	TEST_PASS();
 }
 

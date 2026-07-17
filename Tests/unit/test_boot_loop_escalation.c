@@ -78,6 +78,26 @@ static void mark_success(void)
 	boot_in_progress = 0;
 }
 
+/* ---- Mirror of the FIXED cold-reset classification (2026-07) ----
+ * On the WL55's default bidirectional NRST, every INTERNAL reset (IWDG /
+ * WWDG / SFT / LPWR) drives the NRST pin and CO-ASSERTS PINRSTF. The old
+ * "PINRSTF present = clean" test therefore matched EVERY fault reset and
+ * zeroed the counter each boot — the whole escalation ladder was
+ * unreachable. Clean = cold-boot flag present AND no internal flag. */
+#define F_BOR   (1u << 0)
+#define F_PIN   (1u << 1)
+#define F_OBL   (1u << 2)
+#define F_IWDG  (1u << 3)
+#define F_WWDG  (1u << 4)
+#define F_SFT   (1u << 5)
+#define F_LPWR  (1u << 6)
+
+static int reset_is_cold(unsigned csr)
+{
+	unsigned internal = csr & (F_IWDG | F_WWDG | F_SFT | F_LPWR);
+	return !internal && (csr & (F_BOR | F_PIN | F_OBL)) != 0u;
+}
+
 static void reset_state(void)
 {
 	/* Post first-init state: boot_in_progress set, counters clear. */
@@ -192,6 +212,37 @@ void test_healthy_reboots_never_escalate(void)
 	TEST_PASS();
 }
 
+/** The fixed classification: internal resets co-asserting PINRSTF are NOT
+ *  clean — the exact hardware reality that made the old ladder unreachable. */
+void test_internal_reset_with_pinrstf_is_not_cold(void)
+{
+	ASSERT_FALSE(reset_is_cold(F_IWDG | F_PIN));   /* IWDG on bidir NRST */
+	ASSERT_FALSE(reset_is_cold(F_SFT  | F_PIN));   /* NVIC_SystemReset    */
+	ASSERT_FALSE(reset_is_cold(F_WWDG | F_PIN));
+	ASSERT_FALSE(reset_is_cold(F_LPWR | F_PIN));
+	ASSERT_TRUE(reset_is_cold(F_PIN));             /* true external NRST  */
+	ASSERT_TRUE(reset_is_cold(F_BOR | F_PIN));     /* cold power-on       */
+	ASSERT_TRUE(reset_is_cold(F_OBL | F_PIN));     /* option-byte launch  */
+	ASSERT_FALSE(reset_is_cold(0));                /* no flag: not cold   */
+	TEST_PASS();
+}
+
+/** End-to-end with REALISTIC flags: 8 IWDG-crash boots (each co-asserting
+ *  PINRSTF) must now reach the factory reset — the ladder is live. Pre-fix,
+ *  reset_is_cold(F_IWDG|F_PIN) was true and the counter never moved. */
+void test_ladder_reachable_with_realistic_flags(void)
+{
+	reset_state();
+	for (int i = 0; i < 8; i++)
+		boot_handle(reset_is_cold(F_IWDG | F_PIN));  /* NOT cold -> counts */
+	ASSERT_EQ(ACT_FACTORY_RESET, last_action);
+	ASSERT_EQ(1, (long)factory_reset_calls);
+	/* And a user power-cycle still clears everything. */
+	boot_handle(reset_is_cold(F_BOR | F_PIN));
+	ASSERT_EQ(0, (long)consecutive_failures);
+	TEST_PASS();
+}
+
 int main(void)
 {
 	TEST_SUITE_START("UW_DOPPLER boot-loop escalation (8 / 16)");
@@ -203,6 +254,8 @@ int main(void)
 	RUN_TEST(test_cold_reset_clears_counter);
 	RUN_TEST(test_monitoring_success_resets);
 	RUN_TEST(test_healthy_reboots_never_escalate);
+	RUN_TEST(test_internal_reset_with_pinrstf_is_not_cold);
+	RUN_TEST(test_ladder_reachable_with_realistic_flags);
 
 	TEST_SUITE_END();
 	return (tests_failed == 0) ? 0 : 1;

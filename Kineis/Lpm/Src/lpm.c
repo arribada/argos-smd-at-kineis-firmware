@@ -302,6 +302,18 @@ void LPM_compensateTick(void)
 {
 	RTC_TimeTypeDef sTime;
 	RTC_DateTypeDef sDate;
+
+	/* Post-STOP shadow resync (fix 2026-07): after Stop mode the calendar
+	 * shadow registers hold FROZEN pre-sleep values for up to 2 RTCCLK
+	 * (~61 us on LSE) once APB resumes — an EXTI-source wake that reads
+	 * immediately gets the OLD time, elapsed computes ~0, and the WHOLE
+	 * sleep silently vanishes from uwTick (every wall-clock deadline then
+	 * stretches by one sleep window). HAL_RTC_WaitForSynchro clears RSF and
+	 * waits for the re-sync; on failure (RTC dead) skip compensation — the
+	 * STOP2 liveness gate owns that failure mode. */
+	if (HAL_RTC_WaitForSynchro(&hrtc) != HAL_OK)
+		return;
+
 	HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
 	HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
@@ -931,7 +943,16 @@ void LPM_shutdownWithAutoWake(uint32_t wakeup_seconds)
 			: RTC_WAKEUPCLOCK_CK_SPRE_16BITS;
 		uint16_t counter = (uint16_t)((wakeup_seconds - 1u) & 0xFFFFu);
 
-		(void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0);
+		if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, counter, clk_src, 0)
+		    != HAL_OK) {
+			/* Fix 2026-07: the arm result was discarded. A failed arm
+			 * (WUTWF timeout on a stalling crystal that still passed the
+			 * synchro gate an instant earlier) followed by SHUTDOWN is a
+			 * ONE-WAY park: no IWDG, no EXTI, and the magnet cannot wake
+			 * SHUTDOWN on this board. Reset instead — the cold boot
+			 * re-evaluates the caller's state under IWDG cover. */
+			NVIC_SystemReset();
+		}
 
 		/* Enable the internal wake-up line so RTC wake reaches the PWR
 		 * controller. Without this the timer fires but the chip doesn't

@@ -363,11 +363,13 @@ ifeq ($(APP),UW_DOPPLER)
 	$(KINEIS_DIR)/App/Managers/MGR_RATE/Src/mgr_rate.c \
 	$(KINEIS_DIR)/App/Managers/MGR_TXSTATS/Src/mgr_txstats.c \
 	$(KINEIS_DIR)/App/Managers/MGR_PMLOG/Src/mgr_pmlog.c \
-	$(KINEIS_DIR)/App/Managers/MGR_CRED/Src/mgr_cred.c \
 	$(KINEIS_DIR)/App/Managers/MGR_AT_CMD/Src/mgr_at_cmd_list_uw_doppler.c \
 	$(KINEIS_DIR)/App/Managers/MGR_GESTURE/Src/mgr_gesture.c \
 	$(KINEIS_DIR)/App/Managers/MGR_LPM_UW/Src/mgr_lpm_uw.c \
-	$(KINEIS_DIR)/App/kns_app_uw_doppler.c
+	$(KINEIS_DIR)/App/kns_app_uw_doppler.c \
+	$(KINEIS_DIR)/App/Managers/MGR_CRED/Src/mgr_cred.c
+# .retentionRamNoload is placed in link order: mgr_cred.c stays LAST so its
+# shadow appends after the existing retained objects (sealed-unit updates).
 endif
 
 ifeq ($(APP),DOPPLER)

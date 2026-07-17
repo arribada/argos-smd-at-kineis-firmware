@@ -3,7 +3,7 @@
  * @brief   Error tracker using TAMP backup registers
  *
  * Persists error context (reset count, last fault, last state) across
- * system resets using STM32WL TAMP backup registers BKP2R-BKP7R.
+ * system resets using STM32WL TAMP backup registers BKP6R, BKP12R-BKP17R.
  * These survive all resets except VBAT removal.
  *
  * Usage:
@@ -21,6 +21,7 @@
 /* TAMP backup register addresses (STM32WL55). BKP0R-BKP5R belong to the
  * linker .rtc_bkpr section (mcu_tim timer[], lpm_ctxt, Argos MC), BKP10R to
  * MGR_GESTURE, BKP11R to MGR_LPM_UW: MGR_ERR must stay clear of them. */
+#define TAMP_BKP6R_ADDR  0x4000B118UL
 #define TAMP_BKP12R_ADDR 0x4000B130UL
 #define TAMP_BKP13R_ADDR 0x4000B134UL
 #define TAMP_BKP14R_ADDR 0x4000B138UL
@@ -29,6 +30,7 @@
 #define TAMP_BKP17R_ADDR 0x4000B144UL
 
 /* Register layout:
+ * BKP6R  = consecutive fault-terminated boots (any uptime)
  * BKP12R = reset counter (incremented each boot)
  * BKP13R = last reset cause (RCC_CSR flags snapshot)
  * BKP14R = last error code (MGR_ERR_Code_t)
@@ -41,6 +43,11 @@
 #define MGR_ERR_CRASH_LOOP_MAX       10    /**< Max consecutive short-lived boots */
 #define MGR_ERR_CRASH_LOOP_MIN_UP_MS 30000 /**< Min uptime (ms) to consider boot "stable" */
 #define MGR_ERR_CRASH_LOOP_SLEEP_S   3600  /**< Sleep duration (s) when crash loop detected */
+#define MGR_ERR_FAULT_STREAK_MAX     20    /**< Consecutive fault-terminated boots (ANY
+                                            *   uptime) before the 1 h safe sleep — closes
+                                            *   the post-MONITORING >=30 s blind spot the
+                                            *   <30 s crash counter cannot see (fix 2026-07,
+                                            *   sim: 1439 boots/day at 100% awake, forever). */
 
 typedef enum {
 	ERR_NONE = 0,

@@ -8,7 +8,8 @@
  *  - BKP10R: MGR_GESTURE persisted mode.
  *  - BKP11R: MGR_LPM_UW soft-off wake magic.
  * MGR_ERR used BKP2R-BKP7R, so MGR_ERR_log() overwrote the live MC and
- * lpm_ctxt at runtime. It now uses BKP12R-BKP17R.
+ * lpm_ctxt at runtime. It now uses BKP12R-BKP17R, plus BKP6R for the
+ * fault-streak counter.
  */
 
 #include "test_framework.h"
@@ -48,11 +49,26 @@ static void test_no_alias_with_other_owners(void)
 	TEST_PASS();
 }
 
+static void test_fault_streak_register(void)
+{
+	size_t i;
+
+	TEST_START("Fault streak at BKP6R, clear of every other owner");
+	ASSERT_EQ_HEX(BKP(6), TAMP_BKP6R_ADDR);
+	ASSERT_TRUE(TAMP_BKP6R_ADDR >= LINKER_BKPR_END);
+	ASSERT_TRUE(TAMP_BKP6R_ADDR != BKP(10));
+	ASSERT_TRUE(TAMP_BKP6R_ADDR != BKP(11));
+	for (i = 0; i < N_ERR_REGS; i++)
+		ASSERT_TRUE(err_regs[i] != TAMP_BKP6R_ADDR);
+	TEST_PASS();
+}
+
 int main(void)
 {
 	printf("\n=== MGR_ERR backup register map ===\n");
 	test_addresses_are_bkp12_to_17();
 	test_no_alias_with_other_owners();
+	test_fault_streak_register();
 
 	printf("\nResults: %d/%d passed\n", tests_passed, tests_run);
 	return tests_failed ? 1 : 0;

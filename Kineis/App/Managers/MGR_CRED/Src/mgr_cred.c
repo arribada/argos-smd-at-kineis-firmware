@@ -123,6 +123,81 @@ static bool page0_fully_provisioned(const uint8_t p0[MGR_CRED_PAYLOAD_BYTES])
 	       !all_ff(p0 + FLASH_SECKEY_OFFSET, FLASH_SECKEY_BYTE_SIZE);
 }
 
+/* ---- Provisioning intent (fix 2026-07) ----------------------------------
+ * THE RULE: the mirror must NEVER be overwritten from page 0 unless a
+ * DELIBERATE credential write was declared. A torn page-0 ERASE (the
+ * wear-counter overflow RMW transits page 0 through blank ~every 1024 TX,
+ * brownout-exposed by its own admission in mcu_flash.c) can leave STABLE
+ * non-FF garbage that passes page0_fully_provisioned — adopting it would
+ * poison the last good identity and the tag would transmit unattributable
+ * frames forever. Every legitimate writer (MCU_NVM_setID/setAddr,
+ * MCU_AES_set_device_sec_key, MCU_NVM_setRadioConfZone — reached by AT, SPI
+ * and the Kineis lib alike) declares intent through
+ * MGR_CRED_noteProvisioningWrite() below, which also reconciles immediately
+ * so the mirror follows the new identity within the same transaction.
+ *
+ * Intent lives in TAMP->BKP19R (free per the allocation table in mgr_err.c):
+ * survives every reset class in the write->sync window, dies only with VBAT
+ * — and a lost intent fails SAFE (mirror wins = previous VALID identity is
+ * kept, loudly logged; never garbage, never a brick). */
+#define CRED_INTENT_MAGIC  0x43494E54u  /* "CINT" */
+#define CRED_INTENT_REG    (TAMP->BKP19R)
+
+static bool intent_pending(void)
+{
+	return CRED_INTENT_REG == CRED_INTENT_MAGIC;
+}
+
+static void intent_clear(void)
+{
+	if (intent_pending())
+		CRED_INTENT_REG = 0u;
+}
+
+/* ---- Last-known-good identity shadow (fix 2026-07, attack B) -------------
+ * SRAM2 retention copy of the last CONFIRMED-good payload. Closes the sim-
+ * proven "erase-ok/program-fail" attack: an adoption whose mirror ERASE
+ * succeeded but whose PROGRAM failed leaves the mirror INVALID for the rest
+ * of the session — a later torn page-0 erase would then be SEEDED as a fresh
+ * identity (garbage adopted, no intent needed, mirror then "protects" the
+ * garbage). The shadow survives every reset class except VBAT loss and lets
+ * the seed branch tell "first boot ever" from "mirror recently destroyed".
+ * CRC-guarded; garbage on true first power fails validation harmlessly. */
+static __attribute__((__section__(".retentionRamNoload")))
+struct {
+	uint32_t magic;
+	uint8_t  payload[MGR_CRED_PAYLOAD_BYTES];
+	uint32_t crc32;
+} s_cred_shadow;
+#define CRED_SHADOW_MAGIC 0x43534857u /* "CSHW" */
+_Static_assert(sizeof(s_cred_shadow) == 56,
+               "cred shadow layout changed — bump CRED_SHADOW_MAGIC");
+
+static bool shadow_valid(void)
+{
+	return s_cred_shadow.magic == CRED_SHADOW_MAGIC &&
+	       MGR_CRED_crc32(s_cred_shadow.payload,
+	                      MGR_CRED_PAYLOAD_BYTES) == s_cred_shadow.crc32;
+}
+
+static void shadow_update(const uint8_t p[MGR_CRED_PAYLOAD_BYTES])
+{
+	s_cred_shadow.magic = 0u;   /* invalidate while rebuilding */
+	memcpy(s_cred_shadow.payload, p, MGR_CRED_PAYLOAD_BYTES);
+	s_cred_shadow.crc32 = MGR_CRED_crc32(s_cred_shadow.payload,
+	                                     MGR_CRED_PAYLOAD_BYTES);
+	s_cred_shadow.magic = CRED_SHADOW_MAGIC;
+}
+
+void MGR_CRED_noteProvisioningWrite(void)
+{
+	/* Declare FIRST (TAMP survives a reset landing between the flash write
+	 * and the reconcile), then reconcile so the mirror adopts the new
+	 * page-0 content right away. */
+	CRED_INTENT_REG = CRED_INTENT_MAGIC;
+	(void)MGR_CRED_syncAndRestore();
+}
+
 MGR_CRED_Result_t MGR_CRED_syncAndRestore(void)
 {
 	uint8_t p0[MGR_CRED_PAYLOAD_BYTES];
@@ -134,16 +209,82 @@ MGR_CRED_Result_t MGR_CRED_syncAndRestore(void)
 	if (page0_fully_provisioned(p0)) {
 		/* Steady state: only write the mirror when the credentials actually
 		 * changed (payload-only compare) → no per-boot flash wear. */
-		if (mirror_valid && memcmp(p0, &m, MGR_CRED_PAYLOAD_BYTES) == 0)
+		if (mirror_valid && memcmp(p0, &m, MGR_CRED_PAYLOAD_BYTES) == 0) {
+			intent_clear();   /* nothing pending — page 0 == mirror */
+			shadow_update(p0);  /* identity confirmed good — keep fresh */
 			return MGR_CRED_OK_NOOP;
+		}
 
+		if (mirror_valid && !intent_pending()) {
+			/* MIRROR WINS (fix 2026-07): page 0 differs from a VALID
+			 * mirror and NO provisioning write was declared. The only
+			 * benign explanation is torn page-0 erase garbage — stable
+			 * non-FF bytes that pass the fully-provisioned test. The old
+			 * code adopted it here and POISONED the good mirror. Heal
+			 * page 0 from the mirror instead (same atomic single-RMW as
+			 * the blank-page restore below). A legitimate reprovision
+			 * that somehow bypassed the intent hook is reverted to the
+			 * PREVIOUS valid identity — visible at the bench via this
+			 * WARN, and strictly safer than adopting garbage. */
+			MGR_LOG_WARN("[CRED] page 0 differs w/o provisioning intent — mirror wins, healing page 0\r\n");
+			if (MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ID_OFFSET,
+			                    &m, MGR_CRED_PAYLOAD_BYTES)
+			    != KNS_STATUS_OK) {
+				MGR_LOG_ERR("[CRED] page-0 heal write failed\r\n");
+				return MGR_CRED_FAIL_LOUD;
+			}
+			MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ID_OFFSET,
+			               p0, sizeof(p0));
+			if (memcmp(p0, &m, MGR_CRED_PAYLOAD_BYTES) != 0)
+				return MGR_CRED_FAIL_LOUD;
+			shadow_update(p0);
+			return MGR_CRED_RESTORED;
+		}
+
+		/* Mirror invalid + NO declared intent: consult the retention
+		 * shadow before seeding (fix 2026-07, sim attack B). If the
+		 * shadow holds a different confirmed-good identity, the mirror
+		 * was recently destroyed (erase-ok/program-fail adoption) and
+		 * this differing page 0 is torn-erase garbage — heal BOTH from
+		 * the shadow instead of seeding the garbage as a fresh identity. */
+		if (!mirror_valid && !intent_pending() && shadow_valid() &&
+		    memcmp(p0, s_cred_shadow.payload,
+		           MGR_CRED_PAYLOAD_BYTES) != 0) {
+			MGR_LOG_WARN("[CRED] mirror lost + page 0 changed w/o intent — healing from retention shadow\r\n");
+			if (MCU_FLASH_write(FLASH_USER_START_ADDR + FLASH_ID_OFFSET,
+			                    s_cred_shadow.payload,
+			                    MGR_CRED_PAYLOAD_BYTES)
+			    != KNS_STATUS_OK)
+				return MGR_CRED_FAIL_LOUD;
+			MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ID_OFFSET,
+			               p0, sizeof(p0));
+			if (memcmp(p0, s_cred_shadow.payload,
+			           MGR_CRED_PAYLOAD_BYTES) != 0)
+				return MGR_CRED_FAIL_LOUD;
+			/* fall through: adopt the healed page 0 into the mirror */
+		}
+
+		/* Mirror invalid (first boot / VBAT loss — nothing to protect) or
+		 * a provisioning write was declared: adopt page 0 into the mirror. */
 		MGR_CRED_Mirror_t nm;
 		mirror_build(&nm, p0);
-		if (mirror_program(&nm)) {
+		if (mirror_program(&nm) ||
+		    mirror_program(&nm) /* one retry — transient HAL hiccup */) {
+			intent_clear();
+			shadow_update(p0);
 			MGR_LOG_INFO("[CRED] mirror updated from page 0\r\n");
 			return MGR_CRED_MIRROR_WRITTEN;
 		}
-		/* Mirror write failed but page 0 is intact — retry next boot. */
+		/* Mirror write failed TWICE (fix 2026-07, sim attack A): the old
+		 * code kept the intent pending for the whole session, so a LATER
+		 * torn page-0 erase was adopted over a still-valid mirror. Clear
+		 * the intent instead: if a legit reprovision was in flight, the
+		 * next boot's mirror-wins reverts page 0 to the PREVIOUS valid
+		 * identity — loud, bench-visible, and strictly safer than leaving
+		 * a garbage-adoption window open on a unit whose flash is already
+		 * misbehaving. The shadow (if valid) still guards the seed path. */
+		intent_clear();
+		MGR_LOG_ERR("[CRED] mirror adopt failed twice — intent dropped (next boot: mirror/shadow wins)\r\n");
 		return MGR_CRED_OK_NOOP;
 	}
 
@@ -175,6 +316,7 @@ MGR_CRED_Result_t MGR_CRED_syncAndRestore(void)
 		MCU_FLASH_read(FLASH_USER_START_ADDR + FLASH_ID_OFFSET, p0, sizeof(p0));
 		if (page0_fully_provisioned(p0)) {
 			MGR_LOG_WARN("[CRED] page-0 credentials restored from mirror\r\n");
+			shadow_update(p0);
 			return MGR_CRED_RESTORED;
 		}
 		return MGR_CRED_FAIL_LOUD;
