@@ -543,7 +543,6 @@ static bool     surface_tx_pending = false; /**< Immediate TX needed on surface 
  * until the next dive. Gates with a known horizon (first TX and mid-sequence)
  * park the retry here so the loop sleeps through the wait. */
 static uint32_t first_tx_retry_tick = 0;
-#define FIRST_TX_BAT_RETRY_MS     60000u
 #define FIRST_TX_MAX_RETRY_MS   3600000u  /**< Re-evaluate at least hourly */
 /* Start of the current continuous SURFACE stretch (0 = not at surface).
  * Anchors the zero-TX safety net in MONITORING. */
@@ -2753,13 +2752,16 @@ void KNS_APP_uw_doppler_loop(void)
 					if (cap_now > 0u && tx_count >= cap_now)
 						should_tx = false;
 				}
-				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
-					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
-						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
-					should_tx = false;
-					first_tx_retry_tick =
-						first_tx_retry_at(FIRST_TX_BAT_RETRY_MS);
-				}
+				/* NO hard battery TX veto (audit #9, design decision): the TX
+				 * send is NOT gated on an instantaneous VBAT reading. On a
+				 * primary Li-SOCl2 pack the loaded voltage stays stiff until
+				 * near end-of-life, so a `mV < min_tx` compare at TX time just
+				 * flaps the TX on/off (post-STOP2 droop lands on either side of
+				 * the threshold each surface event) — the "erratic after ~a
+				 * week" field symptom. The ONLY battery-driven behaviour is the
+				 * hysteretic LB mode above (lb_update): when the pack sags it
+				 * switches to the reduced LB cadence/cap, never a hard inhibit.
+				 * VBAT is still read for the EVT_BAT telemetry and lb_update. */
 #endif
 			}
 			if (should_tx) {
