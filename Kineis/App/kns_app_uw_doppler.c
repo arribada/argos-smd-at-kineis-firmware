@@ -2630,21 +2630,19 @@ void KNS_APP_uw_doppler_loop(void)
 				bool cooldown_ok = (cooldown_ms == 0u) ||
 					(last_actual_tx_tick == 0u) ||
 					((HAL_GetTick() - last_actual_tx_tick) >= cooldown_ms);
-				/* Anti-collision spread measured from SURFACE ENTRY, not from
-				 * last_tx_tick (fix 2026-07, audit #7): every arming path above
-				 * zeroes last_tx_tick to force a fast first TX, which made the
-				 * old `since_last_tx >= offset` gate trivially true (since_last_tx
-				 * == uptime >> 500 ms) and the 0-500 ms per-tag spread DEAD code
-				 * — a batch released together fired the first frame with zero
-				 * inter-tag spread (fleet-synchronized collision). surface_since_tick
-				 * is set when SURFACE is entered (above) and every path that arms
-				 * surface_tx_pending runs with sws_state == SURFACE, so it is
-				 * non-zero here. Fall back to since_last_tx if it is 0 (armed then
-				 * dived before dispatch) — no worse than the pre-fix behaviour. */
-				uint32_t since_surface = (surface_since_tick != 0u)
-					? (HAL_GetTick() - surface_since_tick)
-					: since_last_tx;
-				if (since_surface >= first_tx_random_offset_ms && cooldown_ok &&
+				/* First-TX anti-collision offset: gated on since_last_tx, which
+				 * every arming path forces to == uptime (last_tx_tick=0), so the
+				 * 0-500 ms per-tag spread is effectively immediate here — the tag
+				 * TXes as soon as the cooldown/retry gates allow, with NO awake
+				 * spin. (audit #7 tried anchoring this on surface_since_tick to
+				 * make the spread real, but that left surface_tx_pending set with
+				 * first_tx_retry_tick==0, so the sleep gate below busy-spun the MCU
+				 * at run-current for up to 500 ms on EVERY surface event — a real
+				 * battery regression on a multi-year potted tag; reverted in
+				 * audit #8. A genuinely enforced, SLEEPABLE first-TX spread needs
+				 * RTC-wall-clock anchoring, because STOP2/SLEEP pause HAL_GetTick
+				 * that surface_since_tick depends on — deferred enhancement.) */
+				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok &&
 				    retry_ok) {
 					should_tx = true;  /* pending consumed at dispatch */
 				} else if (!cooldown_ok && !tx_retry_holding()) {
