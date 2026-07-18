@@ -724,6 +724,37 @@ void bl_jump_to_app(void)
     while (1);
 }
 
+/*
+ * KNOWN LIMITATION (audit #7, 2026-07 — reviewed, intentionally NOT changed).
+ *
+ * The boot-jump decisions (bl_state_check_app, the detect-protocol timeout
+ * branch, bl_state_validate) use this LENIENT validator, which falls back to
+ * an SP-in-RAM / PC-in-flash plausibility test when the header magic + CRC
+ * check fails. A torn, half-flashed ascending-DFU image whose first chunk
+ * already covered the vector table (real SP + Reset_Handler) but whose tail
+ * pages are still erased (0xFF) can PASS this fallback, get jumped into, run
+ * off into 0xFF, and HardFault — with no non-SWD recovery on a sealed/potted
+ * unit (IWDG off at POR, no boot-fault counter, DFU flag already cleared).
+ *
+ * Why the SP/PC fallback is kept (not switched to bl_check_app_valid_strict):
+ * the app header CRC is patched in POST-BUILD by Tools/create_dfu.py. Only the
+ * DFU image is CRC-valid; `make full` / `flash-full` (the SWD/bench path) merge
+ * the RAW app .bin whose header CRC is the 0xFFFFFFFF placeholder. Production is
+ * flashed BOTH ways depending on context, so a strict-only jump would brick
+ * every merge/SWD-flashed unit. The fallback is therefore load-bearing.
+ *
+ * Partial mitigations already in place: the DFU inactivity auto-exit uses the
+ * STRICT check (see bl_run), and the ECC-NMI handler heals torn *data* pages.
+ * A torn *code* page is the residual brick exposure.
+ *
+ * Recommended future fix (needs a deliberate change, deferred by decision):
+ * gate the SP/PC fallback behind a persistent consecutive-jump-fault counter
+ * (a free TAMP backup reg — BKP7R is free after the audit-#7 BKP10R split),
+ * incremented before a fallback jump and cleared by the app after it has run
+ * healthy for N seconds, so 2-3 immediate faults force DFU instead of
+ * re-jumping; OR CRC-patch the merged image so every flash path is CRC-valid
+ * and the jump can then go strict everywhere.
+ */
 bool bl_check_app_valid(void)
 {
     const app_header_t* header = bl_get_app_header();
@@ -734,7 +765,9 @@ bool bl_check_app_valid(void)
         }
     }
 
-    /* Fallback: Check for valid code at APP_FLASH_BASE (ISR vector at 0x08000000) */
+    /* Fallback: Check for valid code at APP_FLASH_BASE (ISR vector at 0x08000000).
+     * See the KNOWN LIMITATION block above — this fallback is load-bearing for
+     * the raw-merge SWD flash path and cannot simply be removed. */
     uint32_t app_stack = *(__IO uint32_t*)APP_FLASH_BASE;
     uint32_t app_entry = *(__IO uint32_t*)(APP_FLASH_BASE + 4);
 

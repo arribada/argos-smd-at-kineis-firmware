@@ -141,6 +141,20 @@ enum KNS_status_t MCU_FLASH_write(uint32_t address, const void *data, size_t siz
 
     HAL_FLASH_Unlock();
     __disable_irq();
+    /* KNOWN LIMITATION (audit #7, 2026-07 — reviewed, intentionally NOT changed).
+     * MCU_FLASH_WaitReady below is iteration-bounded and safe inside this
+     * __disable_irq region, but the HAL_FLASHEx_Erase / HAL_FLASH_Program calls
+     * further down still call HAL's own FLASH_WaitForLastOperation, which is
+     * HAL_GetTick-based. With IRQs masked here SysTick is frozen, so on a
+     * GENUINELY stuck BSY (rare flash-controller wedge) that HAL wait cannot
+     * time out and spins until the IWDG (~16 s, if armed) resets the chip.
+     * Bounded in practice by: (a) this path only ever writes FLASH_USER *data*
+     * pages (see the range check above), which the ECC-NMI handler heals on
+     * next read, and (b) the IWDG. A full fix (keep SysTick alive via BASEPRI
+     * instead of PRIMASK, or a manual bounded erase/program) is deferred to a
+     * dedicated, reviewed pass — a careless rewrite of this potted flash driver
+     * is riskier than the rare hang it would remove. Same pattern in
+     * write_flash_word / increment_/reset_/set_wear_counter. */
     /* Attendre que la flash soit prête avant d'effacer la page */
     if (MCU_FLASH_WaitReady(FLASH_WAIT_TIMEOUT_MS) != KNS_STATUS_OK) {
         __enable_irq();
