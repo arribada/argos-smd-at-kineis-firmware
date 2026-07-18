@@ -32,6 +32,23 @@
 #include <string.h>
 #include "kns_app_doppler.h"
 #include "main.h"
+
+#include "subghz.h"   /* HAL_SUBGHZ_DeInit — radio teardown before SHUTDOWN */
+
+/* TPL5111 power path is now OPT-IN (fix 2026-07). Previously the DOPPLER power
+ * strategy keyed on whether MCU_DONE_Pin was DEFINED — but the SMD_STDALONE BSP
+ * defines it (PA15 is physically routed) even though no TPL5111 is populated,
+ * so DOPPLER-STDALONE silently took the "pulse MCU_DONE to cut power" path
+ * against a dead pin: the tag never slept (battery gone in days) and
+ * erase-cycled the credentials page every wake. Decouple the two: the pulse
+ * path compiles in ONLY when a TPL5111 is explicitly declared present
+ * (make TPL=1 -> -DUSE_TPL5111) AND the board routes the pin. Every other
+ * config — including STDALONE with no TPL — uses the RTC enter_deep_sleep
+ * path (SHUTDOWN, or STOP2-park on LSE death via the guard in that function),
+ * which is a valid periodic Argos beacon. */
+#if defined(DOPPLER_USE_TPL) && defined(USE_TPL5111)
+#define DOPPLER_USE_TPL 1
+#endif
 #include "mgr_wdg.h"
 #include "mgr_err.h"
 #include "mgr_evtlog.h"
@@ -58,10 +75,10 @@
 #include "mgr_bat.h"
 #endif
 
-/* Compile-time safety: DOPPLER without TPL5111 uses SHUTDOWN via RTC wakeup.
+/* Compile-time safety: DOPPLER without a TPL5111 uses SHUTDOWN via RTC wakeup.
  * The LPM framework must have SHUTDOWN support enabled. */
-#if !defined(MCU_DONE_Pin) && !defined(LPM_SHUTDOWN_ENABLED)
-#error "DOPPLER without MCU_DONE requires LPM=SHUTDOWN (add -DLPM_SHUTDOWN_ENABLED)"
+#if !defined(DOPPLER_USE_TPL) && !defined(LPM_SHUTDOWN_ENABLED)
+#error "DOPPLER without TPL5111 requires LPM=SHUTDOWN (add -DLPM_SHUTDOWN_ENABLED)"
 #endif
 
 /* ---- State Machine ---- */
@@ -106,6 +123,12 @@ static uint8_t  mac_init_retries = 0;
 
 /* Max msg_interval_s before uint32 overflow on *1000 conversion */
 #define MSG_INTERVAL_MAX_S       (UINT32_MAX / 1000UL)
+
+/* BLIND-profile config bounds enforced by the Kineis lib's KNS_MAC_BLIND_init
+ * (fix 2026-07). Values outside these are rejected with BAD_SETTING at MAC
+ * init, so a tracker configured out-of-range never transmits. */
+#define DOPPLER_BLIND_MIN_INTERVAL_S  60u    /* retx_period_s minimum */
+#define DOPPLER_BLIND_MAX_COUNT       127u   /* retx_nb maximum */
 
 /* Max RTC wakeup timer period in seconds (17-bit mode) */
 #define RTC_WAKEUP_MAX_S         0x20000UL  /* 131072s ≈ 36h */
@@ -208,7 +231,24 @@ static bool nvm_load(void)
 			(unsigned long)cfg.msg_interval_s);
 		return false;
 	}
-#if !defined(MCU_DONE_Pin)
+#ifdef USE_MAC_PRFL_BLIND
+	/* BLIND profile bounds (fix 2026-07): the lib's KNS_MAC_BLIND_init
+	 * rejects retx_period_s outside [MIN, UINT16_MAX] and retx_nb > MAX, and
+	 * start_mac_profile truncates the period with a (uint16_t) cast. A
+	 * cross-profile reflash (BASIC config loaded by a BLIND build) without
+	 * these bounds silently wrapped the period mod 65536 (e.g. 70000 s ->
+	 * 4464 s, ~16x over-TX) or fed an out-of-range value the lib refuses ->
+	 * the tracker never transmits. Same bounds as KNS_APP_doppler_setCfg so
+	 * a bad stored config is rejected (defaults applied) instead of applied. */
+	if (cfg.msg_interval_s > UINT16_MAX ||
+	    cfg.msg_interval_s < DOPPLER_BLIND_MIN_INTERVAL_S ||
+	    cfg.msg_count > DOPPLER_BLIND_MAX_COUNT) {
+		MGR_LOG_DEBUG("[DPL] NVM BLIND bounds fail (int=%lu cnt=%u)\r\n",
+			(unsigned long)cfg.msg_interval_s, cfg.msg_count);
+		return false;
+	}
+#endif
+#if !defined(DOPPLER_USE_TPL)
 	if (cfg.sequence_interval_s > RTC_WAKEUP_MAX_S) {
 		MGR_LOG_DEBUG("[DPL] NVM seq_interval too large (%lu), capped\r\n",
 			(unsigned long)cfg.sequence_interval_s);
@@ -293,7 +333,7 @@ static uint32_t state_elapsed_ms(void)
 
 /* ---- MCU_DONE (TPL5111) ---- */
 
-#if defined(MCU_DONE_Pin)
+#if defined(DOPPLER_USE_TPL)
 static void pulse_mcu_done(void)
 {
 	GPIO_InitTypeDef gpio = {0};
@@ -359,7 +399,7 @@ static bool check_tpl_schedule(void)
 }
 #endif /* MCU_DONE_Pin */
 
-#if !defined(MCU_DONE_Pin)
+#if !defined(DOPPLER_USE_TPL)
 /**
  * @brief Enter deep sleep with RTC wakeup (mode without MCU_DONE)
  *
@@ -416,6 +456,14 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 	/* Disable UART before SHUTDOWN to prevent spurious activity */
 	HAL_NVIC_DisableIRQ(LPUART1_IRQn);
 	HAL_GPIO_DeInit(GPIOA, GPIO_PIN_3);  /* LPUART1_RX */
+
+	/* Tear down the SubGHz radio before SHUTDOWN (fix 2026-07): the comment
+	 * at finish_sequence claims "SHUTDOWN kills everything", but the WL55
+	 * radio analog domain stays BIASED (~100-500 uA) through SHUTDOWN unless
+	 * the peripheral is explicitly deinit'd — collapsing a multi-year budget
+	 * to weeks while the bench sees TX and sleep both "working". Same
+	 * teardown the UW soft-off path does. */
+	(void)HAL_SUBGHZ_DeInit(&hsubghz);
 
 	/* Set all GPIOs to analog to minimize current leakage */
 	GPIO_DisableAllToAnalogInput();
@@ -526,7 +574,7 @@ static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 	memset(appEvt->data_ctxt.usrdata, 0, KNS_MAC_USRDATA_MAXLEN);
 
 	uint16_t wku = 0;
-#if defined(MCU_DONE_Pin)
+#if defined(DOPPLER_USE_TPL)
 	wku = (uint16_t)(MCU_FLASH_read_wku_counter() & 0xFFFF);
 #endif
 	appEvt->data_ctxt.usrdata[0] = (uint8_t)(wku >> 8);
@@ -660,9 +708,9 @@ static bool process_mac_events(void)
 
 static enum MgrLpm_LPM_t doppler_lpmReq(void)
 {
-#if !defined(MCU_DONE_Pin) && !defined(USE_MAC_PRFL_BLIND)
-	/* RTC-mode BASIC DOPPLER (the shipped config on SMD_PA/NOPA/OP, where
-	 * MCU_DONE is not populated) — fix 2026-07: NEVER request an autonomous
+#if !defined(DOPPLER_USE_TPL) && !defined(USE_MAC_PRFL_BLIND)
+	/* RTC-mode BASIC DOPPLER (any board without a declared TPL5111) —
+	 * fix 2026-07: NEVER request an autonomous
 	 * STOP. BASIC has no MAC-owned RTC wake-up timer, and this app arms none
 	 * for the DOPPLER_WAIT_INTERVAL busy-wait — so entering STOP froze
 	 * HAL_GetTick with NO wake source and the tracker STRANDED (even during
@@ -705,7 +753,7 @@ static void finish_sequence(void)
 	MGR_LOG_DEBUG("[DPL] Sequence done (%u msgs)\r\n", tx_index);
 	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)tx_index);
 
-#if defined(MCU_DONE_Pin)
+#if defined(DOPPLER_USE_TPL)
 	/* Mode TPL5111: save config (if dirty) then pulse MCU_DONE to cut power.
 	 * No point calling stop_mac_profile: TPL5111 cuts power immediately. */
 	nvm_save();
@@ -829,9 +877,10 @@ void KNS_APP_doppler_loop(void)
 
 	case DOPPLER_CHECK_SCHEDULE:
 	{
-#if defined(MCU_DONE_Pin)
-/* #pragma message (NOT #warning: the latter is promoted to error by -Werror). */
-#pragma message("BSP-01: DOPPLER deep-sleep relies on the TPL5111 MCU_DONE power-cut, NOT implemented on SMD_STDALONE -> no working low-power path for DOPPLER on this board; use APP=UW_DOPPLER.")
+#if defined(DOPPLER_USE_TPL)
+/* TPL5111 path explicitly opted in (make TPL=1). Ensure a TPL5111 is actually
+ * wired to MCU_DONE_Pin — this path pulses that pin to cut power and never
+ * returns; without the hardware the tag would never sleep. */
 		if (!check_tpl_schedule()) {
 			/* check_tpl_schedule pulsed MCU_DONE and should not return.
 			 * If it does (TPL5111 didn't cut power), just idle. */
@@ -981,15 +1030,22 @@ bool KNS_APP_doppler_setCfg(const KNS_APP_DopplerCfg_t *cfg)
 	if (cfg->msg_interval_s > MSG_INTERVAL_MAX_S)
 		return false;
 
-#if !defined(MCU_DONE_Pin)
+#if !defined(DOPPLER_USE_TPL)
 	/* RTC wakeup max is 131072s (~36h). Reject values that would be silently clamped. */
 	if (cfg->sequence_interval_s > RTC_WAKEUP_MAX_S)
 		return false;
 #endif
 
 #ifdef USE_MAC_PRFL_BLIND
-	/* BLIND retx_period_s is uint16_t */
-	if (cfg->msg_interval_s > UINT16_MAX)
+	/* BLIND lib bounds (fix 2026-07): KNS_MAC_BLIND_init rejects
+	 * retx_period_s outside [DOPPLER_BLIND_MIN_INTERVAL_S, UINT16_MAX] and
+	 * retx_nb > DOPPLER_BLIND_MAX_COUNT with BAD_SETTING. Accepting them
+	 * here (or in nvm_load) let the tracker sit in WAIT_MAC_READY on every
+	 * wake, log, power down, and NEVER transmit for the whole deployment
+	 * while looking configured. Reject up front so the operator sees it. */
+	if (cfg->msg_interval_s > UINT16_MAX ||
+	    cfg->msg_interval_s < DOPPLER_BLIND_MIN_INTERVAL_S ||
+	    cfg->msg_count > DOPPLER_BLIND_MAX_COUNT)
 		return false;
 #endif
 

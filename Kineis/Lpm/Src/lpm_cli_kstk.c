@@ -48,7 +48,18 @@ enum MgrLpm_LPM_t KSTK_lpmReq(void)
 	 * and the bits clear.
 	 */
 	if (forced != LOW_POWER_MODE_NONE) {
-		if (rsrc.modemOn || rsrc.txTimeout || rsrc.rxTimeout || rsrc.satDetTimeout)
+		/* rsrc.txPeriod added 2026-07: in the BLIND profile the MAC owns a
+		 * periodic RTC wake-up timer (MCU_TIM_HDLR_TX_PERIOD) that stays
+		 * armed BETWEEN the retransmissions of a sequence, with the modem
+		 * idle. Without it in this guard, a host-forced SHUTDOWN mid-
+		 * sequence was honored while that WUT kept counting — the chip
+		 * cold-booted within one retx period (default 60 s, up to 18 h)
+		 * instead of staying off until PB3, wiping SRAM2 and aborting the
+		 * sequence. Downgrade to SLEEP so the armed WUT + MAC context
+		 * survive; the forced mode is honored once the sequence completes
+		 * and txPeriod clears — same contract as the other resource bits. */
+		if (rsrc.modemOn || rsrc.txTimeout || rsrc.rxTimeout ||
+		    rsrc.satDetTimeout || rsrc.txPeriod)
 			return LOW_POWER_MODE_SLEEP;
 		return forced;
 	}

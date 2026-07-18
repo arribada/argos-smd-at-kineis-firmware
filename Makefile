@@ -414,6 +414,15 @@ ifeq ($(REED_WKUP1_WIRE),1)
 	C_DEFS += -DBSP_REED_WKUP1_PARALLEL
 endif
 
+# TPL5111 power-timer present (DOPPLER app). OPT-IN: the DOPPLER pulse-MCU_DONE
+# power path compiles in only with TPL=1 AND a board that routes MCU_DONE_Pin.
+# Without it (default), DOPPLER uses the RTC enter_deep_sleep path — valid on
+# any board including SMD_STDALONE. Prevents the STDALONE foot-gun where
+# MCU_DONE_Pin is routed (PA15) but no TPL5111 is populated.
+ifeq ($(TPL),1)
+	C_DEFS += -DUSE_TPL5111
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC
