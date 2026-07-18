@@ -47,8 +47,10 @@
  *                 ordering: consumed at boot before any timer is armed.
  *   BKP4R         lpm_ctxt (linker)
  *   BKP5R         Kineis Argos message_counter (linker .msgCntSectionData)
- *   BKP6R-BKP9R   free
- *   BKP10R        MGR_ERR fault-streak counter (this module)
+ *   BKP6R         MGR_ERR fault-streak counter (this module)
+ *   BKP7R-BKP9R   free
+ *   BKP10R        MGR_GESTURE mode-persistence magic (0x47535400|mode) —
+ *                 written every boot by MGR_GESTURE_init/persist_mode
  *   BKP11R        MGR_LPM_UW soft-off wake magic (SOFTOFF_WAKE_MAGIC)
  *   BKP12R-BKP17R MGR_ERR (this module)
  *   BKP18R        flash-ECC NMI breadcrumb (stm32wlxx_it.c)
@@ -60,8 +62,13 @@
 #define ERR_BKP_STATE   (TAMP->BKP15R)  /* Last state */
 #define ERR_BKP_TICK    (TAMP->BKP16R)  /* Last tick */
 #define ERR_BKP_CRASH   (TAMP->BKP17R)  /* Consecutive crash counter (<30 s boots) */
-#define ERR_BKP_FSTREAK (TAMP->BKP10R)  /* Consecutive fault-terminated boots,
-                                         * ANY uptime (fix 2026-07) */
+/* Fault-streak counter moved BKP10R -> BKP6R (fix 2026-07, audit #7): BKP10R
+ * is ALSO owned by MGR_GESTURE, which writes 0x47535400|mode into it on EVERY
+ * boot (MGR_GESTURE_init -> persist_mode). That clobbered the streak with a
+ * constant 0x47535400 (not < FAULT_STREAK_MAX), so a SINGLE transient fault
+ * tripped the 1 h crash-loop safe-sleep designed to require 20. BKP6R was
+ * free. Consecutive fault-terminated boots, ANY uptime. */
+#define ERR_BKP_FSTREAK (TAMP->BKP6R)
 
 __attribute__((unused)) static const char *err_code_str(MGR_ERR_Code_t code)
 {

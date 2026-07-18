@@ -45,8 +45,21 @@
  * (make TPL=1 -> -DUSE_TPL5111) AND the board routes the pin. Every other
  * config — including STDALONE with no TPL — uses the RTC enter_deep_sleep
  * path (SHUTDOWN, or STOP2-park on LSE death via the guard in that function),
- * which is a valid periodic Argos beacon. */
-#if defined(DOPPLER_USE_TPL) && defined(USE_TPL5111)
+ * which is a valid periodic Argos beacon.
+ *
+ * NOTE (fix 2026-07, audit #7): the predicate must be derived from the REAL
+ * build inputs, not from DOPPLER_USE_TPL itself. The earlier form
+ * `#if defined(DOPPLER_USE_TPL) && defined(USE_TPL5111)` was self-referential
+ * (the only #define of DOPPLER_USE_TPL was guarded by DOPPLER_USE_TPL already
+ * being defined), so it could NEVER fire: TPL=1 was completely inert and the
+ * whole pulse-MCU_DONE path was dead code. Key off USE_TPL5111 (set by
+ * `make TPL=1`) AND the board actually routing the pin (MCU_DONE_Pin — only
+ * the SMD_STDALONE BSP defines it today; PA/NOPA/OP leave it commented out).
+ * The && MCU_DONE_Pin term is also required for correctness: the pulse code
+ * below references MCU_DONE_Pin / MCU_DONE_GPIO_Port, so it must not compile
+ * on a board that does not route the pin. main.h (included above) pulls in
+ * the active board's BSP header. */
+#if defined(USE_TPL5111) && defined(MCU_DONE_Pin)
 #define DOPPLER_USE_TPL 1
 #endif
 #include "mgr_wdg.h"

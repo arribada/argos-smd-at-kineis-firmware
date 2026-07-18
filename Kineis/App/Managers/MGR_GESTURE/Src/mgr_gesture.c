@@ -86,6 +86,10 @@ static void gst_trace(const char *fmt, uint32_t a)
 }
 
 /* ---- Mode persistence (TAMP BKP10R) --------------------------------------- */
+/* BKP10R is EXCLUSIVELY owned by MGR_GESTURE (see the allocation table in
+ * mgr_err.c). It was previously also used by MGR_ERR's fault-streak counter;
+ * that counter moved to BKP6R (fix 2026-07, audit #7) because persist_mode()
+ * writes this register on every boot and was clobbering the streak. */
 #define GESTURE_BKP_REG          (TAMP->BKP10R)
 #define GESTURE_BKP_MAGIC        0x47535400u  /* "GST\0" upper 24 bits */
 #define GESTURE_BKP_MAGIC_MASK   0xFFFFFF00u

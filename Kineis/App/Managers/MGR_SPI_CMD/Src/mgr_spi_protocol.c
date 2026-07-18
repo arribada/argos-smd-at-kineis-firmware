@@ -82,12 +82,26 @@ static bool is_valid_legacy_command(uint8_t byte)
      * desynced frame can never corrupt the Argos identity. (They cannot work
      * as legacy anyway — they need a data payload legacy cannot deliver.) */
     switch (byte) {
+    /* Durable identity/credential writes (original 2026-07 security fix). */
     case CMD_WRITE_ID:      /* 0x21 */
     case CMD_WRITE_ADDR:    /* 0x23 */
     case CMD_WRITE_SECKEY:  /* 0x26 */
     case CMD_WRITE_RCONF:   /* 0x0C */
     case CMD_SAVE_RCONF:    /* 0x0D */
     case CMD_WRITE_KMAC:    /* 0x10 */
+    /* Other data-carrying state writes (fix 2026-07, audit #7): same hazard.
+     * A byte-misaligned/desynced capture whose data[0] lands on one of these
+     * would otherwise be dispatched as a payload-less LEGACY frame and run the
+     * handler on stale DMA bytes — WRITE_MC mis-sequences the live Argos MC,
+     * WRITE_LPM mutates the potted tag's wake/power bitmap, WRITE_TX queues a
+     * garbage uplink, etc. They cannot work as legacy anyway (no payload). */
+    case CMD_WRITE_MC:        /* 0x2E */
+    case CMD_WRITE_LPM:       /* 0x13 */
+    case CMD_WRITE_TCXOWU:    /* 0x2A */
+    case CMD_WRITE_TX_SIZE:   /* 0x15 */
+    case CMD_WRITE_TX:        /* 0x16 */
+    case CMD_WRITE_UDATE:     /* 0x1F */
+    case CMD_WRITE_PREPASSEN: /* 0x1C */
         return false;
     default:
         return true;

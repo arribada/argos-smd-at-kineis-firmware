@@ -1219,7 +1219,12 @@ static uint32_t compute_next_interval_ms(uint32_t n)
 	uint32_t max_ms = lb_active
 		? (uint32_t)lb_cfg.lb_tx_max_s * 1000
 		: (uint32_t)tx_cfg.tx_max_interval_s * 1000;
-	for (uint32_t i = 0; i < n; i++) {
+	/* LB mode is a FIXED slower cadence — no exponential growth (fix 2026-07,
+	 * audit #7): the loop below used to run in LB too, ramping the interval
+	 * (60->90->135 s...) up to lb_tx_max_s despite the documented "no growth"
+	 * intent above. Skip it when lb_active so LB holds at lb_tx_interval_s.
+	 * Jitter (anti-collision) still applies below in both modes. */
+	for (uint32_t i = 0; !lb_active && i < n; i++) {
 		uint64_t next = (uint64_t)interval_ms * (100 + tx_cfg.tx_growth_percent) / 100;
 		if (next >= max_ms) {
 			interval_ms = max_ms;
@@ -2590,7 +2595,21 @@ void KNS_APP_uw_doppler_loop(void)
 				bool cooldown_ok = (cooldown_ms == 0u) ||
 					(last_actual_tx_tick == 0u) ||
 					((HAL_GetTick() - last_actual_tx_tick) >= cooldown_ms);
-				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok &&
+				/* Anti-collision spread measured from SURFACE ENTRY, not from
+				 * last_tx_tick (fix 2026-07, audit #7): every arming path above
+				 * zeroes last_tx_tick to force a fast first TX, which made the
+				 * old `since_last_tx >= offset` gate trivially true (since_last_tx
+				 * == uptime >> 500 ms) and the 0-500 ms per-tag spread DEAD code
+				 * — a batch released together fired the first frame with zero
+				 * inter-tag spread (fleet-synchronized collision). surface_since_tick
+				 * is set when SURFACE is entered (above) and every path that arms
+				 * surface_tx_pending runs with sws_state == SURFACE, so it is
+				 * non-zero here. Fall back to since_last_tx if it is 0 (armed then
+				 * dived before dispatch) — no worse than the pre-fix behaviour. */
+				uint32_t since_surface = (surface_since_tick != 0u)
+					? (HAL_GetTick() - surface_since_tick)
+					: since_last_tx;
+				if (since_surface >= first_tx_random_offset_ms && cooldown_ok &&
 				    retry_ok) {
 					should_tx = true;
 					/* surface_tx_pending is consumed at DISPATCH (bottom of
