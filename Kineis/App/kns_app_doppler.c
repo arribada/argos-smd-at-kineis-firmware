@@ -947,16 +947,14 @@ void KNS_APP_doppler_loop(void)
 #endif
 
 #if defined(BSP_HAS_VBAT_ADC)
+		/* Read VBAT for the EVT_BAT telemetry only. The TX send is NOT gated on
+		 * an instantaneous battery reading (audit #9, design decision — same as
+		 * UW_DOPPLER): on a primary Li-SOCl2 pack the loaded voltage stays stiff
+		 * until near end-of-life, so a `mV < min_tx` compare at TX time just
+		 * flaps TX on/off as the pack ages. DOPPLER has no LB mode, so it simply
+		 * transmits whenever scheduled and lets the pack reach true end-of-life. */
 		last_vbat_mV = MGR_BAT_readVoltage_mV();
 		MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
-		if (!MGR_BAT_isTxAllowed()) {
-			MGR_LOG_DEBUG("[DPL] Battery low (%umV), TX inhibited\r\n", last_vbat_mV);
-#if defined(BSP_HAS_LED_RGB)
-			MGR_LED_blink(MGR_LED_RED, 5, 100, 100);
-#endif
-			transition_to(DOPPLER_SEQUENCE_DONE);
-			return;
-		}
 #endif
 
 		struct KNS_MAC_appEvt_t appEvt;

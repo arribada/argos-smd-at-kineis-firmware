@@ -551,11 +551,9 @@ static bool     surface_tx_pending = false; /**< Immediate TX needed on surface 
  * sleep deadline. 0 = no holdoff (retry next loop pass). Compared wrap-safe;
  * cleared by reset_tx_scheduling() and on dispatch. */
 static uint32_t first_tx_retry_tick = 0;
-#define FIRST_TX_BAT_RETRY_MS  60000u  /**< Battery-low veto retry cadence: a
-                                        * transient post-wake droop recovers in
-                                        * seconds, a genuinely low pack stays low
-                                        * for minutes+ — 60 s bounds the
-                                        * ADC/EVTLOG churn either way. */
+/* (FIRST_TX_BAT_RETRY_MS removed in audit #9: the hard battery TX veto it paced
+ * was removed — TX is no longer gated on an instantaneous VBAT reading; only
+ * the hysteretic LB mode reacts to a sagging pack.) */
 /* Wall-clock tick when the CURRENT continuous SURFACE stretch began (0 = not
  * at surface / unknown). RTC-compensated across STOP2 like every tick here.
  * Anchors the zero-TX safety net in MONITORING. */
@@ -2746,19 +2744,16 @@ void KNS_APP_uw_doppler_loop(void)
 					if (cap_now > 0u && tx_count >= cap_now)
 						should_tx = false;
 				}
-				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
-					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
-						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
-					should_tx = false;
-					/* TX veto: keep the schedule armed, retry in 60 s.
-					 * A transient post-STOP2 droop recovers on the
-					 * retry; a genuinely low pack stays correctly
-					 * inhibited at one cheap ADC read per minute
-					 * (instead of one per loop pass, which kept the
-					 * chip awake and accelerated the sag). */
-					first_tx_retry_tick =
-						first_tx_retry_at(FIRST_TX_BAT_RETRY_MS);
-				}
+				/* NO hard battery TX veto (audit #9, design decision): the TX
+				 * send is NOT gated on an instantaneous VBAT reading. On a
+				 * primary Li-SOCl2 pack the loaded voltage stays stiff until
+				 * near end-of-life, so a `mV < min_tx` compare at TX time just
+				 * flaps the TX on/off (post-STOP2 droop lands on either side of
+				 * the threshold each surface event) — the "erratic after ~a
+				 * week" field symptom. The ONLY battery-driven behaviour is the
+				 * hysteretic LB mode above (lb_update): when the pack sags it
+				 * switches to the reduced LB cadence/cap, never a hard inhibit.
+				 * VBAT is still read for the EVT_BAT telemetry and lb_update. */
 #endif
 			}
 			if (should_tx) {
