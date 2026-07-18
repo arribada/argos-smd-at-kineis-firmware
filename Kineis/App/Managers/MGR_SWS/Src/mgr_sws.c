@@ -314,10 +314,26 @@ uint32_t MGR_SWS_msUntilNextSample(void)
 	 * clamp) bound the sleep. */
 	if (!sws_config.enabled)
 		return 0xFFFFFFFFu;
+
+	uint32_t now = HAL_GetTick();
+
+	/* During the post-TX blank window MGR_SWS_task() no-ops WITHOUT advancing
+	 * last_measurement_tick, so the interval math below would report "sample
+	 * due now" (0) for the whole blank and the LPM idle scheduler would skip
+	 * the sleep (delta==0) and busy-spin at run-current for ~1 s after every
+	 * surface TX (fix 2026-07, audit #7). Defer at least until the blank
+	 * clears — no sample can happen before then anyway. Tick-wrap-safe, matching
+	 * the comparison in MGR_SWS_task(). */
+	if (s_tx_blank_until_tick != 0u) {
+		int32_t blank_remain = (int32_t)(s_tx_blank_until_tick - now);
+		if (blank_remain > 0)
+			return (uint32_t)blank_remain;
+	}
+
 	if (last_measurement_tick == 0)
 		return 0;
 	uint32_t interval = current_test_interval_ms();
-	uint32_t elapsed = HAL_GetTick() - last_measurement_tick;
+	uint32_t elapsed = now - last_measurement_tick;
 	return (elapsed >= interval) ? 0u : (interval - elapsed);
 }
 

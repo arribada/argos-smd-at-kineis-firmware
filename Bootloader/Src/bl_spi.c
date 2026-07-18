@@ -445,6 +445,13 @@ bool bl_spi_process(void)
 
     if (payload_len > 0 && payload_len <= BL_CHUNK_SIZE) {
         memcpy(payload_buffer, request->data, payload_len);
+    } else if (payload_len > BL_CHUNK_SIZE) {
+        /* Oversized declared length (data_len 249-255): the copy above is
+         * skipped, so payload_buffer holds no valid data. Clamp payload_len to
+         * 0 (fix 2026-07, audit #7) — otherwise bl_spi_get_payload() would
+         * memcpy min(payload_len, max_len) = up to 252 bytes out of the
+         * 248-byte payload_buffer, a 4-byte out-of-bounds read. */
+        payload_len = 0;
     }
 
     /* Handle WRITE_REQ - store address/length */
