@@ -34,6 +34,21 @@
 #include "main.h"
 
 #include "subghz.h"   /* HAL_SUBGHZ_DeInit — radio teardown before SHUTDOWN */
+
+/* TPL5111 power path is now OPT-IN (fix 2026-07). Previously the DOPPLER power
+ * strategy keyed on whether MCU_DONE_Pin was DEFINED — but the SMD_STDALONE BSP
+ * defines it (PA15 is physically routed) even though no TPL5111 is populated,
+ * so DOPPLER-STDALONE silently took the "pulse MCU_DONE to cut power" path
+ * against a dead pin: the tag never slept (battery gone in days) and
+ * erase-cycled the credentials page every wake. Decouple the two: the pulse
+ * path compiles in ONLY when a TPL5111 is explicitly declared present
+ * (make TPL=1 -> -DUSE_TPL5111) AND the board routes the pin. Every other
+ * config — including STDALONE with no TPL — uses the RTC enter_deep_sleep
+ * path (SHUTDOWN, or STOP2-park on LSE death via the guard in that function),
+ * which is a valid periodic Argos beacon. */
+#if defined(DOPPLER_USE_TPL) && defined(USE_TPL5111)
+#define DOPPLER_USE_TPL 1
+#endif
 #include "mgr_wdg.h"
 #include "mgr_err.h"
 #include "mgr_evtlog.h"
@@ -60,10 +75,10 @@
 #include "mgr_bat.h"
 #endif
 
-/* Compile-time safety: DOPPLER without TPL5111 uses SHUTDOWN via RTC wakeup.
+/* Compile-time safety: DOPPLER without a TPL5111 uses SHUTDOWN via RTC wakeup.
  * The LPM framework must have SHUTDOWN support enabled. */
-#if !defined(MCU_DONE_Pin) && !defined(LPM_SHUTDOWN_ENABLED)
-#error "DOPPLER without MCU_DONE requires LPM=SHUTDOWN (add -DLPM_SHUTDOWN_ENABLED)"
+#if !defined(DOPPLER_USE_TPL) && !defined(LPM_SHUTDOWN_ENABLED)
+#error "DOPPLER without TPL5111 requires LPM=SHUTDOWN (add -DLPM_SHUTDOWN_ENABLED)"
 #endif
 
 /* ---- State Machine ---- */
@@ -233,7 +248,7 @@ static bool nvm_load(void)
 		return false;
 	}
 #endif
-#if !defined(MCU_DONE_Pin)
+#if !defined(DOPPLER_USE_TPL)
 	if (cfg.sequence_interval_s > RTC_WAKEUP_MAX_S) {
 		MGR_LOG_DEBUG("[DPL] NVM seq_interval too large (%lu), capped\r\n",
 			(unsigned long)cfg.sequence_interval_s);
@@ -318,7 +333,7 @@ static uint32_t state_elapsed_ms(void)
 
 /* ---- MCU_DONE (TPL5111) ---- */
 
-#if defined(MCU_DONE_Pin)
+#if defined(DOPPLER_USE_TPL)
 static void pulse_mcu_done(void)
 {
 	GPIO_InitTypeDef gpio = {0};
@@ -384,7 +399,7 @@ static bool check_tpl_schedule(void)
 }
 #endif /* MCU_DONE_Pin */
 
-#if !defined(MCU_DONE_Pin)
+#if !defined(DOPPLER_USE_TPL)
 /**
  * @brief Enter deep sleep with RTC wakeup (mode without MCU_DONE)
  *
@@ -557,7 +572,7 @@ static bool build_tx_payload(struct KNS_MAC_appEvt_t *appEvt)
 	memset(appEvt->data_ctxt.usrdata, 0, KNS_MAC_USRDATA_MAXLEN);
 
 	uint16_t wku = 0;
-#if defined(MCU_DONE_Pin)
+#if defined(DOPPLER_USE_TPL)
 	wku = (uint16_t)(MCU_FLASH_read_wku_counter() & 0xFFFF);
 #endif
 	appEvt->data_ctxt.usrdata[0] = (uint8_t)(wku >> 8);
@@ -691,9 +706,9 @@ static bool process_mac_events(void)
 
 static enum MgrLpm_LPM_t doppler_lpmReq(void)
 {
-#if !defined(MCU_DONE_Pin) && !defined(USE_MAC_PRFL_BLIND)
-	/* RTC-mode BASIC DOPPLER (the shipped config on SMD_PA/NOPA/OP, where
-	 * MCU_DONE is not populated) — fix 2026-07: NEVER request an autonomous
+#if !defined(DOPPLER_USE_TPL) && !defined(USE_MAC_PRFL_BLIND)
+	/* RTC-mode BASIC DOPPLER (any board without a declared TPL5111) —
+	 * fix 2026-07: NEVER request an autonomous
 	 * STOP. BASIC has no MAC-owned RTC wake-up timer, and this app arms none
 	 * for the DOPPLER_WAIT_INTERVAL busy-wait — so entering STOP froze
 	 * HAL_GetTick with NO wake source and the tracker STRANDED (even during
@@ -736,7 +751,7 @@ static void finish_sequence(void)
 	MGR_LOG_DEBUG("[DPL] Sequence done (%u msgs)\r\n", tx_index);
 	MGR_EVTLOG_log(EVT_SHUTDOWN, (uint16_t)tx_index);
 
-#if defined(MCU_DONE_Pin)
+#if defined(DOPPLER_USE_TPL)
 	/* Mode TPL5111: save config (if dirty) then pulse MCU_DONE to cut power.
 	 * No point calling stop_mac_profile: TPL5111 cuts power immediately. */
 	nvm_save();
@@ -860,9 +875,10 @@ void KNS_APP_doppler_loop(void)
 
 	case DOPPLER_CHECK_SCHEDULE:
 	{
-#if defined(MCU_DONE_Pin)
-/* #pragma message (NOT #warning: the latter is promoted to error by -Werror). */
-#pragma message("BSP-01: DOPPLER deep-sleep relies on the TPL5111 MCU_DONE power-cut, NOT implemented on SMD_STDALONE -> no working low-power path for DOPPLER on this board; use APP=UW_DOPPLER.")
+#if defined(DOPPLER_USE_TPL)
+/* TPL5111 path explicitly opted in (make TPL=1). Ensure a TPL5111 is actually
+ * wired to MCU_DONE_Pin — this path pulses that pin to cut power and never
+ * returns; without the hardware the tag would never sleep. */
 		if (!check_tpl_schedule()) {
 			/* check_tpl_schedule pulsed MCU_DONE and should not return.
 			 * If it does (TPL5111 didn't cut power), just idle. */
@@ -1012,7 +1028,7 @@ bool KNS_APP_doppler_setCfg(const KNS_APP_DopplerCfg_t *cfg)
 	if (cfg->msg_interval_s > MSG_INTERVAL_MAX_S)
 		return false;
 
-#if !defined(MCU_DONE_Pin)
+#if !defined(DOPPLER_USE_TPL)
 	/* RTC wakeup max is 131072s (~36h). Reject values that would be silently clamped. */
 	if (cfg->sequence_interval_s > RTC_WAKEUP_MAX_S)
 		return false;

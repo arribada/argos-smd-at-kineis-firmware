@@ -68,8 +68,30 @@ uint8_t MGR_SPI_PROTOCOL_crc8(const uint8_t *data, uint16_t length)
  */
 static bool is_valid_legacy_command(uint8_t byte)
 {
-    /* Legacy commands are 0x01 to SPICMD_MAX_COUNT-1 */
-    return (byte > CMD_NONE && byte < SPICMD_MAX_COUNT);
+    /* Legacy commands are 0x01 to SPICMD_MAX_COUNT-1 ... */
+    if (byte <= CMD_NONE || byte >= SPICMD_MAX_COUNT)
+        return false;
+
+    /* ... EXCEPT data-carrying identity/config WRITE-value opcodes (fix
+     * 2026-07, security). Legacy framing carries NO payload (data_len=0) and
+     * has NO CRC, yet the dispatcher runs the handler on the raw DMA capture
+     * — so a byte-misaligned A+ WRITE_SECKEY/ID/ADDR/RCONF frame could execute
+     * a credential write with garbage bytes, which the credential-mirror
+     * intent hook (mgr_cred.c) would then make DURABLE across resets. These
+     * writes REQUIRE the CRC-protected A+ framing; reject them as legacy so a
+     * desynced frame can never corrupt the Argos identity. (They cannot work
+     * as legacy anyway — they need a data payload legacy cannot deliver.) */
+    switch (byte) {
+    case CMD_WRITE_ID:      /* 0x21 */
+    case CMD_WRITE_ADDR:    /* 0x23 */
+    case CMD_WRITE_SECKEY:  /* 0x26 */
+    case CMD_WRITE_RCONF:   /* 0x0C */
+    case CMD_SAVE_RCONF:    /* 0x0D */
+    case CMD_WRITE_KMAC:    /* 0x10 */
+        return false;
+    default:
+        return true;
+    }
 }
 
 /**
