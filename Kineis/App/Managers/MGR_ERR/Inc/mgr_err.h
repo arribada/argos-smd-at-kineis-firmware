@@ -29,13 +29,17 @@
 #define TAMP_ERR_STATE_ADDR  0x4000B13CUL  /* TAMP->BKP15R = ERR_BKP_STATE */
 #define TAMP_ERR_TICK_ADDR   0x4000B140UL  /* TAMP->BKP16R = ERR_BKP_TICK  */
 
-/* Register layout:
- * BKP2R = reset counter (incremented each boot)
- * BKP3R = last reset cause (RCC_CSR flags snapshot)
- * BKP4R = last error code (MGR_ERR_Code_t)
- * BKP5R = last UW_DOPPLER state at time of error
- * BKP6R = last HAL tick at time of error
- * BKP7R = consecutive crash counter (resets after stable uptime)
+/* Register layout (kept in sync with the full TAMP allocation table in
+ * mgr_err.c). The pre-remap BKP2R-BKP7R block was moved to BKP12R-BKP17R
+ * (fix 2026-07) to stop clobbering the linker-placed lpm_ctxt/message_counter;
+ * the fault-streak counter later moved to BKP6R (audit #7). Current MGR_ERR:
+ * BKP6R  = consecutive fault-terminated-boot streak (ANY uptime)
+ * BKP12R = reset counter (incremented each boot)
+ * BKP13R = last reset cause (RCC_CSR flags snapshot)
+ * BKP14R = last error code (MGR_ERR_Code_t)      [TAMP_ERR_CODE_ADDR]
+ * BKP15R = last UW_DOPPLER state at time of error [TAMP_ERR_STATE_ADDR]
+ * BKP16R = last HAL tick at time of error         [TAMP_ERR_TICK_ADDR]
+ * BKP17R = consecutive crash counter (<30 s boots, resets after stable uptime)
  */
 
 /** Crash loop protection thresholds */

@@ -431,6 +431,19 @@ enum KNS_status_t set_wear_counter(uint32_t wl_start, uint32_t wl_size, uint32_t
             HAL_FLASH_Lock();
             return KNS_STATUS_FLASH_ERR;
         }
+        /* Bound the IRQ-masked window (audit #8): `index` can be up to
+         * wl_size-1 (~1023 for WKU, ~1011 for the MC far-jump), so this loop
+         * alone is up to ~1023 * ~90 us ~= 92 ms of HAL_FLASH_Program on top of
+         * the ~22 ms erase = ~114 ms with SysTick/RTC-wake/SUBGHZ-TX-done all
+         * masked (only reachable via the AT+MC far-value / setWUC bench paths,
+         * but 5x the ~22 ms the driver otherwise bounds). Briefly re-open the
+         * window every 32 dwords so a pending IRQ is serviced; flash stays
+         * unlocked and BSY is clear here, so this cannot tear the rewrite. The
+         * erase above remains the single dominant masked span (~22 ms). */
+        if ((i & 0x1Fu) == 0x1Fu) {
+            __enable_irq();
+            __disable_irq();
+        }
     }
     __enable_irq();
     HAL_FLASH_Lock();

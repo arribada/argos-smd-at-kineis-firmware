@@ -721,19 +721,28 @@ static bool process_mac_events(void)
 
 static enum MgrLpm_LPM_t doppler_lpmReq(void)
 {
-#if !defined(DOPPLER_USE_TPL) && !defined(USE_MAC_PRFL_BLIND)
-	/* RTC-mode BASIC DOPPLER (any board without a declared TPL5111) —
-	 * fix 2026-07: NEVER request an autonomous
-	 * STOP. BASIC has no MAC-owned RTC wake-up timer, and this app arms none
-	 * for the DOPPLER_WAIT_INTERVAL busy-wait — so entering STOP froze
-	 * HAL_GetTick with NO wake source and the tracker STRANDED (even during
-	 * the boot window, before its first message: sim-confirmed critical
-	 * brick). The between-SEQUENCE sleep is the deliberate enter_deep_sleep
-	 * (SHUTDOWN, hours) reached via finish_sequence; the short in-sequence
-	 * msg_interval is busy-waited at active current, which is correct and
-	 * NON-bricking. Proper in-interval duty-cycling would need an armed WUT
-	 * + tick compensation (as MGR_LPM_UW does) — a deferred enhancement, not
-	 * a brick fix. BLIND keeps STOP (the MAC owns the periodic WUT). */
+#if !defined(USE_MAC_PRFL_BLIND)
+	/* BASIC DOPPLER (RTC-mode AND TPL-mode) — fix 2026-07 / audit #8: NEVER
+	 * request an autonomous STOP. BASIC has no MAC-owned RTC wake-up timer, and
+	 * this app arms none for the DOPPLER_WAIT_INTERVAL busy-wait — so entering
+	 * STOP froze HAL_GetTick with NO wake source and the tracker STRANDED (even
+	 * during the boot window, before its first message: sim-confirmed critical
+	 * brick).
+	 *
+	 * audit #8: this guard previously excluded DOPPLER_USE_TPL, so when the
+	 * audit-#7 TPL compile-gate fix made the TPL path build for the first time,
+	 * TPL+BASIC fell through to `return doppler_lpm_mode` (=STOP) and hit
+	 * exactly this stranding — STOP2 during msg_interval with SysTick suspended
+	 * and no wake -> IWDG reset loop + wku-counter/flash corruption. TPL+BASIC
+	 * has the same busy-wait in-sequence interval as RTC-BASIC, so it takes the
+	 * same NONE treatment. Between SEQUENCES, TPL cuts power via the MCU_DONE
+	 * pulse (finish_sequence) and RTC uses enter_deep_sleep (SHUTDOWN) — neither
+	 * relies on this STOP. The short in-sequence msg_interval busy-waited at
+	 * active current is correct and NON-bricking; proper in-interval
+	 * duty-cycling would need an armed WUT + tick compensation (as MGR_LPM_UW
+	 * does) — a deferred enhancement, not a brick fix.
+	 *
+	 * BLIND keeps STOP (the MAC owns the periodic WUT). */
 	return LOW_POWER_MODE_NONE;
 #else
 	return doppler_lpm_mode;

@@ -188,6 +188,16 @@ void MGR_ERR_init(void)
 	 * crash). checkCrashLoop() throttles the streak with the same 1 h
 	 * safe sleep, bounding the awake duty to ~streak_max*period per hour. */
 	uint32_t prev_streak = ERR_BKP_FSTREAK;
+	/* Migration guard (audit #8): the fault-streak counter moved to BKP6R,
+	 * which on a field unit updated over DFU may hold uncontrolled retained data
+	 * (older firmware used BKP6R as ERR_BKP_TICK — a large HAL-tick value). A
+	 * stale seed far above the trip threshold would fire a spurious 1 h safe-
+	 * sleep on the first post-update boot (only when the last session logged an
+	 * error, so prev_err != ERR_NONE below). Treat any implausible value as
+	 * garbage. A real streak can never legitimately exceed FAULT_STREAK_MAX by
+	 * much (checkCrashLoop zeroes it at the cap), so 2x is a safe ceiling. */
+	if (prev_streak > (uint32_t)(MGR_ERR_FAULT_STREAK_MAX * 2u))
+		prev_streak = 0;
 	if (prev_err != ERR_NONE && prev_err != ERR_CREDS_BLANK) {
 		if (prev_streak < 0xFFFFu)
 			prev_streak++;

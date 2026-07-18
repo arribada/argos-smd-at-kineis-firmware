@@ -1144,6 +1144,12 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 			/* Someone is knocking: stay awake so their next command lands
 			 * on a live console. */
 			s_console_holdoff_until = HAL_GetTick() + CONSOLE_WAKE_HOLDOFF_MS;
+			/* 0 is the disarmed sentinel (consumer at line ~460). At the
+			 * 49.7-day tick wrap the sum can land exactly on 0 and read as
+			 * disarmed, skipping one console hold. Nudge off it (audit #8),
+			 * matching MGR_GESTURE's now==0->1 and the other tree deadlines. */
+			if (s_console_holdoff_until == 0u)
+				s_console_holdoff_until = 1u;
 		}
 	}
 #endif
