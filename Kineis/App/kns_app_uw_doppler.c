@@ -1712,6 +1712,19 @@ static bool process_mac_events(void)
 				MGR_LOG_WARN("[UW_DPL] Unknown MAC evt %d during WAIT_TX_DONE, cleanup PA\r\n",
 					srvcEvt.id);
 				MCU_MISC_turn_off_pa();
+				/* Restore the TCXO warmup here too (audit #10): every other TX
+				 * exit path (TX_DONE/TIMEOUT/ABORT/ERROR/deadman) restores it,
+				 * but this branch used to leave the first-TX 0 ms fast-path
+				 * pinned until the 10 s deadman. Harmless today (the FSM stays
+				 * in WAIT_TX_DONE so the serialization gate blocks any dispatch
+				 * with warmup==0), but restoring now makes it impossible for a
+				 * future edit to ever TX with an un-warmed TCXO. FSM stays in
+				 * WAIT_TX_DONE — the deadman still owns the timeout recovery, as
+				 * an unknown event does not prove the TX actually completed. */
+				if (tcxo_first_tx_skip) {
+					MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+					tcxo_first_tx_skip = false;
+				}
 			}
 			break;
 		}

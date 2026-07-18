@@ -99,12 +99,12 @@ static void step(Sm *s)
 		}
 	}
 
-	/* veto gates — each only clears should_tx, never the pending flag */
-	if (should_tx && !s->bat_ok) {
-		should_tx = 0;
-		if (first_attempt)
-			s->retry_tick = retry_at(FIRST_TX_BAT_RETRY_MS);
-	}
+	/* veto gates — each only clears should_tx, never the pending flag.
+	 * (audit #10) The hard battery TX veto was REMOVED from production: a low
+	 * VBAT no longer blocks the send — only the hysteretic LB mode reacts by
+	 * switching cadence. bat_ok is kept as a no-op input so the "battery no
+	 * longer blocks" regression tests can prove a low reading still dispatches. */
+	(void)s->bat_ok;
 	if (should_tx && s->rate_blocked) {
 		should_tx = 0;
 		if (first_attempt)
@@ -198,44 +198,38 @@ static void test_happy_path_first_pass_dispatch(void)
 	TEST_PASS();
 }
 
-/* ---- The core bug: a battery veto no longer kills the window ---- */
-static void test_battery_veto_keeps_window_armed(void)
+/* ---- Battery no longer gates the send (audit #10): a low VBAT must NOT
+ *      block or defer the first TX. Only the LB mode (tested elsewhere) reacts,
+ *      by switching cadence. This locks the removed-hard-veto behavior. ---- */
+static void test_low_battery_does_not_block_first_tx(void)
 {
 	Sm s = mk();
 	fk_tick = 100000;
 	arm_surface(&s, 0);
-	s.bat_ok = 0;             /* transient false-low read */
+	s.bat_ok = 0;             /* low / transient-low read */
 	step(&s);
-	ASSERT_FALSE(s.dispatched);
-	ASSERT_TRUE(s.pending);   /* pre-fix: pending was already consumed */
-	ASSERT_NE(0, s.retry_tick);
-
-	/* holdoff blocks attempts before 60 s, but the loop can SLEEP */
-	s.bat_ok = 1;
-	fk_tick += 30000;
-	step(&s);
-	ASSERT_FALSE(s.dispatched);
-	ASSERT_TRUE(s.slept);     /* pending_hold allows STOP2 */
-
-	/* retry after 60 s: battery recovered -> TX fires */
-	fk_tick += 30001;
-	step(&s);
-	ASSERT_TRUE(s.dispatched);
+	ASSERT_TRUE(s.dispatched);   /* pre-audit#10: battery vetoed; now it TXes */
+	ASSERT_FALSE(s.pending);     /* consumed at dispatch */
+	ASSERT_EQ(0, s.retry_tick);  /* no battery holdoff parked anymore */
 	TEST_PASS();
 }
 
-static void test_genuinely_low_battery_stays_inhibited(void)
+static void test_persistently_low_battery_still_transmits(void)
 {
 	Sm s = mk();
 	fk_tick = 500000;
+	s.cooldown_s = 0;                 /* isolate: no cooldown spacing */
 	arm_surface(&s, 0);
-	s.bat_ok = 0;
+	s.bat_ok = 0;                     /* pack stays low the whole time */
+	int dispatches = 0;
 	for (int i = 0; i < 5; i++) {
 		step(&s);
-		ASSERT_FALSE(s.dispatched);   /* hard floor keeps protecting */
-		fk_tick += 61000;
+		if (s.dispatched) dispatches++;
+		/* re-arm the next surface window (a diving turtle re-surfaces) */
+		fk_tick += 3000;             /* > TX_HARD_MIN so the floor never blocks */
+		arm_surface(&s, 0);
 	}
-	ASSERT_TRUE(s.pending);           /* window still armed for recovery */
+	ASSERT_EQ(5, dispatches);         /* low battery never inhibits the send */
 	TEST_PASS();
 }
 
@@ -400,15 +394,16 @@ static void test_zero_tx_net_respects_gates_and_disable(void)
 	step(&u);
 	ASSERT_FALSE(u.rearmed);
 
-	/* re-armed attempt still obeys the gates (battery still low) */
+	/* re-armed attempt still obeys the gates (backoff still active) */
 	Sm v = mk();
 	fk_tick = 990000;
 	v.surface_since = fk_tick - 10000000;
-	v.bat_ok = 0;
+	v.backoff_blocked = 1;
+	v.backoff_retry_s = 120;
 	step(&v);
 	ASSERT_TRUE(v.rearmed);
 	step(&v);                          /* attempt pass */
-	ASSERT_FALSE(v.dispatched);        /* vetoed by battery as it must be */
+	ASSERT_FALSE(v.dispatched);        /* vetoed by backoff as it must be */
 	ASSERT_TRUE(v.pending);
 	TEST_PASS();
 }
@@ -420,14 +415,15 @@ static void test_retry_holdoff_wrap_safe(void)
 	/* retry deadline lands AFTER the 32-bit tick wrap */
 	fk_tick = 0xFFFFFFF0u;
 	arm_surface(&s, 0);
-	s.bat_ok = 0;
+	s.backoff_blocked = 1;
+	s.backoff_retry_s = 60;            /* 60 s holdoff (any horizon-gate works) */
 	step(&s);                          /* holdoff = 0xFFFFFFF0 + 60000 (wraps) */
 	ASSERT_FALSE(s.dispatched);
 	uint32_t expected = 0xFFFFFFF0u + 60000u;   /* wrapped value */
 	ASSERT_EQ_HEX(expected, s.retry_tick);
 
-	/* pre-wrap: still held */
-	s.bat_ok = 1;
+	/* pre-wrap: still held by the parked holdoff */
+	s.backoff_blocked = 0;
 	fk_tick = 0xFFFFFFFAu;
 	step(&s);
 	ASSERT_FALSE(s.dispatched);
@@ -446,8 +442,9 @@ static void test_underwater_resets_holdoff_and_net(void)
 	Sm s = mk();
 	fk_tick = 1000000;
 	arm_surface(&s, 0);
-	s.bat_ok = 0;
-	step(&s);                 /* battery veto arms a 60 s holdoff */
+	s.backoff_blocked = 1;
+	s.backoff_retry_s = 120;
+	step(&s);                 /* backoff veto arms a holdoff */
 	ASSERT_NE(0, s.retry_tick);
 
 	go_underwater(&s);        /* dive: reset_tx_scheduling + anchor cleared */
@@ -455,7 +452,7 @@ static void test_underwater_resets_holdoff_and_net(void)
 	ASSERT_EQ(0u, s.surface_since);
 
 	fk_tick += 5000;
-	s.bat_ok = 1;
+	s.backoff_blocked = 0;    /* backoff cleared */
 	arm_surface(&s, 0);       /* resurface */
 	/* cooldown vs last_actual: no prior actual TX here -> fires at once */
 	step(&s);
@@ -468,8 +465,8 @@ int main(void)
 	TEST_SUITE_START("UW_DOPPLER first-TX veto fix (pending consumed at dispatch)");
 
 	RUN_TEST(test_happy_path_first_pass_dispatch);
-	RUN_TEST(test_battery_veto_keeps_window_armed);
-	RUN_TEST(test_genuinely_low_battery_stays_inhibited);
+	RUN_TEST(test_low_battery_does_not_block_first_tx);
+	RUN_TEST(test_persistently_low_battery_still_transmits);
 	RUN_TEST(test_backoff_veto_retries_at_horizon);
 	RUN_TEST(test_rate_veto_retries_at_horizon);
 	RUN_TEST(test_gesture_veto_defers_not_drops);
