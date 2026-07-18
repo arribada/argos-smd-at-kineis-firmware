@@ -1045,7 +1045,12 @@ int main(void)
 
 void Error_Handler(void)
 {
-    __disable_irq();
+    /* Never hang the bootloader. A reset re-enters the BL from the top, which
+     * re-checks app validity and re-honors any pending DFU request — giving a
+     * transient init failure another chance and preserving host recovery. A
+     * permanent failure resets in a loop rather than bricking silently with
+     * IRQs masked, which is strictly safer for a sealed device. */
+    NVIC_SystemReset();
     while (1) {
     }
 }
@@ -1076,5 +1081,9 @@ void HardFault_Handler(void)
         while (!(LPUART1->ISR & USART_ISR_TC) && --tout);
     }
 
+    /* Never hang: reset re-enters the BL, which re-validates the app and can
+     * still be caught by a DFU host at boot. A permanent fault reset-loops
+     * rather than bricking silently. */
+    NVIC_SystemReset();
     while (1);
 }
