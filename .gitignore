@@ -6,6 +6,10 @@ build_bl/*
 *.su
 Tests/build/*
 Tests/unit/build/*
+# Compiled host-sim binaries (Tests/sim/*.c are the tracked sources)
+Tests/sim/turtle_sim
+Tests/sim/*.exe
+Tests/sim/*.o
 .settings/
 .vscode/
 Kineis/doc/html/
