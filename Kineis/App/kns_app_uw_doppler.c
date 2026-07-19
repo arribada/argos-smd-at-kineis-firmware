@@ -487,9 +487,12 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 	.tx_seq_restart_s      = 1200, /**< floating animal: new sequence (new MC) every 20min */
 };
 
-/* LB mode (low-battery) config. Defaults engage LB at 2.9V (just above the
- * existing min_tx_mV=2.8V hard floor) with 200 mV hysteresis. In LB mode TX
- * timing is slower and capped at 3 TX per surface event. */
+/* LB mode (low-battery) config. In LB mode TX timing is slower and capped at 3
+ * TX per surface event. Since the hard battery TX veto was removed (audit #9),
+ * LB mode is the ONLY battery-driven behaviour: it reduces cadence/count when
+ * the pack sags, and never hard-inhibits a send. Disabled by default
+ * (lb_enter_mV=0); the operator enables it via AT+LBCFG. Uses 200 mV hysteresis
+ * (exit above enter) so it does not flap as an aging pack hovers at the edge. */
 #define LB_DEFAULT_ENTER_MV       0     /**< 0 = LB mode disabled by default */
 #define LB_DEFAULT_EXIT_MV        3100
 #define LB_DEFAULT_TX_INTERVAL_S  60    /**< 6x slower than normal 10s */
@@ -499,10 +502,11 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 _Static_assert(LB_DEFAULT_EXIT_MV > LB_DEFAULT_ENTER_MV,
                "LB hysteresis: lb_exit_mV must exceed lb_enter_mV");
 static KNS_APP_UwDopplerLbCfg_t lb_cfg = {
-	.lb_enter_mV       = LB_DEFAULT_ENTER_MV, /**< BATCFG hard floor still inhibits
-	                            *   TX below min_tx_mV; the values below are
-	                            *   seeds for when the operator enables LB
-	                            *   via AT+LBCFG. */
+	.lb_enter_mV       = LB_DEFAULT_ENTER_MV, /**< 0 = LB disabled; the values
+	                            *   below are seeds applied when the operator
+	                            *   enables LB via AT+LBCFG. There is no hard TX
+	                            *   veto anymore (audit #9) — LB only reshapes
+	                            *   the cadence, it never blocks a send. */
 	.lb_exit_mV        = LB_DEFAULT_EXIT_MV,
 	.lb_tx_interval_s  = LB_DEFAULT_TX_INTERVAL_S,
 	.lb_tx_max_s       = LB_DEFAULT_TX_MAX_S,

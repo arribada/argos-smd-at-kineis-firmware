@@ -43,6 +43,7 @@ TEST_GESTURE_FSM      = $(BUILD_DIR)/test_gesture_fsm
 TEST_WEAR_TORN        = $(BUILD_DIR)/test_wear_overflow_torn
 TEST_TCXO_WARMUP      = $(BUILD_DIR)/test_tcxo_warmup
 TEST_TX_SERIAL        = $(BUILD_DIR)/test_tx_serialization
+TEST_LB_HYST          = $(BUILD_DIR)/test_lb_hysteresis
 
 # All tests
 # NOTE: this curated list is a SUBSET used by `make run` for quick local runs.
@@ -55,7 +56,7 @@ TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI) \
         $(TEST_COOLDOWN_MODES) $(TEST_REED_HOLD) $(TEST_BAT_AUTO_SHTDN) \
         $(TEST_SELFTEST_MASK) $(TEST_COOLDOWN_PERSIST) $(TEST_LED_SWAP) \
         $(TEST_GESTURE_FSM) $(TEST_WEAR_TORN) $(TEST_TCXO_WARMUP) \
-        $(TEST_TX_SERIAL)
+        $(TEST_TX_SERIAL) $(TEST_LB_HYST)
 
 # Default target
 all: $(BUILD_DIR) $(TESTS)
@@ -133,6 +134,9 @@ $(TEST_TCXO_WARMUP): $(UNIT_DIR)/test_tcxo_warmup.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 $(TEST_TX_SERIAL): $(UNIT_DIR)/test_tx_serialization.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_LB_HYST): $(UNIT_DIR)/test_lb_hysteresis.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 # Run all unit tests
@@ -216,6 +220,9 @@ run-tcxo-warmup: $(TEST_TCXO_WARMUP)
 
 run-tx-serial: $(TEST_TX_SERIAL)
 	$(RUN_PREFIX)$(TEST_TX_SERIAL)
+
+run-lb-hyst: $(TEST_LB_HYST)
+	$(RUN_PREFIX)$(TEST_LB_HYST)
 
 # Clean
 clean:
