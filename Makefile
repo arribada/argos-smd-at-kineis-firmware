@@ -423,6 +423,19 @@ ifeq ($(TPL),1)
 	C_DEFS += -DUSE_TPL5111
 endif
 
+# Hard battery TX veto — OPT-IN, OFF BY DEFAULT (BAT_TX_VETO=1 -> UW_BAT_TX_VETO).
+# When enabled, UW_DOPPLER and DOPPLER inhibit a TX whenever the INSTANTANEOUS,
+# UNLOADED VBAT reading is below min_tx_voltage_mV (default 2800). Left OFF by
+# default because on a cold/passivated pack the unloaded reading transiently dips
+# below the floor and silences TX until the pack rests/warms — the "goes silent
+# then spontaneously recovers ~a week later" field symptom (audit #9 removed it,
+# audit #12 confirmed it as a suspect). The default battery reaction is the
+# hysteretic LB mode, which only reshapes cadence and never inhibits TX. Enable
+# only for a deployment that deliberately wants a hard resting-voltage TX floor.
+ifeq ($(BAT_TX_VETO),1)
+	C_DEFS += -DUW_BAT_TX_VETO
+endif
+
 ifeq ($(MAC_PRFL), BASIC)
 	C_DEFS +=  \
 	-DUSE_MAC_PRFL_BASIC

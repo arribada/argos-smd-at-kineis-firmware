@@ -947,14 +947,28 @@ void KNS_APP_doppler_loop(void)
 #endif
 
 #if defined(BSP_HAS_VBAT_ADC)
-		/* Read VBAT for the EVT_BAT telemetry only. The TX send is NOT gated on
-		 * an instantaneous battery reading (audit #9, design decision — same as
-		 * UW_DOPPLER): on a primary Li-SOCl2 pack the loaded voltage stays stiff
-		 * until near end-of-life, so a `mV < min_tx` compare at TX time just
-		 * flaps TX on/off as the pack ages. DOPPLER has no LB mode, so it simply
-		 * transmits whenever scheduled and lets the pack reach true end-of-life. */
+		/* Read VBAT for EVT_BAT telemetry. The hard battery TX veto is OPTIONAL
+		 * and COMPILE-TIME OFF BY DEFAULT (enable with `make BAT_TX_VETO=1` =>
+		 * UW_BAT_TX_VETO). By default the send is NOT gated on an instantaneous
+		 * unloaded reading: on a cold/passivated pack `mV < min_tx` at TX time
+		 * silences TX until the pack rests/warms, producing the "silent then
+		 * spontaneously recovers ~a week later" field symptom (audit #9/#12).
+		 * DOPPLER has no LB mode, so by default it simply transmits when
+		 * scheduled and lets the pack reach true end-of-life. Enable the veto
+		 * only for a deployment that wants a hard resting-voltage floor. */
 		last_vbat_mV = MGR_BAT_readVoltage_mV();
 		MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
+#if defined(UW_BAT_TX_VETO)
+		if (!MGR_BAT_isTxAllowed()) {
+			MGR_LOG_DEBUG("[DPL] Battery low (%umV), TX inhibited [UW_BAT_TX_VETO]\r\n",
+				last_vbat_mV);
+#if defined(BSP_HAS_LED_RGB)
+			MGR_LED_blink(MGR_LED_RED, 5, 100, 100);
+#endif
+			transition_to(DOPPLER_SEQUENCE_DONE);
+			return;
+		}
+#endif
 #endif
 
 		struct KNS_MAC_appEvt_t appEvt;

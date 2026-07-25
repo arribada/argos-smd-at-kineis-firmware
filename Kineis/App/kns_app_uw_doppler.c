@@ -555,9 +555,12 @@ static bool     surface_tx_pending = false; /**< Immediate TX needed on surface 
  * sleep deadline. 0 = no holdoff (retry next loop pass). Compared wrap-safe;
  * cleared by reset_tx_scheduling() and on dispatch. */
 static uint32_t first_tx_retry_tick = 0;
-/* (FIRST_TX_BAT_RETRY_MS removed in audit #9: the hard battery TX veto it paced
- * was removed — TX is no longer gated on an instantaneous VBAT reading; only
- * the hysteretic LB mode reacts to a sagging pack.) */
+/* Retry cadence for the OPTIONAL hard battery TX veto (compile-time
+ * UW_BAT_TX_VETO, off by default — see the TX-decision block in MONITORING). A
+ * transient post-wake droop recovers in seconds; a genuinely low pack stays low
+ * for minutes+, so 60 s bounds the ADC/EVTLOG churn either way. Only referenced
+ * when the veto is compiled in. */
+#define FIRST_TX_BAT_RETRY_MS  60000u
 /* Wall-clock tick when the CURRENT continuous SURFACE stretch began (0 = not
  * at surface / unknown). RTC-compensated across STOP2 like every tick here.
  * Anchors the zero-TX safety net in MONITORING. */
@@ -2761,16 +2764,37 @@ void KNS_APP_uw_doppler_loop(void)
 					if (cap_now > 0u && tx_count >= cap_now)
 						should_tx = false;
 				}
-				/* NO hard battery TX veto (audit #9, design decision): the TX
-				 * send is NOT gated on an instantaneous VBAT reading. On a
-				 * primary Li-SOCl2 pack the loaded voltage stays stiff until
-				 * near end-of-life, so a `mV < min_tx` compare at TX time just
-				 * flaps the TX on/off (post-STOP2 droop lands on either side of
-				 * the threshold each surface event) — the "erratic after ~a
-				 * week" field symptom. The ONLY battery-driven behaviour is the
-				 * hysteretic LB mode above (lb_update): when the pack sags it
-				 * switches to the reduced LB cadence/cap, never a hard inhibit.
-				 * VBAT is still read for the EVT_BAT telemetry and lb_update. */
+				/* Hard battery TX veto — OPTIONAL, COMPILE-TIME OFF BY DEFAULT.
+				 * Enable with `make BAT_TX_VETO=1` (defines UW_BAT_TX_VETO).
+				 *
+				 * WHY OFF BY DEFAULT (audit #9 removed it, audit #12 confirmed it
+				 * as a field-failure suspect): it gates the send on an
+				 * INSTANTANEOUS, UNLOADED VBAT reading (mV < min_tx_voltage_mV,
+				 * default 2800). On a cold / passivated Li-SOCl2 (or a sagging
+				 * pack) the unloaded reading transiently dips below the floor,
+				 * silencing TX; when the pack rests/warms the OCV climbs back and
+				 * TX resumes on its own — the "goes silent then spontaneously
+				 * recovers ~a week later" field symptom. It ALSO cannot prevent a
+				 * LOADED PA-pulse brownout (the reading is taken with the PA off).
+				 *
+				 * WHEN TO ENABLE: only for a deployment that deliberately wants a
+				 * hard resting-voltage TX floor and accepts the flap/silence
+				 * trade-off. The DEFAULT battery reaction stays the hysteretic LB
+				 * mode (lb_update above) — it only reshapes cadence, never inhibits
+				 * TX. VBAT is always read for EVT_BAT telemetry + lb_update. */
+#if defined(UW_BAT_TX_VETO)
+				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
+					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited "
+						"[UW_BAT_TX_VETO]\r\n",
+						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
+					should_tx = false;
+					/* Keep the schedule armed (consumed only at dispatch) and
+					 * retry once a minute; TX resumes on its own when the reading
+					 * recovers. */
+					first_tx_retry_tick =
+						first_tx_retry_at(FIRST_TX_BAT_RETRY_MS);
+				}
+#endif
 #endif
 			}
 			if (should_tx) {
