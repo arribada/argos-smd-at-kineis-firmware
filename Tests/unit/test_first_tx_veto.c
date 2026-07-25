@@ -5,7 +5,8 @@
  *
  * Mirrors the TX arbitration:
  *  - surface_tx_pending is consumed at dispatch only. A veto by a later gate
- *    (rate / backoff / gesture / inter-TX floor) keeps it armed;
+ *    (battery with BAT_TX_VETO=1 / rate / backoff / gesture / inter-TX floor)
+ *    keeps it armed;
  *    before, it was cleared at gate 1 with tx_count == 0 and nothing re-armed
  *    it until the next dive.
  *  - Gates with a known horizon park first_tx_retry_tick (first TX and
@@ -15,7 +16,8 @@
  *  - Zero-TX safety net: at SURFACE with tx_count == 0 and nothing pending
  *    for tx_seq_restart_s, the first TX is re-armed.
  *  - A dive clears everything (reset_tx_scheduling).
- *  - A low VBAT reading does not gate the send (only the LB mode reacts).
+ *  - A low VBAT reading does not gate the send unless BAT_TX_VETO=1 (default
+ *    build: only the LB mode reacts).
  */
 
 #include "test_framework.h"
@@ -23,6 +25,7 @@
 static uint32_t fk_tick;
 
 #define TX_HARD_MIN_INTERVAL_MS   2000u
+#define FIRST_TX_BAT_RETRY_MS    60000u
 #define FIRST_TX_MAX_RETRY_MS  3600000u
 #define SWS_NEXT_SAMPLE_MS        1000u  /* surface cadence stand-in */
 
@@ -37,8 +40,9 @@ typedef struct {
 	uint32_t offset_ms;            /* first_tx_random_offset_ms */
 	uint16_t cooldown_s;
 	uint16_t seq_restart_s;
+	int      bat_veto;             /* build with BAT_TX_VETO=1 */
 	/* per-pass gate inputs */
-	int      bat_ok;               /* VBAT above min_tx (no TX effect) */
+	int      bat_ok;               /* VBAT above min_tx */
 	int      rate_blocked;    uint32_t rate_retry_s;
 	int      backoff_blocked; uint32_t backoff_retry_s;
 	int      gesture;
@@ -142,6 +146,10 @@ static void step(Sm *s)
 		}
 	}
 
+	if (should_tx && s->bat_veto && !s->bat_ok) {
+		should_tx = 0;
+		s->retry_tick = retry_at(FIRST_TX_BAT_RETRY_MS);
+	}
 	if (should_tx && s->rate_blocked) {
 		should_tx = 0;
 		s->retry_tick = retry_at_s(s->rate_retry_s);
@@ -248,6 +256,49 @@ static void test_low_battery_does_not_block(void)
 		n += s.dispatched;
 	}
 	ASSERT_EQ(5, n);
+	TEST_PASS();
+}
+
+static void test_bat_veto_keeps_window_and_retries(void)
+{
+	Sm s = mk();
+
+	TEST_START("BAT_TX_VETO=1: pending kept, retry after 60 s, sleeps meanwhile");
+	fk_tick = 250000;
+	s.bat_veto = 1;
+	arm_surface(&s, 0);
+	s.bat_ok = 0;
+	step(&s);
+	ASSERT_FALSE(s.dispatched);
+	ASSERT_TRUE(s.pending);
+	ASSERT_EQ(fk_tick + FIRST_TX_BAT_RETRY_MS, s.retry_tick);
+	ASSERT_TRUE(s.slept);
+	ASSERT_EQ(SWS_NEXT_SAMPLE_MS, s.slept_delta);
+
+	/* recovered, but holdoff not expired: no TX, battery not re-read */
+	s.bat_ok = 1;
+	fk_tick += FIRST_TX_BAT_RETRY_MS - 1u;
+	step(&s);
+	ASSERT_FALSE(s.dispatched);
+	ASSERT_EQ(1, s.slept_delta);
+	fk_tick += 1u;
+	step(&s);
+	ASSERT_TRUE(s.dispatched);
+	ASSERT_FALSE(s.pending);
+
+	/* mid-sequence: the same 60 s holdoff gates the periodic TX */
+	s.interval_ms = 30000u;
+	s.bat_ok = 0;
+	fk_tick += 30000u;
+	step(&s);
+	ASSERT_FALSE(s.dispatched);
+	ASSERT_EQ(fk_tick + FIRST_TX_BAT_RETRY_MS, s.retry_tick);
+	ASSERT_TRUE(s.slept);
+	s.bat_ok = 1;
+	fk_tick += FIRST_TX_BAT_RETRY_MS;
+	step(&s);
+	ASSERT_TRUE(s.dispatched);
+	ASSERT_EQ(2, s.tx_count);
 	TEST_PASS();
 }
 
@@ -540,6 +591,7 @@ int main(void)
 	printf("\n=== Vetoed TX is retried, never dropped ===\n");
 	test_happy_path_first_pass_dispatch();
 	test_low_battery_does_not_block();
+	test_bat_veto_keeps_window_and_retries();
 	test_floating_animal_not_silenced();
 	test_rate_and_backoff_retry_at_horizon();
 	test_long_horizon_clamped_to_one_hour();

@@ -488,9 +488,9 @@ static KNS_APP_UwDopplerTxCfg_t tx_cfg = {
 };
 
 /* LB mode (low-battery) config. In LB mode TX timing is slower and capped at 3
- * TX per surface event. Since the hard battery TX veto was removed (audit #9),
- * LB mode is the ONLY battery-driven behaviour: it reduces cadence/count when
- * the pack sags, and never hard-inhibits a send. Disabled by default
+ * TX per surface event. Without BAT_TX_VETO=1 (the default) LB mode is the
+ * ONLY battery-driven behaviour: it reduces cadence/count when the pack sags,
+ * and never hard-inhibits a send. Disabled by default
  * (lb_enter_mV=0); the operator enables it via AT+LBCFG. Uses 200 mV hysteresis
  * (exit above enter) so it does not flap as an aging pack hovers at the edge. */
 #define LB_DEFAULT_ENTER_MV       0     /**< 0 = LB mode disabled by default */
@@ -504,8 +504,8 @@ _Static_assert(LB_DEFAULT_EXIT_MV > LB_DEFAULT_ENTER_MV,
 static KNS_APP_UwDopplerLbCfg_t lb_cfg = {
 	.lb_enter_mV       = LB_DEFAULT_ENTER_MV, /**< 0 = LB disabled; the values
 	                            *   below are seeds applied when the operator
-	                            *   enables LB via AT+LBCFG. There is no hard TX
-	                            *   veto anymore (audit #9) — LB only reshapes
+	                            *   enables LB via AT+LBCFG. The hard TX veto is
+	                            *   opt-in (BAT_TX_VETO=1) — LB only reshapes
 	                            *   the cadence, it never blocks a send. */
 	.lb_exit_mV        = LB_DEFAULT_EXIT_MV,
 	.lb_tx_interval_s  = LB_DEFAULT_TX_INTERVAL_S,
@@ -547,6 +547,7 @@ static bool     surface_tx_pending = false; /**< Immediate TX needed on surface 
  * until the next dive. Gates with a known horizon (first TX and mid-sequence)
  * park the retry here so the loop sleeps through the wait. */
 static uint32_t first_tx_retry_tick = 0;
+#define FIRST_TX_BAT_RETRY_MS     60000u  /**< BAT_TX_VETO=1 only */
 #define FIRST_TX_MAX_RETRY_MS   3600000u  /**< Re-evaluate at least hourly */
 /* Start of the current continuous SURFACE stretch (0 = not at surface).
  * Anchors the zero-TX safety net in MONITORING. */
@@ -2756,16 +2757,37 @@ void KNS_APP_uw_doppler_loop(void)
 					if (cap_now > 0u && tx_count >= cap_now)
 						should_tx = false;
 				}
-				/* NO hard battery TX veto (audit #9, design decision): the TX
-				 * send is NOT gated on an instantaneous VBAT reading. On a
-				 * primary Li-SOCl2 pack the loaded voltage stays stiff until
-				 * near end-of-life, so a `mV < min_tx` compare at TX time just
-				 * flaps the TX on/off (post-STOP2 droop lands on either side of
-				 * the threshold each surface event) — the "erratic after ~a
-				 * week" field symptom. The ONLY battery-driven behaviour is the
-				 * hysteretic LB mode above (lb_update): when the pack sags it
-				 * switches to the reduced LB cadence/cap, never a hard inhibit.
-				 * VBAT is still read for the EVT_BAT telemetry and lb_update. */
+				/* Hard battery TX veto — OPTIONAL, COMPILE-TIME OFF BY DEFAULT.
+				 * Enable with `make BAT_TX_VETO=1` (defines UW_BAT_TX_VETO).
+				 *
+				 * WHY OFF BY DEFAULT (audit #9 removed it, audit #12 confirmed it
+				 * as a field-failure suspect): it gates the send on an
+				 * INSTANTANEOUS, UNLOADED VBAT reading (mV < min_tx_voltage_mV,
+				 * default 2800). On a cold / passivated Li-SOCl2 (or a sagging
+				 * pack) the unloaded reading transiently dips below the floor,
+				 * silencing TX; when the pack rests/warms the OCV climbs back and
+				 * TX resumes on its own — the "goes silent then spontaneously
+				 * recovers ~a week later" field symptom. It ALSO cannot prevent a
+				 * LOADED PA-pulse brownout (the reading is taken with the PA off).
+				 *
+				 * WHEN TO ENABLE: only for a deployment that deliberately wants a
+				 * hard resting-voltage TX floor and accepts the flap/silence
+				 * trade-off. The DEFAULT battery reaction stays the hysteretic LB
+				 * mode (lb_update above) — it only reshapes cadence, never inhibits
+				 * TX. VBAT is always read for EVT_BAT telemetry + lb_update. */
+#if defined(UW_BAT_TX_VETO)
+				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
+					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited "
+						"[UW_BAT_TX_VETO]\r\n",
+						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
+					should_tx = false;
+					/* Keep the schedule armed (consumed only at dispatch) and
+					 * retry once a minute; TX resumes on its own when the reading
+					 * recovers. */
+					first_tx_retry_tick =
+						first_tx_retry_at(FIRST_TX_BAT_RETRY_MS);
+				}
+#endif
 #endif
 			}
 			if (should_tx) {
