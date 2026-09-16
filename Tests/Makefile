@@ -37,13 +37,20 @@ TEST_SELFTEST_MASK    = $(BUILD_DIR)/test_selftest_mask
 TEST_COOLDOWN_PERSIST = $(BUILD_DIR)/test_cooldown_persist
 TEST_LED_SWAP         = $(BUILD_DIR)/test_led_swap
 TEST_GESTURE_FSM      = $(BUILD_DIR)/test_gesture_fsm
+TEST_WEAR_TORN        = $(BUILD_DIR)/test_wear_overflow_torn
+TEST_TX_SERIAL        = $(BUILD_DIR)/test_tx_serialization
+TEST_LB_HYST          = $(BUILD_DIR)/test_lb_hysteresis
 
 # All tests
+# NOTE: this curated list is a SUBSET used by `make run` for quick local runs.
+# The authoritative gate is Tests/scripts/run_tests.sh (used by CI), which
+# GLOB-builds every unit/test_*.c — so a new test runs in CI even if not added
+# here. Add new tests to both for parity.
 TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI) \
         $(TEST_EVTLOG) $(TEST_NVM) $(TEST_TX_INTERVAL) $(TEST_MEMORY_SAFETY) \
         $(TEST_COOLDOWN_MODES) $(TEST_REED_HOLD) $(TEST_BAT_AUTO_SHTDN) \
         $(TEST_SELFTEST_MASK) $(TEST_COOLDOWN_PERSIST) $(TEST_LED_SWAP) \
-        $(TEST_GESTURE_FSM)
+        $(TEST_GESTURE_FSM) $(TEST_WEAR_TORN) $(TEST_TX_SERIAL) $(TEST_LB_HYST)
 
 # Default target
 all: $(BUILD_DIR) $(TESTS)
@@ -103,6 +110,15 @@ $(TEST_LED_SWAP): $(UNIT_DIR)/test_led_swap.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 $(TEST_GESTURE_FSM): $(UNIT_DIR)/test_gesture_fsm.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_WEAR_TORN): $(UNIT_DIR)/test_wear_overflow_torn.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_TX_SERIAL): $(UNIT_DIR)/test_tx_serialization.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_LB_HYST): $(UNIT_DIR)/test_lb_hysteresis.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 # Run all unit tests
@@ -177,6 +193,15 @@ run-selftest-mask: $(TEST_SELFTEST_MASK)
 
 run-cooldown-persist: $(TEST_COOLDOWN_PERSIST)
 	$(RUN_PREFIX)$(TEST_COOLDOWN_PERSIST)
+
+run-wear-torn: $(TEST_WEAR_TORN)
+	$(RUN_PREFIX)$(TEST_WEAR_TORN)
+
+run-tx-serial: $(TEST_TX_SERIAL)
+	$(RUN_PREFIX)$(TEST_TX_SERIAL)
+
+run-lb-hyst: $(TEST_LB_HYST)
+	$(RUN_PREFIX)$(TEST_LB_HYST)
 
 # Clean
 clean:
