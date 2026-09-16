@@ -36,7 +36,10 @@ fi
 run_ok=0
 run_fail=0
 tests_total=0
-for exe in build/test_*.exe; do
+# gcc emits build/test_x.exe on MSYS/Windows but build/test_x on Linux (CI):
+# glob both and keep only executable files, otherwise Linux ran nothing.
+for exe in build/test_*; do
+    [ -f "$exe" ] && [ -x "$exe" ] || continue
     name=$(basename "$exe" .exe)
     if "$exe" > /tmp/test_out.log 2>&1; then
         # Format A: "Results: N/M passed" (test_framework.h TEST_SUITE_END)
@@ -61,6 +64,11 @@ echo "=== SUITES: $run_ok/$((run_ok + run_fail)) OK"
 echo "=== TESTS:  $tests_total individual checks"
 
 if [ $run_fail -gt 0 ]; then
+    exit 1
+fi
+# Guard against a silent no-op run (e.g. a glob that matches nothing).
+if [ $((run_ok + run_fail)) -lt $build_ok ]; then
+    echo "=== ERROR: only $((run_ok + run_fail)) of $build_ok built suites ran"
     exit 1
 fi
 exit 0

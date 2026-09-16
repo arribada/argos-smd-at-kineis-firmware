@@ -55,8 +55,11 @@ jobs:
           # line and set mac: BLIND. Drop a line to stop shipping that variant.
 
           # --- UW_DOPPLER (deploy target: SMD_STDALONE / UART / BASIC only) ---
-          - { name: uw_doppler-stdalone-release, app: UW_DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 0, extra: REED_WKUP3_WIRE=1 }
-          - { name: uw_doppler-stdalone-bench,    app: UW_DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 1, extra: REED_WKUP3_WIRE=1 }
+          # No REED_WKUP3_WIRE=1: it turns the magnet power-off into a true
+          # SHUTDOWN woken only by PB3, unsafe for potted units on the current
+          # power-latch hardware (see `make help`).
+          - { name: uw_doppler-stdalone-release, app: UW_DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 0, extra: "" }
+          - { name: uw_doppler-stdalone-bench,    app: UW_DOPPLER, board: SMD_STDALONE, comm: UART, mac: BASIC, debug: 1, extra: "" }
 
           # --- GUI (all boards, UART + SPI) ---
           - { name: gui-pa-uart,        app: GUI, board: SMD_PA,       comm: UART, mac: BASIC, debug: 0, extra: "" }
