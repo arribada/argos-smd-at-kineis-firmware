@@ -4,9 +4,10 @@ Merge Firmware Tool for STM32WL55
 Combines application and bootloader into a single firmware image
 
 Memory Layout:
-  App: 0x08000000 - 0x08032FFF (204KB)
-  BL:  0x08033000 - 0x0803AFFF (32KB)
-  User:0x0803B000 - 0x0803FFFF (20KB) - Not included in merged image
+  App:  0x08000000 - 0x08031FFF (200KB, STM32WL55XX_FLASH_APP.ld ROM)
+  PMLOG:0x08032000 - 0x08032FFF (4KB)  - post-mortem log, written as 0xFF (erased)
+  BL:   0x08033000 - 0x0803AFFF (32KB)
+  User: 0x0803B000 - 0x0803FFFF (20KB) - Not included in merged image
 
 Usage:
     python merge_firmware.py --app app.bin --bootloader bootloader.bin --output-bin full.bin --output-hex full.hex
@@ -20,7 +21,7 @@ from pathlib import Path
 # Memory layout constants
 FLASH_BASE = 0x08000000
 APP_BASE = 0x08000000
-APP_SIZE = 0x33000       # 204KB
+APP_SIZE = 0x33000       # 204KB = app (200KB, enforced by the linker) + PMLOG page (4KB)
 BL_BASE = 0x08033000
 BL_SIZE = 0x8000         # 32KB
 FLASH_END = 0x0803B000   # End before user data
@@ -130,8 +131,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Memory Layout:
-  App: 0x08000000 - 0x08032FFF (204KB)
-  BL:  0x08033000 - 0x0803AFFF (32KB)
+  App:  0x08000000 - 0x08031FFF (200KB)
+  PMLOG:0x08032000 - 0x08032FFF (4KB, erased)
+  BL:   0x08033000 - 0x0803AFFF (32KB)
 
 Example:
   python merge_firmware.py --app build/app.bin --bootloader Bootloader/build/bootloader.bin \\
