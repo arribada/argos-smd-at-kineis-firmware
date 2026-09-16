@@ -32,6 +32,8 @@
 #include <string.h>
 #include "kns_app_doppler.h"
 #include "main.h"
+
+#include "subghz.h"   /* HAL_SUBGHZ_DeInit — radio teardown before SHUTDOWN */
 #include "mgr_wdg.h"
 #include "mgr_err.h"
 #include "mgr_evtlog.h"
@@ -106,6 +108,12 @@ static uint8_t  mac_init_retries = 0;
 
 /* Max msg_interval_s before uint32 overflow on *1000 conversion */
 #define MSG_INTERVAL_MAX_S       (UINT32_MAX / 1000UL)
+
+/* BLIND-profile config bounds enforced by the Kineis lib's KNS_MAC_BLIND_init
+ * (fix 2026-07). Values outside these are rejected with BAD_SETTING at MAC
+ * init, so a tracker configured out-of-range never transmits. */
+#define DOPPLER_BLIND_MIN_INTERVAL_S  60u    /* retx_period_s minimum */
+#define DOPPLER_BLIND_MAX_COUNT       127u   /* retx_nb maximum */
 
 /* Max RTC wakeup timer period in seconds (17-bit mode) */
 #define RTC_WAKEUP_MAX_S         0x20000UL  /* 131072s ≈ 36h */
@@ -208,6 +216,23 @@ static bool nvm_load(void)
 			(unsigned long)cfg.msg_interval_s);
 		return false;
 	}
+#ifdef USE_MAC_PRFL_BLIND
+	/* BLIND profile bounds (fix 2026-07): the lib's KNS_MAC_BLIND_init
+	 * rejects retx_period_s outside [MIN, UINT16_MAX] and retx_nb > MAX, and
+	 * start_mac_profile truncates the period with a (uint16_t) cast. A
+	 * cross-profile reflash (BASIC config loaded by a BLIND build) without
+	 * these bounds silently wrapped the period mod 65536 (e.g. 70000 s ->
+	 * 4464 s, ~16x over-TX) or fed an out-of-range value the lib refuses ->
+	 * the tracker never transmits. Same bounds as KNS_APP_doppler_setCfg so
+	 * a bad stored config is rejected (defaults applied) instead of applied. */
+	if (cfg.msg_interval_s > UINT16_MAX ||
+	    cfg.msg_interval_s < DOPPLER_BLIND_MIN_INTERVAL_S ||
+	    cfg.msg_count > DOPPLER_BLIND_MAX_COUNT) {
+		MGR_LOG_DEBUG("[DPL] NVM BLIND bounds fail (int=%lu cnt=%u)\r\n",
+			(unsigned long)cfg.msg_interval_s, cfg.msg_count);
+		return false;
+	}
+#endif
 #if !defined(MCU_DONE_Pin)
 	if (cfg.sequence_interval_s > RTC_WAKEUP_MAX_S) {
 		MGR_LOG_DEBUG("[DPL] NVM seq_interval too large (%lu), capped\r\n",
@@ -417,6 +442,12 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 	HAL_NVIC_DisableIRQ(LPUART1_IRQn);
 	HAL_GPIO_DeInit(GPIOA, GPIO_PIN_3);  /* LPUART1_RX */
 
+	/* Tear down the SubGHz radio before SHUTDOWN (fix 2026-07): same
+	 * teardown the GUI LPM path (lpm.c) and the UW soft-off path do before
+	 * a deep mode. SHUTDOWN exits through a cold boot that re-inits the
+	 * radio, and the STOP2 LSI park below keeps the radio quiet. */
+	(void)HAL_SUBGHZ_DeInit(&hsubghz);
+
 	/* Set all GPIOs to analog to minimize current leakage */
 	GPIO_DisableAllToAnalogInput();
 
@@ -448,6 +479,30 @@ static void enter_deep_sleep(uint32_t wakeup_seconds)
 	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
 
 	__HAL_RCC_CLEAR_RESET_FLAGS();
+
+	/* LSI-fallback guard (fix 2026-07, same class as the UW parks): the LSI
+	 * oscillator is powered OFF in Shutdown mode (RM0453 — only LSE can
+	 * clock the RTC there). A tracker running on the LSE-death LSI fallback
+	 * would arm the WUT above, enter SHUTDOWN, and NEVER wake — the timer
+	 * freezes and the only remaining wake is a manual PB3/WKUP3 edge,
+	 * absent in the field: permanent brick of an otherwise-working unit.
+	 * Park in STOP2 instead (the LSI keeps running there) and exit through
+	 * a clean reset, preserving the "never returns, cold boot on wake"
+	 * contract. Trade-off: the WKUP3 edge wake is lost for the LSI-park
+	 * case only (STOP2 has no WKUP circuitry on PB3 without an EXTI, which
+	 * this path never armed) — acceptable, nothing drives PB3 in the field. */
+	{
+		extern volatile uint8_t g_rtc_use_lsi;
+
+		if (g_rtc_use_lsi) {
+			MODIFY_REG(PWR->C2CR1, PWR_C2CR1_LPMS,
+			           PWR_LOWPOWERMODE_SHUTDOWN);
+			HAL_SuspendTick();
+			HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+			NVIC_SystemReset();
+			/* never returns */
+		}
+	}
 
 	/* Enter SHUTDOWN -- never returns */
 	HAL_PWREx_EnterSHUTDOWNMode();
@@ -937,8 +992,15 @@ bool KNS_APP_doppler_setCfg(const KNS_APP_DopplerCfg_t *cfg)
 #endif
 
 #ifdef USE_MAC_PRFL_BLIND
-	/* BLIND retx_period_s is uint16_t */
-	if (cfg->msg_interval_s > UINT16_MAX)
+	/* BLIND lib bounds (fix 2026-07): KNS_MAC_BLIND_init rejects
+	 * retx_period_s outside [DOPPLER_BLIND_MIN_INTERVAL_S, UINT16_MAX] and
+	 * retx_nb > DOPPLER_BLIND_MAX_COUNT with BAD_SETTING. Accepting them
+	 * here (or in nvm_load) let the tracker sit in WAIT_MAC_READY on every
+	 * wake, log, power down, and NEVER transmit for the whole deployment
+	 * while looking configured. Reject up front so the operator sees it. */
+	if (cfg->msg_interval_s > UINT16_MAX ||
+	    cfg->msg_interval_s < DOPPLER_BLIND_MIN_INTERVAL_S ||
+	    cfg->msg_count > DOPPLER_BLIND_MAX_COUNT)
 		return false;
 #endif
 
