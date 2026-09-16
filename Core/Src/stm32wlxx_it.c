@@ -165,7 +165,9 @@ static void fault_handler_c(uint32_t *frame, uint8_t fault_type, const char *tag
       (unsigned long)(frame ? frame[0] : 0),
       (unsigned long)(frame ? frame[4] : 0),
       (unsigned long)(frame ? frame[7] : 0));
-    if (n > 0) {
+    /* Skip the emit when the console was de-initialised (deployed tags tear
+     * LPUART1 down and gate its clock): same guard as the crash replay. */
+    if (n > 0 && hlpuart1.gState != HAL_UART_STATE_RESET) {
       USART_TypeDef *u = hlpuart1.Instance;
       if (u != NULL && (u->CR1 & USART_CR1_UE)) {
         for (int i = 0; i < n; i++) {
