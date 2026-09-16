@@ -434,11 +434,15 @@ void MGR_GESTURE_task(void)
 			 * handler can replay its side effects (SWS power, UART
 			 * gating) — previously hardcoded to OPERATIONAL which
 			 * left a tag booting in CONFIG in a half-configured
-			 * state. */
-			s_pending_event =
-			    (s_mode == MGR_GESTURE_MODE_CONFIG)
-			    ? MGR_GESTURE_EVT_ENTER_CONFIG
-			    : MGR_GESTURE_EVT_ENTER_OPERATIONAL;
+			 * state. Never clobber a pending REQUEST_SHUTDOWN though
+			 * (fix 2026-07): an AT power-off issued during the wake
+			 * blink has already replied +OK — silently dropping it
+			 * here would ship a live tag believed to be off. */
+			if (s_pending_event != MGR_GESTURE_EVT_REQUEST_SHUTDOWN)
+				s_pending_event =
+				    (s_mode == MGR_GESTURE_MODE_CONFIG)
+				    ? MGR_GESTURE_EVT_ENTER_CONFIG
+				    : MGR_GESTURE_EVT_ENTER_OPERATIONAL;
 		}
 		return;
 	}
