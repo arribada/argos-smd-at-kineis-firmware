@@ -132,10 +132,24 @@ void NMI_Handler(void)
 
 static void fault_handler_c(uint32_t *frame, uint8_t fault_type, const char *tag)
 {
+  /* Persist forensics FIRST, before any I/O. The crash frame is always saved
+   * to TAMP/SRAM2 so the next boot replay surfaces the fault regardless of
+   * whether the UART emit below completes. Ordering it ahead of the emit is
+   * defense-in-depth: even if the LPUART somehow stalls, the post-mortem
+   * trace is already committed. */
+  MGR_ERR_captureFault(frame, fault_type, (uint8_t)g_uw_doppler_state_for_err);
+  MGR_ERR_LOG_FAULT(fault_type, g_uw_doppler_state_for_err);
+
   /* CPU fault forensic — ERROR-grade. Gated at LOGLVL=NONE only so a
    * GUI parser sees a clean stream even if the device crashes during
-   * its session. The frame is always persisted to TAMP/SRAM2 below,
-   * so the next boot replay will surface it regardless. */
+   * its session.
+   *
+   * At fault priority SysTick is masked, so HAL_UART_Transmit's tick-based
+   * timeout can never expire: a stalled LPUART would hang the handler
+   * forever, defeating the guaranteed reset below. We therefore emit via a
+   * bounded direct-register poll (fixed spin budget per byte, same shape as
+   * the bootloader's own HardFault emitter) so the handler always reaches
+   * NVIC_SystemReset even if the line is wedged. */
   if (MGR_LOG_passes(MGR_LOG_LVL_ERROR)) {
     extern UART_HandleTypeDef hlpuart1;
     static char buf[168];
@@ -151,12 +165,21 @@ static void fault_handler_c(uint32_t *frame, uint8_t fault_type, const char *tag
       (unsigned long)(frame ? frame[0] : 0),
       (unsigned long)(frame ? frame[4] : 0),
       (unsigned long)(frame ? frame[7] : 0));
-    if (n > 0)
-      HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)n, 100);
+    if (n > 0) {
+      USART_TypeDef *u = hlpuart1.Instance;
+      if (u != NULL && (u->CR1 & USART_CR1_UE)) {
+        for (int i = 0; i < n; i++) {
+          volatile uint32_t tout = 100000;
+          while (!(u->ISR & USART_ISR_TXE_TXFNF) && --tout) { }
+          if (!tout) break;
+          u->TDR = (uint8_t)buf[i];
+        }
+        volatile uint32_t tout = 100000;
+        while (!(u->ISR & USART_ISR_TC) && --tout) { }
+      }
+    }
   }
 
-  MGR_ERR_captureFault(frame, fault_type, (uint8_t)g_uw_doppler_state_for_err);
-  MGR_ERR_LOG_FAULT(fault_type, g_uw_doppler_state_for_err);
   NVIC_SystemReset();
   while (1) { /* unreachable */ }
 }
