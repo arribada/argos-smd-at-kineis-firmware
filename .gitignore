@@ -1,5 +1,9 @@
 build/*
 build_bl/*
+# Stray per-file build artifacts (gcc -MD/-fstack-usage) that can land at the
+# repo root when a compile is run outside build/ - never source.
+*.d
+*.su
 Tests/build/*
 Tests/unit/build/*
 .settings/
