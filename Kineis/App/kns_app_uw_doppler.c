@@ -740,6 +740,12 @@ static void tx_backoff_arm(void)
 	if (backoff_ms > TX_BACKOFF_MAX_MS)
 		backoff_ms = TX_BACKOFF_MAX_MS;
 	tx_backoff_until_tick = HAL_GetTick() + backoff_ms;
+	/* 0 is the "disarmed" sentinel (tx_backoff_blocked/reset). At the 49.7-day
+	 * tick wrap HAL_GetTick()+backoff_ms can land exactly on 0, which would read
+	 * as disarmed and let one TX slip the quiet window. Nudge off it, matching
+	 * the sibling deadlines (MGR_SWS_blankUntil, spi_stop_grace). (audit #8) */
+	if (tx_backoff_until_tick == 0u)
+		tx_backoff_until_tick = 1u;
 	MGR_EVTLOG_log(EVT_TX_BACKOFF, (uint16_t)(backoff_ms / 1000));
 	MGR_LOG_DEBUG("[UW_DPL] TX backoff armed: %lus (errors=%u)\r\n",
 		(unsigned long)(backoff_ms / 1000), consecutive_tx_errors);
@@ -1666,6 +1672,15 @@ void KNS_APP_uw_doppler_init(void)
 
 	/* Init event log (SRAM2 retention - survives resets) */
 	MGR_EVTLOG_init();
+	/* Init the post-mortem flash log BEFORE any ERROR-severity event can be
+	 * logged (audit #8): MGR_EVTLOG_log mirrors EVT_SEV_ERROR into
+	 * MGR_PMLOG_log, and both boot_loop_handle (EVT_FACTORY_RESET) and the
+	 * crash-replay block below emit ERROR events. If PMLOG were still
+	 * uninitialised the mirrored record would be stamped seq=0 (its cursor at
+	 * C-startup default), corrupting the forensic ordering of the very log used
+	 * to post-mortem a recovered tag. PMLOG init only scans the flash ring —
+	 * no NVM/cred dependency — so it is safe this early (~100 ms, WDG-covered). */
+	MGR_PMLOG_init();
 	MGR_EVTLOG_log(EVT_BOOT, 0);
 
 	/* Boot-loop guard: increments per-boot failure counter, optionally
@@ -1714,7 +1729,9 @@ void KNS_APP_uw_doppler_init(void)
 	/* Sprint 4: persistent TX stats + post-mortem flash log. Init order
 	 * doesn't matter relative to NVM_load — neither uses NVM config. */
 	MGR_TXSTATS_init();
-	MGR_PMLOG_init();   /* iterates the flash log ring — ~100 ms worst case */
+	/* MGR_PMLOG_init() moved up to just after MGR_EVTLOG_init() (audit #8) so
+	 * ERROR events from boot_loop_handle / crash-replay mirror into a properly
+	 * seeded PMLOG cursor. */
 	/* Self-heal page-0 credentials from the mirror (and seed the mirror on
 	 * first boot) BEFORE any credential read or MAC init. The result drives
 	 * the Layer-2B fail-loud terminal state. Worst case one page erase (~25 ms,
@@ -2483,6 +2500,20 @@ void KNS_APP_uw_doppler_loop(void)
 				MGR_EVTLOG_log(EVT_BAT, last_vbat_mV);
 				/* Update LB hysteretic state on every fresh reading. */
 				lb_update(last_vbat_mV);
+				/* Re-check the TX-count cap with the FRESH LB state
+				 * (fix 2026-07): the cap gate earlier in this pass ran
+				 * before this reading, so the very TX whose measurement
+				 * trips LB used to dispatch under the stale (larger)
+				 * normal cap — one extra PA burst on a pack that is by
+				 * definition sagging. */
+				{
+					uint8_t cap_now = lb_active
+						? lb_cfg.lb_tx_max_count
+						: tx_cfg.tx_max_count;
+
+					if (cap_now > 0u && tx_count >= cap_now)
+						should_tx = false;
+				}
 				if (!MGR_BAT_isTxAllowedAt(last_vbat_mV)) {
 					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
 						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
@@ -2702,6 +2733,12 @@ void KNS_APP_uw_doppler_loop(void)
 
 			MGR_TXSTATS_recordAttempt();  /* Sprint 4 — count the request */
 			last_tx_tick = HAL_GetTick();
+			/* 0 is the "fire fast" sentinel the surface paths set — a push
+			 * landing on the EXACT 49.7-day wrap tick must not re-arm it
+			 * (sim-proven: it killed the seq-restart timer and every
+			 * restart deadline for a floating tag). */
+			if (last_tx_tick == 0u)
+				last_tx_tick = 1u;
 			last_actual_tx_tick = last_tx_tick;  /* cooldown reference */
 			current_interval_ms = compute_next_interval_ms(tx_count);
 			tx_count++;
@@ -2740,6 +2777,23 @@ void KNS_APP_uw_doppler_loop(void)
 			/* MAC stack never fired TX_DONE/TIMEOUT/ERROR. PA may have been
 			 * left enabled (drains ~60 mA continuously). Force cleanup. */
 			MCU_MISC_turn_off_pa();
+			/* Count the silent-MAC failure like a REPORTED one (fix
+			 * 2026-07, sim-proven): this path used to bypass the error
+			 * counter, the backoff AND the rate limiter (TX_DONE never
+			 * fired), so a wedged MAC re-pushed 9x/h forever with up to
+			 * 10 s of PA-armed current per cycle and zero throttling —
+			 * the design comment on TX_DONE explicitly assumes "the
+			 * backoff path handles their throttling". */
+			if (consecutive_tx_errors < 0xFFu)
+				consecutive_tx_errors++;
+			tx_backoff_arm();
+			/* A test burst must not outlive a silent MAC either (fix
+			 * 2026-07): the burst decrements only on MAC events, so this
+			 * deadman used to leave AT+TEST spinning an unbounded awake
+			 * TX-retry loop — the test dispatch bypasses the very backoff
+			 * armed above. Consume one slot per silent timeout. */
+			if (test_tx_remaining > 0)
+				test_tx_remaining--;
 			/* Restore TCXO warmup: TX_DONE never fired, MAC may be stuck */
 			if (tcxo_first_tx_skip) {
 				MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
