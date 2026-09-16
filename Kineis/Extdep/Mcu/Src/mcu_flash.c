@@ -37,12 +37,22 @@
 
 static enum KNS_status_t MCU_FLASH_WaitReady(uint32_t timeout_ms)
 {
-    uint32_t start = HAL_GetTick();
+    /* Iteration-bounded spin (fix 2026-07): every runtime caller sits inside
+     * a __disable_irq region where SysTick is masked and HAL_GetTick is
+     * FROZEN — the old tick-based timeout could never fire, so a wedged BSY
+     * spun forever with IRQs off until the 16 s IWDG reset the chip
+     * mid-page-rewrite (torn page = the ECC-NMI exposure). Calibration: at
+     * 48 MHz / -O0 one iteration costs >= ~10 cycles, so 5000 iter/ms is a
+     * conservative speed bound — the limit only needs the right order of
+     * magnitude: far above any legitimate BSY time (erase <= 22 ms, program
+     * <= 90 us per RM0453) and far below the 16 s IWDG window even if the
+     * real per-iteration cost is 4x the estimate. */
+    uint32_t spins = timeout_ms * 5000u;
 
     // Attente de la fin de l'opération en cours (BSY à 0)
     while (__HAL_FLASH_GET_FLAG(FLASH_FLAG_BSY)) {
-        if ((HAL_GetTick() - start) > timeout_ms) {
-            MGR_LOG_DEBUG("FLASH TIMEOUT: BSY still set after %lu ms\r\n", timeout_ms);
+        if (spins-- == 0u) {
+            MGR_LOG_DEBUG("FLASH TIMEOUT: BSY still set after ~%lu ms\r\n", timeout_ms);
             return KNS_STATUS_FLASH_ERR;   // ou KNS_STATUS_TIMEOUT si tu as un code dédié
         }
     }
