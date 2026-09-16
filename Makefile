@@ -625,7 +625,8 @@ CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
 #######################################
 # link script
 # Memory layout with bootloader:
-#   App: 0x08000000 - 0x08032FFF (204KB) - at start for Kineis compatibility
+#   App: 0x08000000 - 0x08031FFF (200KB) - at start for Kineis compatibility
+#   PMLOG:0x08032000 - 0x08032FFF (4KB)  - post-mortem log page (erased by flash-app/full)
 #   BL:  0x08033000 - 0x0803AFFF (32KB)  - bootloader after app
 #   User:0x0803B000 - 0x0803FFFF (20KB)  - flash user data preserved
 #
@@ -839,7 +840,8 @@ full: check-app check-bootloader $(COMBINED_BIN)
 	@echo "BIN: $(COMBINED_BIN)"
 	@echo ""
 	@echo "Memory layout:"
-	@echo "  App: 0x08000000 - 0x08032FFF (204KB)"
+	@echo "  App: 0x08000000 - 0x08031FFF (200KB)"
+	@echo "  PMLOG: 0x08032000 - 0x08032FFF (4KB, written as 0xFF: log erased)"
 	@echo "  BL:  0x08033000 - 0x0803AFFF (32KB)"
 	@echo ""
 	@echo "Flash with: make flash-full"
@@ -1017,8 +1019,8 @@ erase-all:
 #######################################
 help:
 	@echo "Canonical builds (ALWAYS 'make clean' first when changing any flag below):"
-	@echo "  Bench   : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=1 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20 full"
-	@echo "  Release : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=0 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j20 full"
+	@echo "  Bench   : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=1 MAC_PRFL=BASIC -j20 full"
+	@echo "  Release : make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=0 MAC_PRFL=BASIC -j20 full"
 	@echo "            then: make flash-full   (app + bootloader, FLASH_USER preserved)"
 	@echo ""
 	@echo "DEBUG=1: console always on, logs INFO  | DEBUG=0: UART torn down ~2s after"
@@ -1027,6 +1029,9 @@ help:
 	@echo "Flags: BOARD=SMD_PA|SMD_NOPA|SMD_STDALONE|SMD_OP  APP=GUI|STDLN|DOPPLER|UW_DOPPLER"
 	@echo "       REED_WKUP3=1 (reed moved to PB3) | REED_WKUP3_WIRE=1 (PB6+PB3 parallel,"
 	@echo "       the SMD_STDALONE wiring) | REED_WKUP1_WIRE=1 (PA0 - NOT wired on this HW)"
+	@echo "       WARNING: REED_WKUP3_WIRE=1 switches power-off to true SHUTDOWN (PB3 wake only)."
+	@echo "       On the current power-latch HW it can reboot-loop or leave a unit wakeable only"
+	@echo "       by NRST/SWD. Do NOT use it for potted units: the default is the STOP2 soft-off."
 	@echo "       LOG_LEVEL=0..4  JLINK_SPEED=<kHz>  JLINK_SERIAL=<sn>"
 	@echo ""
 	@echo "Targets:"

@@ -224,7 +224,7 @@ static void LPM_SystemClock_Config_RestoreFromStop(void)
  *
  * @note So far, it is coded to exit standby or shutdown only.
  * @note So far, the wakeup pin is directly hardcoded in the core fo this function:
- *       * WKUP2 (PC13, blue user button) falling edge.
+ *       * WKUP3 (PB3, module pad P23, shared with SWO) rising edge.
  *
  * @todo Need to add input parameter to make it generic regarding the wakeup pins configuration.
  */
@@ -239,8 +239,8 @@ static void LPM_configWakeUpPins(void)
 	__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 
 	/* But enable wakeup with:
-	 * * falling edge on wakeup pin 2, i.e. PC13,  user blue button
-	 * Pressing the user button will exit from shutdown mode.
+	 * * rising edge on wakeup pin 3, i.e. PB3 (module pad P23)
+	 * Driving PB3 HIGH exits from standby or shutdown mode (cold boot).
 	 */
 	HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN3_HIGH);
 }
