@@ -83,6 +83,17 @@ void MGR_BAT_init(void)
 	 * One throwaway read is enough — the second always returns the
 	 * correct voltage. */
 	(void)MGR_BAT_readVoltage_mV();
+
+	/* Clear the last-good cache the warm-up read just poisoned (fix 2026-07,
+	 * audit #7): MGR_BAT_readVoltage_mV() caches EVERY non-failing conversion
+	 * into last_good_vbat_mV, and the warm-up value (VREFINT valid, raw_vbat
+	 * small-but-nonzero ~40 mV) does NOT hit the failure branch — so the
+	 * "last known good" was being seeded with a known-bad ~40 mV. Since that
+	 * cache is what a LATER transient ADC failure returns, isTxAllowedAt(40)
+	 * would be false (40 < min_tx) and getLevel() 0 %, marking a healthy pack
+	 * as dead and inhibiting TX. Reset to 0 so a failure before the first real
+	 * read instead takes the safe "sensor failed -> allow TX" path. */
+	last_good_vbat_mV = 0;
 }
 
 uint16_t MGR_BAT_readVoltage_mV(void)
