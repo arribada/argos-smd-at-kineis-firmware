@@ -191,6 +191,12 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 			u16UserDataBitlen = u16_get_padded_bitlen(u16UserDataBitlen);
 			if (u16UserDataBitlen == 0) {
 				MGR_LOG_VERBOSE("[ERROR] Payload too large for current modulation\r\n");
+				/* Fix 2026-07: release the reserved FIFO element. The old
+				 * path leaked it: 4 bad commands consumed every FIFO slot
+				 * (TX dead until reboot: reserve marks the slot used
+				 * without chaining it, so flush can never reclaim it).
+				 * The SPI handler already had this release. */
+				USERDATA_txFifoRemoveElt(spUserDataMsg);
 				return bMGR_AT_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH);
 			}
 			/* Buffer already zeroed, padding bytes are 0 */
@@ -210,15 +216,23 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 				/** @note appEvt.send_ctxt already filled-up at declaration */
 				appEvt.id = KNS_MAC_SEND_DATA;
 				status = KNS_Q_push(KNS_Q_DL_APP2MAC, (void *)&appEvt);
-				if (status != KNS_STATUS_OK)
+				if (status != KNS_STATUS_OK) {
+					/* Fix 2026-07: the element was already CHAINED
+					 * (AddElt above) — leaving it desynchronised the
+					 * head-of-FIFO completion matching for every
+					 * later TX. RemoveElt unchains and frees it. */
+					USERDATA_txFifoRemoveElt(spUserDataMsg);
 					return bMGR_AT_CMD_logFailedMsg(MGR_AT_CMD_mapKnsStatusToError(status));
+				}
 				return true;
 			}
 			MGR_LOG_VERBOSE("[ERROR] User data is badly formatted (check length)\r\n");
+			USERDATA_txFifoRemoveElt(spUserDataMsg);   /* fix 2026-07 */
 			return bMGR_AT_CMD_logFailedMsg(ERROR_INVALID_USER_DATA_LENGTH);
 		case 0: /* Case ARGOS Message without user data */
 		default:
 			MGR_LOG_VERBOSE("[ERROR] AT+TX command is badly formatted\r\n");
+			USERDATA_txFifoRemoveElt(spUserDataMsg);   /* fix 2026-07 */
 			return bMGR_AT_CMD_logFailedMsg(ERROR_MISSING_PARAMETERS);
 		}
 	} else {
