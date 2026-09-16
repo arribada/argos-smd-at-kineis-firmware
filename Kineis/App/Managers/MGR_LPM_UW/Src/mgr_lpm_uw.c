@@ -449,10 +449,18 @@ void MGR_LPM_UW_idleTick(int sws_state, uint32_t delta_ms,
 
 #if defined(CONSOLE_WAKE_ON_RX)
 	/* A UART edge woke the last STOP2: hold the console open briefly so
-	 * the host's retry lands (it then opens the full AT grace). */
-	if (s_console_holdoff_until != 0u &&
-	    (HAL_GetTick() - s_console_holdoff_until) > 0x80000000u)
-		return;
+	 * the host's retry lands (it then opens the full AT grace).
+	 *
+	 * Clear-on-expiry (fix 2026-07): the old form kept the stale deadline
+	 * forever, and the signed-window compare re-engages 2^31 ms (24.8 days)
+	 * after it — vetoing STOP2 on EVERY pass for the next 24.8 days at
+	 * MONITORING current (~5 mA, ~3 Ah burnt), repeating every 49.7 days.
+	 * Same pattern as tx_backoff_blocked / MGR_REED's blank window. */
+	if (s_console_holdoff_until != 0u) {
+		if ((int32_t)(s_console_holdoff_until - HAL_GetTick()) > 0)
+			return;                    /* inside the 2.5 s holdoff */
+		s_console_holdoff_until = 0u;      /* expired — disarm for good */
+	}
 #endif
 
 	/* Debugger attached: STOP2 under an active SWD session degenerates
@@ -1068,6 +1076,12 @@ void MGR_LPM_UW_enterStop2TimedMs(uint32_t ms)
 			/* Someone is knocking: stay awake so their next command lands
 			 * on a live console. */
 			s_console_holdoff_until = HAL_GetTick() + CONSOLE_WAKE_HOLDOFF_MS;
+			/* 0 is the disarmed sentinel (consumer in idleTick). At the
+			 * 49.7-day tick wrap the sum can land exactly on 0 and read as
+			 * disarmed, skipping one console hold. Nudge off it (audit #8),
+			 * matching MGR_GESTURE's now==0->1 and the other tree deadlines. */
+			if (s_console_holdoff_until == 0u)
+				s_console_holdoff_until = 1u;
 		}
 	}
 #endif
