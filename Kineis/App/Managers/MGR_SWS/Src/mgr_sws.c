@@ -1200,9 +1200,19 @@ void MGR_SWS_task(void)
 	/* TX-transient blanking: skip the read while a TX + settle window is active
 	 * so the PA coupling into PA11 is never sampled as an underwater spike. Do
 	 * NOT advance last_measurement_tick here — the next non-blanked pass then
-	 * samples as soon as the window clears. */
-	if ((int32_t)(s_tx_blank_until_tick - now) > 0)
-		return;
+	 * samples as soon as the window clears.
+	 *
+	 * Clear-on-expiry (fix 2026-07): a stale deadline left armed would
+	 * re-engage 2^31 ms (24.85 days) after the last TX and silence ALL SWS
+	 * sampling (no surface detection, no dive-timeout escalation, ignores
+	 * forceMeasurement) for the next 24.85 days. The 0 sentinel also honors
+	 * the "0 = inactive" contract at the declaration — without it a tag
+	 * that never TX'd went SWS-deaf from uptime 24.85 d to 49.7 d. */
+	if (s_tx_blank_until_tick != 0u) {
+		if ((int32_t)(s_tx_blank_until_tick - now) > 0)
+			return;
+		s_tx_blank_until_tick = 0u;    /* expired — disarm for good */
+	}
 
 	uint32_t elapsed_ms = now - last_measurement_tick;
 	uint32_t interval_ms = current_test_interval_ms();
@@ -1313,8 +1323,10 @@ void MGR_SWS_blankUntil(uint32_t until_tick)
 {
 	/* Suppress SWS sampling until `until_tick` (see s_tx_blank_until_tick) so
 	 * the SubGHz PA transient coupled into the electrode is not read as UW. The
-	 * app refreshes this across a TX-in-flight window + settle tail. */
-	s_tx_blank_until_tick = until_tick;
+	 * app refreshes this across a TX-in-flight window + settle tail.
+	 * 0 is the "inactive" sentinel — if now+tail lands exactly on 0 at the
+	 * 49.7-day tick wrap, nudge to 1 (worst case: one sample 1 ms early). */
+	s_tx_blank_until_tick = (until_tick == 0u) ? 1u : until_tick;
 }
 
 bool MGR_SWS_stateChanged(void)
