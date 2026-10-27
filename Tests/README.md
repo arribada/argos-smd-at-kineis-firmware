@@ -117,9 +117,13 @@ When you change a guarded constant in the firmware, update its mirror here.
 - **Check count is parser-derived, not authoritative.** The runner greps suite
   trailers in three formats (`Results: P/N`, `P/N tests`, `N tests`); a suite
   printing a format it can't parse contributes 0 to the total without failing.
-- **Current state (2026-06-29): 42/42 suites OK, 535 individual checks** from a
-  live `run_tests.sh` run. (CLAUDE.md memory cites 42 suites / ~532 checks — the
-  drift is new/expanded suites; the live number is authoritative.)
+- **Current state (2026-10-26): 47/47 suites OK, 570 individual checks** from a
+  live `run_tests.sh` run. The live number is authoritative.
+- **Suites compiling real firmware sources** (instead of mirroring them) put
+  their include paths/defines in `unit/<suite>.flags` (one flag per line, paths
+  relative to `Tests/`); `run_tests.sh` appends them for that suite only. Host
+  stubs for HAL-only headers live in `unit/stubs/<suite>/`. Example:
+  `test_at_tx_queue` builds the real `user_data.c` + AT+TX handler.
 - **Adding a suite**: create `unit/test_<name>.c`, `#include "test_framework.h"`,
   write `void test_*` functions using `ASSERT_*`, and a `main()` with
   `TEST_SUITE_START` / `RUN_TEST(...)` / `TEST_SUITE_END` / `TEST_SUMMARY`.

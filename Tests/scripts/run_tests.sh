@@ -18,12 +18,16 @@ build_ok=0
 build_fail=0
 for src in unit/test_*.c; do
     name=$(basename "$src" .c)
-    if gcc $CFLAGS "$src" -o "build/$name" 2>/dev/null; then
+    # Optional per-suite flags (include paths/defines for suites that compile
+    # real firmware sources): unit/<suite>.flags, paths relative to Tests/.
+    extra=""
+    if [ -f "unit/$name.flags" ]; then extra=$(tr '\r\n' '  ' < "unit/$name.flags"); fi
+    if gcc $CFLAGS $extra "$src" -o "build/$name" 2>/dev/null; then
         build_ok=$((build_ok + 1))
     else
         build_fail=$((build_fail + 1))
         printf "BUILD FAIL: %s\n" "$name"
-        gcc $CFLAGS "$src" -o "build/$name" 2>&1 | grep -E "error|warning:" | head -5
+        gcc $CFLAGS $extra "$src" -o "build/$name" 2>&1 | grep -E "error|warning:" | head -5
     fi
 done
 

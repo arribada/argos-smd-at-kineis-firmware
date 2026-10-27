@@ -1,0 +1,11 @@
+-Iunit/stubs/at_tx
+-I../Kineis/Lib
+-I../Kineis/Extdep/Conf
+-I../Kineis/Extdep/MGR_LOG/Inc
+-I../Kineis/Extdep/Mcu/Inc
+-I../Kineis/App/Libs/USERDATA/Inc
+-I../Kineis/App/Libs/STRUTIL/Inc
+-I../Kineis/App/Managers/MGR_AT_CMD/Inc
+-I../Kineis/App/Kineis_os/KNS_Q/Inc
+-I../Kineis/App/Mcu/Inc
+-DUSE_USERDATA_TX
