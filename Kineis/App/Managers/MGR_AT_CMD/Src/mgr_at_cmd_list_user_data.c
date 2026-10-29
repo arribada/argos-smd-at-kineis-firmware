@@ -88,9 +88,10 @@ static uint16_t u16_get_padded_bitlen(uint16_t u16_actual_bitlen)
 			return 0;
 		return 24;
 	case KNS_TX_MOD_LDA2L:
-		if (u16_actual_bitlen > 192)
+		/* libkineis encodeA2legacy accepts exactly 196 bits (kns_app.c uses 196 too) */
+		if (u16_actual_bitlen > 196)
 			return 0;
-		return 192;
+		return 196;
 	case KNS_TX_MOD_LDA2: {
 		/* Valid sizes: 32, 64, 96, 128, 160, 192 bits (multiples of 32) */
 		static const uint16_t valid[] = {32, 64, 96, 128, 160, 192};
@@ -105,6 +106,20 @@ static uint16_t u16_get_padded_bitlen(uint16_t u16_actual_bitlen)
 	default:
 		return u16_actual_bitlen; /* HDA4, CW, etc: no padding */
 	}
+}
+
+/** @brief Count the hex digits following '=' in the raw AT command. */
+static uint16_t u16_hex_run_len(const uint8_t *pu8_cmd)
+{
+	const char *p = strchr((const char *)pu8_cmd, '=');
+	uint16_t n = 0;
+
+	if (p == NULL)
+		return 0;
+	for (p++; (*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'F') ||
+		  (*p >= 'a' && *p <= 'f'); p++)
+		n++;
+	return n;
 }
 
 /** @brief Handle new TX data, this is the core function of AT+TX cmd
@@ -187,8 +202,12 @@ static bool bMGR_AT_CMD_handleNewTxData(uint8_t *pu8_cmdParamString, const char 
 			 */
 			u16UserDataBitlen = u16MGR_AT_CMD_convertAsciiBinary(pu8UserDataBuf,
 									     u16UserDataCharNb);
-			/* Auto-pad payload to match modulation requirements */
-			u16UserDataBitlen = u16_get_padded_bitlen(u16UserDataBitlen);
+			/* Auto-pad payload to match modulation requirements. The sscanf
+			 * width silently truncates longer input: reject it instead. */
+			if (u16_hex_run_len(pu8_cmdParamString) > u16UserDataCharNb)
+				u16UserDataBitlen = 0;
+			else
+				u16UserDataBitlen = u16_get_padded_bitlen(u16UserDataBitlen);
 			if (u16UserDataBitlen == 0) {
 				MGR_LOG_VERBOSE("[ERROR] Payload too large for current modulation\r\n");
 				/* Fix 2026-07: release the reserved FIFO element. The old

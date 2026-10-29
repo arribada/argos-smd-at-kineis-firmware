@@ -249,6 +249,41 @@ static void test_oversized_payload_releases_slot(void)
     TEST_PASS();
 }
 
+static void test_lda2l_pads_to_196(void)
+{
+    TEST_START("LDA2L: AT+TX padded to the 196-bit frame the encoder accepts");
+    reset_all();
+    g_modulation = KNS_TX_MOD_LDA2L;
+    ASSERT_TRUE(at_tx("AT+TX=11223344"));
+    ASSERT_EQ(196, g_last_push.data_ctxt.usrdata_bitlen);
+    clear_out();
+    /* 24 bytes = 192 bits: max full-byte payload, still a 196-bit frame */
+    ASSERT_TRUE(at_tx("AT+TX=0102030405060708090A0B0C0D0E0F101112131415161718"));
+    ASSERT_FALSE(out_has("+ERROR"));
+    ASSERT_EQ(196, g_last_push.data_ctxt.usrdata_bitlen);
+    clear_out();
+    /* 25 bytes = 200 bits > 196 */
+    ASSERT_FALSE(at_tx("AT+TX=0102030405060708090A0B0C0D0E0F10111213141516171819"));
+    ASSERT_TRUE(out_has(g_err1100));
+    ASSERT_EQ(2, free_slots());
+    ASSERT_EQ(0, g_assert_count);
+    TEST_PASS();
+}
+
+static void test_other_modulations_padding_unchanged(void)
+{
+    TEST_START("LDA2 / VLDA4 padding unchanged (32-bit step, 24-bit frame)");
+    reset_all();
+    g_modulation = KNS_TX_MOD_LDA2;
+    ASSERT_TRUE(at_tx("AT+TX=1122334455"));
+    ASSERT_EQ(64, g_last_push.data_ctxt.usrdata_bitlen);
+    g_modulation = KNS_TX_MOD_VLDA4;
+    ASSERT_TRUE(at_tx("AT+TX=112233"));
+    ASSERT_EQ(24, g_last_push.data_ctxt.usrdata_bitlen);
+    ASSERT_EQ(0, g_assert_count);
+    TEST_PASS();
+}
+
 static void test_mac_queue_full_releases_and_unlinks(void)
 {
     TEST_START("MAC queue push failure: slot freed and unlinked from FIFO");
@@ -365,6 +400,8 @@ int main(void)
     test_non_hex_payload_releases_slot();
     test_empty_payload_releases_slot();
     test_oversized_payload_releases_slot();
+    test_lda2l_pads_to_196();
+    test_other_modulations_padding_unchanged();
     test_mac_queue_full_releases_and_unlinks();
     test_queue_full_behaviour_unchanged();
     test_rejection_does_not_disturb_pending();
