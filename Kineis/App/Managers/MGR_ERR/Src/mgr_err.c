@@ -2,18 +2,19 @@
  * @file    mgr_err.c
  * @brief   Error tracker using TAMP backup registers
  *
- * Uses STM32WL TAMP backup registers BKP2R-BKP7R to persist
+ * Uses STM32WL TAMP backup registers BKP12R-BKP17R to persist
  * error context across system resets. These registers survive
  * all resets (NRST, software, watchdog, brown-out) and are only
  * cleared on VBAT removal.
  *
- * Register map:
- *   BKP2R = reset counter (incremented each boot)
- *   BKP3R = last RCC_CSR flags (reset cause snapshot)
- *   BKP4R = last error code (MGR_ERR_Code_t)
- *   BKP5R = last UW_DOPPLER state at time of error
- *   BKP6R = last HAL tick at time of error
- *   BKP7R = reserved
+ * Register map (BKP0R-BKP5R are the linker's .rtc_bkpr: timer[],
+ * lpm_ctxt, Argos MC; see mgr_err.h):
+ *   BKP12R = reset counter (incremented each boot)
+ *   BKP13R = last RCC_CSR flags (reset cause snapshot)
+ *   BKP14R = last error code (MGR_ERR_Code_t)
+ *   BKP15R = last UW_DOPPLER state at time of error
+ *   BKP16R = last HAL tick at time of error
+ *   BKP17R = consecutive crash counter
  *
  * Init sequence: read previous session data, log it, then clear
  * error code for this session and increment boot counter.
@@ -29,14 +30,21 @@
 #include "stm32wlxx.h"
 #include "stm32wlxx_hal.h"
 #include "mgr_log.h"
+#include "lpm.h"
 
-/* Use TAMP peripheral struct for backup register access */
-#define ERR_BKP_COUNT   (TAMP->BKP2R)   /* Reset counter */
-#define ERR_BKP_CSR     (TAMP->BKP3R)   /* Last RCC_CSR */
-#define ERR_BKP_CODE    (TAMP->BKP4R)   /* Last error code */
-#define ERR_BKP_STATE   (TAMP->BKP5R)   /* Last state */
-#define ERR_BKP_TICK    (TAMP->BKP6R)   /* Last tick */
-#define ERR_BKP_CRASH   (TAMP->BKP7R)   /* Consecutive crash counter */
+/* Use TAMP peripheral struct for backup register access. Must match the
+ * TAMP_BKPxR_ADDR used by MGR_ERR_LOG_FAULT (mgr_err.h). */
+#define ERR_BKP_COUNT   (TAMP->BKP12R)  /* Reset counter */
+#define ERR_BKP_CSR     (TAMP->BKP13R)  /* Last RCC_CSR */
+#define ERR_BKP_CODE    (TAMP->BKP14R)  /* Last error code */
+#define ERR_BKP_STATE   (TAMP->BKP15R)  /* Last state */
+#define ERR_BKP_TICK    (TAMP->BKP16R)  /* Last tick */
+#define ERR_BKP_CRASH   (TAMP->BKP17R)  /* Consecutive crash counter */
+
+_Static_assert(offsetof(TAMP_TypeDef, BKP14R) == (TAMP_BKP14R_ADDR - TAMP_BASE) &&
+	       offsetof(TAMP_TypeDef, BKP15R) == (TAMP_BKP15R_ADDR - TAMP_BASE) &&
+	       offsetof(TAMP_TypeDef, BKP16R) == (TAMP_BKP16R_ADDR - TAMP_BASE),
+	       "MGR_ERR_LOG_FAULT addresses out of sync with ERR_BKP_*");
 
 __attribute__((unused)) static const char *err_code_str(MGR_ERR_Code_t code)
 {
@@ -170,6 +178,10 @@ void MGR_ERR_logAndReset(MGR_ERR_Code_t code)
 	 * to avoid wedging here if the UART itself is the failure cause. */
 	for (int i = 0; i < 32 && MGR_LOG_has_pending(); i++)
 		(void)MGR_LOG_flush();
+
+	/* A software reset is a cold start: never let the next boot take an
+	 * LPM-wake path (e.g. MX_RTC_Init early return on SLEEP/STOP). */
+	LPM_forceMode(LOW_POWER_MODE_NONE);
 
 	__disable_irq();
 	NVIC_SystemReset();

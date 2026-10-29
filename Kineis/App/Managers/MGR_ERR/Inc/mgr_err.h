@@ -18,21 +18,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* TAMP backup register addresses (STM32WL55) */
-#define TAMP_BKP2R_ADDR  0x4000B108UL
-#define TAMP_BKP3R_ADDR  0x4000B10CUL
-#define TAMP_BKP4R_ADDR  0x4000B110UL
-#define TAMP_BKP5R_ADDR  0x4000B114UL
-#define TAMP_BKP6R_ADDR  0x4000B118UL
-#define TAMP_BKP7R_ADDR  0x4000B11CUL
+/* TAMP backup register addresses (STM32WL55). BKP0R-BKP5R belong to the
+ * linker .rtc_bkpr section (mcu_tim timer[], lpm_ctxt, Argos MC), BKP10R to
+ * MGR_GESTURE, BKP11R to MGR_LPM_UW: MGR_ERR must stay clear of them. */
+#define TAMP_BKP12R_ADDR 0x4000B130UL
+#define TAMP_BKP13R_ADDR 0x4000B134UL
+#define TAMP_BKP14R_ADDR 0x4000B138UL
+#define TAMP_BKP15R_ADDR 0x4000B13CUL
+#define TAMP_BKP16R_ADDR 0x4000B140UL
+#define TAMP_BKP17R_ADDR 0x4000B144UL
 
 /* Register layout:
- * BKP2R = reset counter (incremented each boot)
- * BKP3R = last reset cause (RCC_CSR flags snapshot)
- * BKP4R = last error code (MGR_ERR_Code_t)
- * BKP5R = last UW_DOPPLER state at time of error
- * BKP6R = last HAL tick at time of error
- * BKP7R = consecutive crash counter (resets after stable uptime)
+ * BKP12R = reset counter (incremented each boot)
+ * BKP13R = last reset cause (RCC_CSR flags snapshot)
+ * BKP14R = last error code (MGR_ERR_Code_t)
+ * BKP15R = last UW_DOPPLER state at time of error
+ * BKP16R = last HAL tick at time of error
+ * BKP17R = consecutive crash counter (resets after stable uptime)
  */
 
 /** Crash loop protection thresholds */
@@ -124,9 +126,9 @@ bool MGR_ERR_checkCrashLoop(void);
  */
 #define MGR_ERR_LOG_FAULT(code, state) do { \
 	extern volatile uint32_t uwTick; \
-	*((volatile uint32_t *)TAMP_BKP4R_ADDR) = (uint32_t)(code); \
-	*((volatile uint32_t *)TAMP_BKP5R_ADDR) = (uint32_t)(state); \
-	*((volatile uint32_t *)TAMP_BKP6R_ADDR) = uwTick; \
+	*((volatile uint32_t *)TAMP_BKP14R_ADDR) = (uint32_t)(code); \
+	*((volatile uint32_t *)TAMP_BKP15R_ADDR) = (uint32_t)(state); \
+	*((volatile uint32_t *)TAMP_BKP16R_ADDR) = uwTick; \
 } while (0)
 
 /* ---- HardFault forensics ----------------------------------------------- */
