@@ -41,6 +41,7 @@ TEST_WEAR_TORN        = $(BUILD_DIR)/test_wear_overflow_torn
 TEST_TX_SERIAL        = $(BUILD_DIR)/test_tx_serialization
 TEST_LB_HYST          = $(BUILD_DIR)/test_lb_hysteresis
 TEST_TCXO_WARMUP      = $(BUILD_DIR)/test_tcxo_warmup
+TEST_FIRST_TX_VETO    = $(BUILD_DIR)/test_first_tx_veto
 
 # All tests
 # NOTE: this curated list is a SUBSET used by `make run` for quick local runs.
@@ -51,7 +52,7 @@ TESTS = $(TEST_CRC32) $(TEST_DFU) $(TEST_HEADER) $(TEST_SPI) \
         $(TEST_EVTLOG) $(TEST_NVM) $(TEST_TX_INTERVAL) $(TEST_MEMORY_SAFETY) \
         $(TEST_COOLDOWN_MODES) $(TEST_REED_HOLD) $(TEST_BAT_AUTO_SHTDN) \
         $(TEST_SELFTEST_MASK) $(TEST_COOLDOWN_PERSIST) $(TEST_LED_SWAP) \
-        $(TEST_GESTURE_FSM) $(TEST_WEAR_TORN) $(TEST_TX_SERIAL) $(TEST_LB_HYST) \n        $(TEST_TCXO_WARMUP)
+        $(TEST_GESTURE_FSM) $(TEST_WEAR_TORN) $(TEST_TX_SERIAL) $(TEST_LB_HYST) \n        $(TEST_TCXO_WARMUP) $(TEST_FIRST_TX_VETO)
 
 # Default target
 all: $(BUILD_DIR) $(TESTS)
@@ -123,6 +124,9 @@ $(TEST_LB_HYST): $(UNIT_DIR)/test_lb_hysteresis.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 $(TEST_TCXO_WARMUP): $(UNIT_DIR)/test_tcxo_warmup.c $(UNIT_DIR)/test_framework.h
+	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
+
+$(TEST_FIRST_TX_VETO): $(UNIT_DIR)/test_first_tx_veto.c $(UNIT_DIR)/test_framework.h
 	$(CC) $(CFLAGS) -I$(UNIT_DIR) $< -o $@
 
 # Run all unit tests
@@ -209,6 +213,9 @@ run-lb-hyst: $(TEST_LB_HYST)
 
 run-tcxo-warmup: $(TEST_TCXO_WARMUP)
 	$(RUN_PREFIX)$(TEST_TCXO_WARMUP)
+
+run-first-tx-veto: $(TEST_FIRST_TX_VETO)
+	$(RUN_PREFIX)$(TEST_FIRST_TX_VETO)
 
 # Clean
 clean:

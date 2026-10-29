@@ -497,6 +497,38 @@ static uint32_t last_tx_tick = 0;          /**< Tick of last TX */
 static uint32_t last_actual_tx_tick = 0;
 static uint32_t current_interval_ms = 0;   /**< Current interval between TXs in ms */
 static bool     surface_tx_pending = false; /**< Immediate TX needed on surface detection */
+/* Retry deadline for a vetoed first TX (0 = none). surface_tx_pending is only
+ * consumed at dispatch: a veto keeps it armed, otherwise nothing re-arms it
+ * until the next dive. Gates with a known horizon park the retry here so the
+ * loop sleeps through the wait. */
+static uint32_t first_tx_retry_tick = 0;
+#define FIRST_TX_BAT_RETRY_MS     60000u
+#define FIRST_TX_MAX_RETRY_MS   3600000u  /**< Re-evaluate at least hourly */
+
+static uint32_t first_tx_retry_at(uint32_t delay_ms)
+{
+	uint32_t t;
+
+	if (delay_ms > FIRST_TX_MAX_RETRY_MS)
+		delay_ms = FIRST_TX_MAX_RETRY_MS;
+	t = HAL_GetTick() + delay_ms;
+	return (t == 0u) ? 1u : t;
+}
+
+static uint32_t first_tx_retry_at_s(uint32_t delay_s)
+{
+	if (delay_s == 0u)
+		delay_s = 1u;
+	if (delay_s > FIRST_TX_MAX_RETRY_MS / 1000u)
+		delay_s = FIRST_TX_MAX_RETRY_MS / 1000u;
+	return first_tx_retry_at(delay_s * 1000u);
+}
+
+static bool first_tx_retry_holding(void)
+{
+	return surface_tx_pending && first_tx_retry_tick != 0u &&
+	       (int32_t)(first_tx_retry_tick - HAL_GetTick()) > 0;
+}
 /* One-shot: a fresh OPERATIONAL boot counts as the first surface event.
  * Consumed in MONITORING as soon as the SWS state is known; if the tag is
  * already at the surface a TX sequence starts without waiting for a
@@ -1134,6 +1166,13 @@ static uint32_t uw_ms_until_next_action(void)
 			delta = r;
 	}
 
+	/* Parked retry of a vetoed first TX. */
+	if (first_tx_retry_holding()) {
+		const uint32_t r = first_tx_retry_tick - HAL_GetTick();
+		if (r < delta)
+			delta = r;
+	}
+
 	return delta;
 }
 
@@ -1187,6 +1226,7 @@ static void reset_tx_scheduling(void)
 	 * first TX of a burst fast. */
 	current_interval_ms = 0;
 	surface_tx_pending = false;
+	first_tx_retry_tick = 0;
 }
 
 /* ---- Linkit-v4 compatible Argos packet helpers ---- */
@@ -2429,6 +2469,7 @@ void KNS_APP_uw_doppler_loop(void)
 		if (deploy_mode && sws_state == MGR_SWS_STATE_SURFACE &&
 		    !gesture_in_config) {
 			bool should_tx = false;
+			bool first_attempt = false;  /* evaluating the window's first TX */
 			uint32_t since_last_tx = HAL_GetTick() - last_tx_tick;
 
 			if (surface_tx_pending) {
@@ -2452,9 +2493,10 @@ void KNS_APP_uw_doppler_loop(void)
 				bool cooldown_ok = (cooldown_ms == 0u) ||
 					(last_actual_tx_tick == 0u) ||
 					((HAL_GetTick() - last_actual_tx_tick) >= cooldown_ms);
-				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok) {
+				if (since_last_tx >= first_tx_random_offset_ms && cooldown_ok &&
+				    !first_tx_retry_holding()) {
 					should_tx = true;
-					surface_tx_pending = false;
+					first_attempt = true;  /* pending consumed at dispatch */
 				}
 			} else if (tx_count > 0 && current_interval_ms > 0) {
 				/* Periodic TX while still SURFACE — use the schedule's
@@ -2524,6 +2566,9 @@ void KNS_APP_uw_doppler_loop(void)
 					MGR_LOG_WARN("[UW_DPL] Battery low (%umV < %umV), TX inhibited\r\n",
 						last_vbat_mV, MGR_BAT_getMinTxVoltage_mV());
 					should_tx = false;
+					if (first_attempt)
+						first_tx_retry_tick =
+							first_tx_retry_at(FIRST_TX_BAT_RETRY_MS);
 				}
 #endif
 			}
@@ -2537,6 +2582,9 @@ void KNS_APP_uw_doppler_loop(void)
 					MGR_EVTLOG_log(EVT_RATE_BLOCKED,
 						(uint16_t)(retry_in_s > 0xFFFFu ? 0xFFFFu : retry_in_s));
 					should_tx = false;
+					if (first_attempt)
+						first_tx_retry_tick =
+							first_tx_retry_at_s(retry_in_s);
 				}
 			}
 			if (should_tx) {
@@ -2547,6 +2595,9 @@ void KNS_APP_uw_doppler_loop(void)
 					MGR_LOG_WARN("[UW_DPL] Backoff active, retry in %lus\r\n",
 						(unsigned long)retry_in_s);
 					should_tx = false;
+					if (first_attempt)
+						first_tx_retry_tick =
+							first_tx_retry_at_s(retry_in_s);
 				}
 			}
 			/* Defer the first TX while a magnet gesture is still showing its
@@ -2562,13 +2613,21 @@ void KNS_APP_uw_doppler_loop(void)
 			 * compensated across STOP2, so this guarantees >= TX_HARD_MIN_INTERVAL_MS
 			 * between two REAL TX regardless of config. ==0 => no TX yet, so a
 			 * fresh deploy still fires its first frame immediately. */
-			if (should_tx && last_actual_tx_tick != 0u &&
-			    (HAL_GetTick() - last_actual_tx_tick) < TX_HARD_MIN_INTERVAL_MS) {
-				MGR_LOG_WARN("[UW_DPL] Inter-TX floor (%ums), skipping\r\n",
-					(unsigned)TX_HARD_MIN_INTERVAL_MS);
-				should_tx = false;
+			if (should_tx && last_actual_tx_tick != 0u) {
+				const uint32_t floor_elapsed = HAL_GetTick() - last_actual_tx_tick;
+
+				if (floor_elapsed < TX_HARD_MIN_INTERVAL_MS) {
+					MGR_LOG_WARN("[UW_DPL] Inter-TX floor (%ums), skipping\r\n",
+						(unsigned)TX_HARD_MIN_INTERVAL_MS);
+					should_tx = false;
+					if (first_attempt)
+						first_tx_retry_tick = first_tx_retry_at(
+							TX_HARD_MIN_INTERVAL_MS - floor_elapsed);
+				}
 			}
 			if (should_tx) {
+				surface_tx_pending = false;
+				first_tx_retry_tick = 0;
 				UWDPL_TRACE("TX should=yes");
 				LAT_TRACE("SURF_TX");  /* T1: enter SURFACE_TX state */
 				MGR_EVTLOG_log(EVT_TX_START, (uint16_t)tx_count);
@@ -2578,8 +2637,10 @@ void KNS_APP_uw_doppler_loop(void)
 				/* Idle surface or no TX due — let MGR_LPM_UW decide
 				 * whether to drop to STANDBY / SHUTDOWN+RTC. Gates
 				 * (gesture, CONFIG, test burst, surface_tx_pending,
-				 * stabilization window) are all inside the module. */
-				if (test_tx_remaining == 0u && !surface_tx_pending) {
+				 * stabilization window) are all inside the module. A first
+				 * TX parked on a veto retry may sleep until its deadline. */
+				if (test_tx_remaining == 0u &&
+				    (!surface_tx_pending || first_tx_retry_holding())) {
 #if defined(UW_DOPPLER_HAS_GESTURE)
 					const bool g_busy   = MGR_GESTURE_isInteracting();
 					const bool g_config = (MGR_GESTURE_getMode() ==
