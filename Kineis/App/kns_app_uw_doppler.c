@@ -1609,6 +1609,12 @@ static bool process_mac_events(void)
 				MGR_LOG_WARN("[UW_DPL] Unknown MAC evt %d during WAIT_TX_DONE, cleanup PA\r\n",
 					srvcEvt.id);
 				MCU_MISC_turn_off_pa();
+				/* Restore like every other TX exit; the FSM stays in
+				 * WAIT_TX_DONE, the deadman still owns the recovery. */
+				if (tcxo_first_tx_skip) {
+					MCU_MISC_TCXO_set_warmup(tcxo_warmup_saved_ms);
+					tcxo_first_tx_skip = false;
+				}
 			}
 			break;
 		}
