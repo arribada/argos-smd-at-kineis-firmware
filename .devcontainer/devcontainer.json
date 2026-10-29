@@ -27,7 +27,8 @@
 		}
 	},
 	// One-time: generate compile_commands.json so clangd resolves includes.
-	// Full build, a couple of minutes; non-fatal (|| true) so container start
-	// never fails. Re-run manually after changing build flags.
-	"postCreateCommand": "bear -- make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j || true"
+	// Bench build from `make help`; -B forces every compile so bear records them
+	// even if the host already left an up-to-date build/. Non-fatal (|| true) so
+	// container start never fails. Re-run manually after changing build flags.
+	"postCreateCommand": "bear -- make -B BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=1 MAC_PRFL=BASIC -j || true"
 }

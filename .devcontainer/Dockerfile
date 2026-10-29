@@ -7,6 +7,8 @@
 #     Bonus: /tmp is writable here, so the test runner works out of the box
 #     (it does not on Windows git-bash).
 #   - clangd + bear for IDE intellisense (compile_commands.json)
+#   - lcov + valgrind for test coverage / leak checks on the unit binaries
+#   - python3-serial for Tools/dfu_tool.py and Tests/integration/*.py
 #
 # Flashing: the Makefile `make flash*` targets drive a SEGGER J-Link on the
 # HOST (proprietary, not bundled). st-link tools are included for users with an
@@ -34,6 +36,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-venv \
         python3-pip \
+        python3-serial \
+        lcov \
+        valgrind \
         minicom \
     && rm -rf /var/lib/apt/lists/*
 

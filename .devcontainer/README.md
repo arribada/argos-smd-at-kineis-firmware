@@ -16,14 +16,22 @@ firmware without setting up the toolchain by hand.
 - native `gcc` + `make` for the Unity unit tests.
 - `clangd` + `bear` for IDE intellisense; `postCreateCommand` generates
   `compile_commands.json` on first start.
-- `python3`, `gdb-multiarch`, `minicom`, `stlink-tools`.
+- `lcov` (coverage) and `valgrind` (leak checks) for the unit test binaries.
+- `python3` + `python3-serial` (`Tools/dfu_tool.py`, `Tests/integration/`),
+  `gdb-multiarch`, `minicom`, `stlink-tools`.
 
 ## Build / test inside the container
 ```sh
 make help                       # canonical build lines
-make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART DEBUG=0 MAC_PRFL=BASIC REED_WKUP3_WIRE=1 -j full
+make BOARD=SMD_STDALONE APP=UW_DOPPLER COMM=UART VERBOSE=0 DEBUG=0 MAC_PRFL=BASIC -j full
 cd Tests && bash scripts/run_tests.sh   # unit tests (run cleanly here; /tmp is writable)
 ```
+Run `make clean` before changing any build flag: make does not track flags and
+silently reuses stale objects. Do not add `REED_WKUP3_WIRE=1` to UW_DOPPLER
+builds (see the warning in `make help`).
+
+Shell scripts are checked out with LF endings (`.gitattributes`), so they run
+in the container even from a Windows clone with `core.autocrlf=true`.
 
 ## Flashing
 `make flash*` drives a **SEGGER J-Link on the host** (proprietary, not bundled).
