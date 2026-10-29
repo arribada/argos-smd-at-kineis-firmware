@@ -13,6 +13,8 @@ To start, look at the [Arduino sample](https://github.com/arribada/argos-smd-tes
 
 > **Warning**: Since version v8.5.1, the MAC profile is not loaded at startup — reload it thanks to KMAC commands (`AT+KMAC=0` and `AT+KMAC=1`).
 
+> **Note**: The legacy v1.3 firmware is kept on the [`v1.x`](https://github.com/arribada/argos-smd-at-kineis-firmware/tree/v1.x) branch (tag `v1.3.0`). On v1.3 the Message Counter (MC) is kept in RAM retention only, so a power-down resets it and CLS may treat new messages as repeats. Fixed since v2 (MC persisted in flash).
+
 ## Features
 
 - **GUI mode** (`APP=GUI`): AT command interface compatible with KimGUI (UART or SPI)
