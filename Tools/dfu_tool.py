@@ -34,7 +34,9 @@ def crc32_stm32(data):
 class DFUTool:
     """DFU Tool for UART communication with bootloader"""
 
-    CHUNK_SIZE = 256
+    # Must equal BL_CHUNK_SIZE (bl_config.h): the bootloader silently keeps only
+    # the first 248 bytes of a longer chunk, leaving a gap that fails VERIFY.
+    CHUNK_SIZE = 248
     TIMEOUT = 5.0
 
     def __init__(self, port, baudrate=9600):
