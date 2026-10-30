@@ -35,6 +35,9 @@ static volatile bool cmd_ready = false;
 static uint32_t pending_write_addr = 0;
 static uint16_t pending_write_len = 0;
 static bool write_req_pending = false;
+/* Last accepted WRITE_DATA: hosts resend it alone when its response is lost. */
+static uint32_t resend_write_addr = 0;
+static bool resend_write_valid = false;
 
 /* State for multi-transaction commands (READ_REQ -> READ_DATA) */
 static uint8_t pending_read_buffer[BL_CHUNK_SIZE];
@@ -434,7 +437,8 @@ bool bl_spi_process(void)
 
     /* Check CRC for A+ protocol */
     if (prot_ctx->mode == BL_PROT_MODE_A_PLUS && !request->crc_valid) {
-        bl_spi_send_response(DFU_RSP_CRC_ERROR, NULL, 0);
+        /* Retryable by the hosts; DFU_RSP_CRC_ERROR means a failed image VERIFY. */
+        bl_spi_send_response((dfu_response_t)BL_PROT_FRAME_CRC_ERROR, NULL, 0);
         bl_spi_start_rx();
         return false;
     }
@@ -442,6 +446,11 @@ bool bl_spi_process(void)
     /* Extract command and payload */
     current_cmd = request->command;
     payload_len = request->data_len;
+
+    /* Only a WRITE_DATA right after the accepted one can be its resend. */
+    if (current_cmd != SPI_CMD_DFU_WRITE_DATA) {
+        resend_write_valid = false;
+    }
 
     if (payload_len > 0 && payload_len <= BL_CHUNK_SIZE) {
         memcpy(payload_buffer, request->data, payload_len);
@@ -463,6 +472,12 @@ bool bl_spi_process(void)
 
     /* Validate WRITE_DATA has pending request */
     if (current_cmd == SPI_CMD_DFU_WRITE_DATA) {
+        /* Resend alone: target the last accepted address; bl_dfu acks it only if identical. */
+        if (!write_req_pending && resend_write_valid && payload_len > 0) {
+            pending_write_addr = resend_write_addr;
+            pending_write_len = payload_len;
+            write_req_pending = true;
+        }
         if (!write_req_pending || pending_write_len == 0) {
             bl_spi_send_response(DFU_RSP_NOT_READY, NULL, 0);
             bl_spi_start_rx();
@@ -544,6 +559,8 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
 
     /* Clear pending states */
     if (current_cmd == SPI_CMD_DFU_WRITE_DATA) {
+        resend_write_valid = write_req_pending && (status == DFU_RSP_OK);
+        resend_write_addr = pending_write_addr;
         write_req_pending = false;
         pending_write_addr = 0;
         pending_write_len = 0;

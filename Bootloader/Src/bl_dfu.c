@@ -18,6 +18,125 @@
 /* DFU context */
 static dfu_context_t dfu_ctx;
 
+/*
+ * Page 0 holds the MCU reset vector (app-first layout). During a DFU it carries
+ * a trampoline to the bootloader, and the image's own page 0 is buffered in RAM
+ * and committed only after VERIFY: a reset or power cut mid-update then boots
+ * the bootloader instead of an erased vector (POR + erased 0x08000000 boots the
+ * ST system ROM, RM0453 4.3.4).
+ */
+#define DFU_PAGE0_ADDR          APP_FLASH_BASE
+#define DFU_PAGE0_END           (APP_FLASH_BASE + BL_FLASH_PAGE_SIZE)
+#define DFU_TRAMPOLINE_WORDS    4U      /* SP, Reset, NMI, HardFault */
+
+/* The trampoline reset vector must fail the app-range check of bl_check_app_valid. */
+_Static_assert(BL_FLASH_BASE >= APP_FLASH_BASE + APP_FLASH_SIZE,
+               "bootloader must sit above the app region");
+_Static_assert((BL_FLASH_PAGE_SIZE % 8U) == 0U, "page 0 split must keep 64-bit alignment");
+_Static_assert(APP_HEADER_ADDR + sizeof(app_header_t) <= DFU_PAGE0_END,
+               "app header must fit in page 0");
+
+static uint8_t  page0_shadow[BL_FLASH_PAGE_SIZE];
+static uint32_t last_chunk_addr;    /* last accepted chunk, for idempotent resend */
+static uint16_t last_chunk_len;     /* 0 = none since ERASE */
+
+static bl_flash_status_t dfu_page0_install_trampoline(void)
+{
+    uint32_t vec[DFU_TRAMPOLINE_WORDS];
+    bl_flash_status_t status = bl_flash_read(BL_FLASH_BASE, vec, sizeof(vec));
+
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    status = bl_flash_unlock();
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    status = bl_flash_erase_page(DFU_PAGE0_ADDR);
+    bl_flash_lock();
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    status = bl_flash_write(DFU_PAGE0_ADDR, vec, sizeof(vec));
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    return bl_flash_verify(DFU_PAGE0_ADDR, vec, sizeof(vec)) ? BL_FLASH_OK : BL_FLASH_ERROR;
+}
+
+/* Same plausibility test as the bl_check_app_valid fallback. */
+static bool dfu_page0_has_app_vector(void)
+{
+    uint32_t sp;
+    uint32_t entry;
+
+    memcpy(&sp, &page0_shadow[0], 4);
+    memcpy(&entry, &page0_shadow[4], 4);
+    return (sp >= SRAM_BASE_ADDR && sp <= SRAM_END_ADDR) &&
+           (entry >= APP_FLASH_BASE && entry <= APP_FLASH_BASE + APP_FLASH_SIZE);
+}
+
+static bl_flash_status_t dfu_page0_commit(void)
+{
+    bl_flash_status_t status = bl_flash_unlock();
+
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    status = bl_flash_erase_page(DFU_PAGE0_ADDR);
+    bl_flash_lock();
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    status = bl_flash_write(DFU_PAGE0_ADDR, page0_shadow, sizeof(page0_shadow));
+    if (status != BL_FLASH_OK) {
+        return status;
+    }
+    return bl_flash_verify(DFU_PAGE0_ADDR, page0_shadow, sizeof(page0_shadow))
+               ? BL_FLASH_OK : BL_FLASH_ERROR;
+}
+
+/* Store a 64-bit aligned chunk: page 0 bytes go to RAM, the rest to flash. */
+static dfu_response_t dfu_store(uint32_t address, const uint8_t* data, uint16_t len)
+{
+    if (address < DFU_PAGE0_END) {
+        uint32_t n = DFU_PAGE0_END - address;
+
+        if (n > len) {
+            n = len;
+        }
+        memcpy(&page0_shadow[address - DFU_PAGE0_ADDR], data, n);
+        address += n;
+        data += n;
+        len = (uint16_t)(len - n);
+    }
+    if (len == 0) {
+        return DFU_RSP_OK;
+    }
+    if (bl_flash_write(address, data, len) != BL_FLASH_OK) {
+        return DFU_RSP_FLASH_ERROR;
+    }
+    return bl_flash_verify(address, data, len) ? DFU_RSP_OK : DFU_RSP_VERIFY_ERROR;
+}
+
+static bool dfu_stored_matches(uint32_t address, const uint8_t* data, uint16_t len)
+{
+    if (address < DFU_PAGE0_END) {
+        uint32_t n = DFU_PAGE0_END - address;
+
+        if (n > len) {
+            n = len;
+        }
+        if (memcmp(&page0_shadow[address - DFU_PAGE0_ADDR], data, n) != 0) {
+            return false;
+        }
+        address += n;
+        data += n;
+        len = (uint16_t)(len - n);
+    }
+    return (len == 0) || bl_flash_verify(address, data, len);
+}
+
 void bl_dfu_init(void)
 {
     bl_dfu_reset();
@@ -31,6 +150,9 @@ void bl_dfu_reset(void)
     dfu_ctx.last_error = DFU_RSP_OK;
     dfu_ctx.session_active = false;
     dfu_ctx.verify_passed = false;
+    memset(page0_shadow, 0xFF, sizeof(page0_shadow));
+    last_chunk_addr = 0;
+    last_chunk_len = 0;
 }
 
 dfu_response_t bl_dfu_process_cmd(dfu_cmd_t cmd, const uint8_t* data,
@@ -169,8 +291,19 @@ dfu_response_t bl_dfu_cmd_erase(void)
 {
     bl_flash_status_t status;
 
-    /* Erase application flash region */
-    status = bl_flash_erase_app();
+    /* Trampoline first: from here on any reset lands back in the bootloader. */
+    status = dfu_page0_install_trampoline();
+    if (status != BL_FLASH_OK) {
+        return DFU_RSP_FLASH_ERROR;
+    }
+
+    status = bl_flash_unlock();
+    if (status != BL_FLASH_OK) {
+        return DFU_RSP_FLASH_ERROR;
+    }
+    status = bl_flash_erase_pages(DFU_PAGE0_END,
+                                  (APP_FLASH_SIZE - BL_FLASH_PAGE_SIZE) / BL_FLASH_PAGE_SIZE);
+    bl_flash_lock();
 
     if (status != BL_FLASH_OK) {
         return DFU_RSP_FLASH_ERROR;
@@ -190,7 +323,6 @@ dfu_response_t bl_dfu_cmd_erase(void)
 
 dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
 {
-    bl_flash_status_t status;
     uint32_t address;
     const uint8_t* payload;
     uint16_t payload_len;
@@ -242,21 +374,24 @@ dfu_response_t bl_dfu_cmd_write(const uint8_t* data, uint16_t data_len)
         return DFU_RSP_ADDR_ERROR;
     }
 
-    /* Write data to flash */
-    status = bl_flash_write(address, aligned_data, aligned_len);
-
-    if (status != BL_FLASH_OK) {
-        return DFU_RSP_FLASH_ERROR;
+    /* Resend of the last accepted chunk (its response was lost or corrupted):
+     * acknowledge without reprogramming or counting it twice in the CRC. */
+    if (last_chunk_len != 0 && address == last_chunk_addr) {
+        return (payload_len == last_chunk_len &&
+                dfu_stored_matches(address, aligned_data, aligned_len))
+                   ? DFU_RSP_OK : DFU_RSP_ADDR_ERROR;
     }
 
-    /* Verify write */
-    if (!bl_flash_verify(address, aligned_data, aligned_len)) {
-        return DFU_RSP_VERIFY_ERROR;
+    dfu_response_t rsp = dfu_store(address, aligned_data, aligned_len);
+    if (rsp != DFU_RSP_OK) {
+        return rsp;
     }
 
     /* Update context */
     dfu_ctx.received_size += payload_len;
     dfu_ctx.write_addr = address + aligned_len;
+    last_chunk_addr = address;
+    last_chunk_len = payload_len;
 
     /* Accumulate CRC */
     bl_crc32_accumulate(payload, payload_len);
@@ -343,7 +478,19 @@ dfu_response_t bl_dfu_cmd_verify(const uint8_t* data, uint16_t data_len)
         return DFU_RSP_CRC_ERROR;
     }
 
-    /* CRC verified successfully */
+    /* Keep the trampoline if the image cannot boot: page 0 erased = ST ROM boot. */
+    if (!dfu_page0_has_app_vector()) {
+        dfu_ctx.verify_passed = false;
+        return DFU_RSP_INVALID_HEADER;
+    }
+
+    /* Page 0 last: the reset vector becomes the app's only once the image is proven. */
+    if (dfu_page0_commit() != BL_FLASH_OK) {
+        dfu_ctx.verify_passed = false;
+        (void)dfu_page0_install_trampoline();
+        return DFU_RSP_FLASH_ERROR;
+    }
+
     dfu_ctx.verify_passed = true;
     return DFU_RSP_OK;
 }
@@ -378,8 +525,6 @@ dfu_response_t bl_dfu_cmd_get_status(uint8_t* response, uint16_t* response_len)
 
 dfu_response_t bl_dfu_cmd_set_header(const uint8_t* data, uint16_t data_len)
 {
-    bl_flash_status_t status;
-
     /* Validate header size */
     if (data_len != sizeof(app_header_t)) {
         return DFU_RSP_SIZE_ERROR;
@@ -392,33 +537,12 @@ dfu_response_t bl_dfu_cmd_set_header(const uint8_t* data, uint16_t data_len)
         return DFU_RSP_INVALID_HEADER;
     }
 
-    /* Check if header page needs erasing (if not already done) */
-    if (!dfu_ctx.erase_done) {
-        /* Erase just the header page */
-        status = bl_flash_unlock();
-        if (status != BL_FLASH_OK) {
-            return DFU_RSP_FLASH_ERROR;
-        }
-
-        status = bl_flash_erase_page(APP_HEADER_ADDR);
-        bl_flash_lock();
-
-        if (status != BL_FLASH_OK) {
-            return DFU_RSP_FLASH_ERROR;
-        }
+    /* The header lives in page 0: buffered with it, committed at VERIFY. Without
+     * an ERASE first, erasing page 0 here would destroy the running reset vector. */
+    if (!dfu_ctx.session_active || !dfu_ctx.erase_done) {
+        return DFU_RSP_NOT_READY;
     }
-
-    /* Write header */
-    status = bl_flash_write(APP_HEADER_ADDR, data, data_len);
-
-    if (status != BL_FLASH_OK) {
-        return DFU_RSP_FLASH_ERROR;
-    }
-
-    /* Verify */
-    if (!bl_flash_verify(APP_HEADER_ADDR, data, data_len)) {
-        return DFU_RSP_VERIFY_ERROR;
-    }
+    memcpy(&page0_shadow[APP_HEADER_ADDR - DFU_PAGE0_ADDR], data, data_len);
 
     dfu_ctx.header_written = true;
 
