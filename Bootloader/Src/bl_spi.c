@@ -202,6 +202,15 @@ static uint16_t bl_spi_prefill(const uint8_t *data, uint16_t len)
     return n;
 }
 
+/* Ready for the next frame: empty FIFOs, idle pattern queued. Only call with
+ * NSS high. rx_buffer is not cleared: every reader is bounded by rx_count. */
+static void bl_spi_arm_rx(void)
+{
+    bl_spi_restart_empty();
+    (void)bl_spi_prefill(NULL, 4);
+    spi_state = BL_SPI_STATE_WAITING_RX;
+}
+
 /**
  * @brief Start SPI reception using polling
  */
@@ -219,14 +228,7 @@ static bool bl_spi_start_polling_rx(void)
     }
 
     hspi1_bl.ErrorCode = HAL_SPI_ERROR_NONE;
-
-    /* Reset state */
-    memset(rx_buffer, 0x00, BL_RX_BUFFER_SIZE);
-    spi_state = BL_SPI_STATE_WAITING_RX;
-
-    /* Empty FIFOs (no stale bytes from the last transaction), then idle pattern */
-    bl_spi_restart_empty();
-    (void)bl_spi_prefill(NULL, 4);
+    bl_spi_arm_rx();
 
     return true;
 }
@@ -344,7 +346,14 @@ static void bl_spi_handle_tx_poll(void)
         }
     }
 
-    spi_state = BL_SPI_STATE_IDLE;
+    /* Re-arm here, right at NSS rise: hosts send the next command a few tens
+     * of us after reading a response (their CRC-8 time), too soon for a pass
+     * through the main loop. */
+    if (GPIOA->IDR & GPIO_PIN_15) {
+        bl_spi_arm_rx();
+    } else {
+        spi_state = BL_SPI_STATE_IDLE;
+    }
 }
 
 bool bl_spi_has_data(void)
@@ -616,8 +625,10 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
     hspi1_bl.ErrorCode = HAL_SPI_ERROR_NONE;
 
     /* Response starts on an empty TXFIFO: no stale idle bytes ahead of 0x55
-     * (without SCK the old idle bytes never drain). */
-    bl_spi_restart_empty();
+     * (without SCK the old idle bytes never drain). Never reset mid-transaction. */
+    if (GPIOA->IDR & GPIO_PIN_15) {
+        bl_spi_restart_empty();
+    }
     tx_prefilled = bl_spi_prefill(tx_buffer, tx_len);
     tx_ready_tick = HAL_GetTick();
 
