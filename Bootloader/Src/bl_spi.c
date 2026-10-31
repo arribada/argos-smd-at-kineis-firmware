@@ -25,6 +25,9 @@ static volatile bool rx_complete = false;
 static uint8_t tx_buffer[BL_TX_BUFFER_SIZE];
 static uint16_t tx_len = 0;
 static uint16_t tx_prefilled = 0;   /* response bytes already in the TXFIFO */
+static uint32_t tx_ready_tick = 0;  /* when the response was queued */
+/* Response hold: covers the slowest host poll (ERASE: 3000 ms + 10 x 20 ms) with margin. */
+#define BL_SPI_TX_HOLD_MS   5000U
 
 /* Command parsing state */
 static uint8_t current_cmd = 0;
@@ -305,7 +308,11 @@ static void bl_spi_handle_tx_poll(void)
     }
 
     if (GPIOA->IDR & GPIO_PIN_15) {
-        spi_state = BL_SPI_STATE_IDLE;
+        /* Keep the response queued until the master clocks it: deployed hosts
+         * first poll 3 s after ERASE and 100 ms after WRITE_DATA. */
+        if ((HAL_GetTick() - tx_ready_tick) >= BL_SPI_TX_HOLD_MS) {
+            spi_state = BL_SPI_STATE_IDLE;
+        }
         return;
     }
 
@@ -612,6 +619,7 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
      * (without SCK the old idle bytes never drain). */
     bl_spi_restart_empty();
     tx_prefilled = bl_spi_prefill(tx_buffer, tx_len);
+    tx_ready_tick = HAL_GetTick();
 
     spi_state = BL_SPI_STATE_WAITING_TX;
 }
