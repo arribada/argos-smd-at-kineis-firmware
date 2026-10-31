@@ -24,6 +24,7 @@ static volatile bool rx_complete = false;
 /* TX buffer */
 static uint8_t tx_buffer[BL_TX_BUFFER_SIZE];
 static uint16_t tx_len = 0;
+static uint16_t tx_prefilled = 0;   /* response bytes already in the TXFIFO */
 
 /* Command parsing state */
 static uint8_t current_cmd = 0;
@@ -171,6 +172,33 @@ void bl_spi_deinit(void)
     HAL_SPI_DeInit(&hspi1_bl);
 }
 
+/* Restart SPI1 with empty FIFOs: data left in TXFIFO/RXFIFO survives SPE=0 and
+ * is only cleared by SPI1RST (RM0453, procedure for disabling the SPI). */
+static void bl_spi_restart_empty(void)
+{
+    uint32_t cr1 = SPI1->CR1 & ~SPI_CR1_SPE;
+    uint32_t cr2 = SPI1->CR2;
+
+    __HAL_RCC_SPI1_FORCE_RESET();
+    __HAL_RCC_SPI1_RELEASE_RESET();
+    SPI1->CR2 = cr2;
+    SPI1->CR1 = cr1;
+    __HAL_SPI_ENABLE(&hspi1_bl);
+}
+
+/* Queue what the TXFIFO accepts without waiting (3 bytes in 8-bit mode, TXE
+ * drops above half, RM0453): never spin on TXE while the master is not clocking. */
+static uint16_t bl_spi_prefill(const uint8_t *data, uint16_t len)
+{
+    uint16_t n = 0;
+
+    while (n < len && (SPI1->SR & SPI_SR_TXE)) {
+        *(__IO uint8_t *)&SPI1->DR = (data != NULL) ? data[n] : BL_SPI_IDLE_PATTERN;
+        n++;
+    }
+    return n;
+}
+
 /**
  * @brief Start SPI reception using polling
  */
@@ -187,23 +215,15 @@ static bool bl_spi_start_polling_rx(void)
         hspi1_bl.State = HAL_SPI_STATE_READY;
     }
 
-    /* Clear errors and flush RX FIFO */
-    __HAL_SPI_CLEAR_OVRFLAG(&hspi1_bl);
     hspi1_bl.ErrorCode = HAL_SPI_ERROR_NONE;
-    while (SPI1->SR & SPI_SR_RXNE) {
-        (void)SPI1->DR;
-    }
 
     /* Reset state */
     memset(rx_buffer, 0x00, BL_RX_BUFFER_SIZE);
     spi_state = BL_SPI_STATE_WAITING_RX;
 
-    /* Enable SPI and pre-fill TX FIFO with idle pattern */
-    __HAL_SPI_ENABLE(&hspi1_bl);
-    for (int i = 0; i < 4; i++) {
-        while (!(SPI1->SR & SPI_SR_TXE));
-        *(__IO uint8_t *)&SPI1->DR = BL_SPI_IDLE_PATTERN;
-    }
+    /* Empty FIFOs (no stale bytes from the last transaction), then idle pattern */
+    bl_spi_restart_empty();
+    (void)bl_spi_prefill(NULL, 4);
 
     return true;
 }
@@ -244,6 +264,10 @@ static uint16_t bl_spi_poll_rx(void)
 
         /* Check if NSS went high (transaction end) */
         if (got_data && (GPIOA->IDR & GPIO_PIN_15)) {
+            /* Bytes still queued in the RXFIFO belong to this frame (tail, CRC). */
+            while ((SPI1->SR & SPI_SR_RXNE) && count < BL_SPI_TRANSACTION_SIZE) {
+                rx_buffer[count++] = *(__IO uint8_t *)&SPI1->DR;
+            }
             break;
         }
     }
@@ -273,7 +297,7 @@ void bl_spi_stop_rx(void)
 static void bl_spi_handle_tx_poll(void)
 {
     uint32_t timeout_start = HAL_GetTick();
-    uint16_t tx_index = 4;  /* First 4 bytes already in FIFO */
+    uint16_t tx_index = tx_prefilled;  /* already queued by bl_spi_send_response */
     uint16_t rx_idx = 0;
 
     /* Wait for NSS to go low */
@@ -582,24 +606,12 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
     while (!(GPIOA->IDR & GPIO_PIN_15) && (HAL_GetTick() - wait_start < 10)) {
     }
 
-    /* Clear errors and flush FIFO */
-    __HAL_SPI_CLEAR_OVRFLAG(&hspi1_bl);
     hspi1_bl.ErrorCode = HAL_SPI_ERROR_NONE;
-    while (SPI1->SR & SPI_SR_RXNE) {
-        (void)SPI1->DR;
-    }
 
-    /* Wait for TX FIFO to empty */
-    wait_start = HAL_GetTick();
-    while ((SPI1->SR & SPI_SR_FTLVL) && (HAL_GetTick() - wait_start < 5)) {
-    }
-
-    /* Pre-fill TX FIFO with response data */
-    uint16_t prefill = (tx_len > 4) ? 4 : tx_len;
-    for (uint16_t i = 0; i < prefill; i++) {
-        while (!(SPI1->SR & SPI_SR_TXE));
-        *(__IO uint8_t *)&SPI1->DR = tx_buffer[i];
-    }
+    /* Response starts on an empty TXFIFO: no stale idle bytes ahead of 0x55
+     * (without SCK the old idle bytes never drain). */
+    bl_spi_restart_empty();
+    tx_prefilled = bl_spi_prefill(tx_buffer, tx_len);
 
     spi_state = BL_SPI_STATE_WAITING_TX;
 }
@@ -611,7 +623,7 @@ void bl_spi_send_response(dfu_response_t status, const uint8_t* data, uint16_t d
  * transition (VALIDATE, JUMP, RESET) that would prevent the normal
  * bl_spi_has_data() -> bl_spi_handle_tx_poll() path from running.
  *
- * Without this, only the first 4 pre-filled FIFO bytes are sent;
+ * Without this, only the pre-filled FIFO bytes are sent;
  * remaining bytes (including CRC) never reach the master.
  */
 void bl_spi_wait_tx_done(void)
