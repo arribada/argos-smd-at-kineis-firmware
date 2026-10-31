@@ -106,11 +106,13 @@
 /*******************************************************************************
  * BOOTLOADER VERSION
  ******************************************************************************/
-#define BL_VERSION_MAJOR        1
+/* 3.0.0: page-0 trampoline (power cut mid-DFU is recoverable) + SPI FIFO fix.
+ * Hosts treat < 3.0.0 as legacy: no cut after ERASE, SPI DFU at 125 kHz. */
+#define BL_VERSION_MAJOR        3
 #define BL_VERSION_MINOR        0
 #define BL_VERSION_PATCH        0
 #define BL_VERSION              ((BL_VERSION_MAJOR << 16) | (BL_VERSION_MINOR << 8) | BL_VERSION_PATCH)
-#define BL_VERSION_STRING       "BL_V1.0.0"
+#define BL_VERSION_STRING       "BL_V3.0.0"
 
 /*******************************************************************************
  * FLASH MEMORY LAYOUT (256 KB Total)

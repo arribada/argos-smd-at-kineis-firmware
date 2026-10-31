@@ -86,7 +86,7 @@ class MockSPIInterface:
 
     def __init__(self):
         self.connected = False
-        self.bl_version = "BL_V1.0.0"
+        self.bl_version = "BL_V3.0.0"
         self.freq = 500000  # Simulated frequency
         self.last_cmd = None  # For two-transaction simulation
         self.pending_response = None
