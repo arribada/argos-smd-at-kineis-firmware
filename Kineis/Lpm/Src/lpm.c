@@ -31,6 +31,7 @@
  * UW_DOPPLER duty path (mgr_lpm_uw.c); here the recovery boot's g_rtc_use_lsi=1
  * is the indicator. */
 
+#include "lpm_cfg_check.h"
 #if defined(USE_SPI_DRIVER)
 #include "spi.h"
 #include "mcu_spi_driver.h"
@@ -89,6 +90,21 @@ static void LPM_shutdown_enter();
 
 /* Variables ----------------------------------------------------------------------------------- */
 
+#ifdef LPM_SHUTDOWN_ENABLED
+#define LPM_SHUTDOWN_ENTER_CB LPM_shutdown_enter
+#else
+#define LPM_SHUTDOWN_ENTER_CB NULL
+#endif
+
+/* This image's LPM callbacks: lpm_config and its stale check share them. */
+#define LPM_CALLBACKS \
+	.fp_sleep_enter    = LPM_sleep_enter, \
+	.fp_sleep_exit     = LPM_sleep_exit, \
+	.fp_stop_enter     = LPM_stop_enter, \
+	.fp_stop_exit      = LPM_stop_exit, \
+	.fp_standby_enter  = LPM_standby_enter, \
+	.fp_shutdown_enter = LPM_SHUTDOWN_ENTER_CB
+
 __attribute__((__section__(".retentionRamData")))
 struct MgrLpm_EnvConfig_t lpm_config = {
 	.allowedLPMbitmap  = LOW_POWER_MODE_NONE
@@ -103,17 +119,11 @@ struct MgrLpm_EnvConfig_t lpm_config = {
 			     | LOW_POWER_MODE_SHUTDOWN
 #endif
 			     ,
-	.fp_sleep_enter    = LPM_sleep_enter,
-	.fp_sleep_exit     = LPM_sleep_exit,
-	.fp_stop_enter     = LPM_stop_enter,
-	.fp_stop_exit      = LPM_stop_exit,
-	.fp_standby_enter  = LPM_standby_enter,
-#ifdef LPM_SHUTDOWN_ENABLED
-	.fp_shutdown_enter = LPM_shutdown_enter
-#else
-	.fp_shutdown_enter = NULL
-#endif
+	LPM_CALLBACKS
 };
+
+/* Flash copy: always this image's, unlike lpm_config which SRAM2 may carry over. */
+static const struct MgrLpm_EnvConfig_t lpm_callbacks = { LPM_CALLBACKS };
 
 __attribute__((__section__(".lpmSection")))
 struct LPM_retentionReg_t lpm_ctxt = {
@@ -825,6 +835,11 @@ void LPM_forceMode(enum MgrLpm_LPM_t low_power_mode)
 inline enum MgrLpm_LPM_t LPM_getMode(void)
 {
 	return (enum MgrLpm_LPM_t) lpm_ctxt.low_power_mode;
+}
+
+bool LPM_sram2IsStale(void)
+{
+	return LPM_sram2Stale(LPM_getMode(), LPM_cfgCallbacksMatch(&lpm_config, &lpm_callbacks));
 }
 
 void LPM_setForcedMode(enum MgrLpm_LPM_t mode)

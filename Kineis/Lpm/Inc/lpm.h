@@ -118,6 +118,13 @@ void LPM_forceMode(enum MgrLpm_LPM_t low_power_mode);
 enum MgrLpm_LPM_t LPM_getMode(void);
 
 /**
+ * @brief True at boot when SRAM2 must be cold-started: lpm_config holds another
+ *        image's LPM callbacks (reflash or DFU after an LPM entry, or SRAM2 not
+ *        initialised yet). Never true on a SHUTDOWN wake (see lpm_cfg_check.h).
+ */
+bool LPM_sram2IsStale(void);
+
+/**
  * @brief Override the LPM mode requested by clients on next LPM_enter
  *
  * When set to a value other than LOW_POWER_MODE_NONE, the Kineis stack LPM

@@ -819,6 +819,13 @@ int main(void)
   }
 #endif
 
+  /* SRAM2 survives resets. After a reflash or a DFU that followed an LPM entry
+   * it still holds the previous image's lpm_config callbacks: start cold. */
+  if (LPM_sram2IsStale()) {
+    Sram2_Init();
+    LPM_forceMode(LOW_POWER_MODE_NONE);
+  }
+
   /** Specific clock configuration regarding our LPM strategy (want to support all SLEEP, STOP,
    * STANDBY, SHUTDOWN modes on this uC */
   LPM_SystemClockConfig();
