@@ -31,6 +31,7 @@
 #include "mgr_at_cmd_list_user_data.h"
 #include "kns_mac.h"
 #include "kns_q.h"
+#include "lpm.h"  /* LPM_spiStopGraceArm */
 #include "user_data.h"
 #include "mcu_spi_driver.h"
 #include "mgr_spi_cmd_common.h"
@@ -220,6 +221,9 @@ void MGR_SPI_CMD_state_handler(void)
             /* Poll for transaction end */
             uint16_t bytes_received = 0;
             if (MCU_SPI_DRIVER_check_transaction_end(&bytes_received)) {
+                /* Host active: no STOP until it has polled the response below. */
+                LPM_spiStopGraceArm();
+
                 /* Transaction complete - abort DMA and process */
                 MCU_SPI_DRIVER_abort_transfer();
 

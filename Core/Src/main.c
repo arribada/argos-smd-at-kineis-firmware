@@ -275,11 +275,9 @@ static void IDLE_task(void)
   HAL_GPIO_Init(EXT_WKUP_BUTTON_GPIO_Port, &GPIO_InitStruct);
 
 #if defined(USE_SPI_DRIVER)
-  /* STOP-over-SPI: after a STOP wake (NSS-EXTI) stay awake briefly so the host
-   * can finish its retried transaction (e.g. WRITE_LPM=0x00 to leave STOP)
-   * before we re-enter STOP. Without it the slave re-sleeps between
-   * transactions and STOP is unrecoverable over SPI. */
-  if (LPM_spiStopGraceActive())
+  /* No low power while the host is talking: STOP de-inits SPI1, which would
+   * destroy the response armed for its next poll or drop a frame in flight. */
+  if (LPM_spiStopBlocked())
     return;
 #endif
 

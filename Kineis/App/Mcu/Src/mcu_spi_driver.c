@@ -282,6 +282,18 @@ bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received)
     return false;
 }
 
+bool MCU_SPI_DRIVER_rxPending(void)
+{
+    if (hspi_handle == NULL || hspi_handle->hdmarx == NULL ||
+        hspi_handle->hdmarx->Instance == NULL) {
+        return false;
+    }
+
+    /* Bytes landed in the current DMA arm (or it is not re-armed yet). */
+    return rx_activity_detected ||
+           (__HAL_DMA_GET_COUNTER(hspi_handle->hdmarx) != expected_transfer_size);
+}
+
 void MCU_SPI_DRIVER_abort_transfer(void)
 {
     if (hspi_handle == NULL) {

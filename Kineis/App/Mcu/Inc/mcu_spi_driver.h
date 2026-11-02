@@ -151,6 +151,12 @@ bool MCU_SPI_DRIVER_set_response(const uint8_t *data, uint16_t len);
 bool MCU_SPI_DRIVER_check_transaction_end(uint16_t *bytes_received);
 
 /**
+ * @brief True while received bytes are not consumed by the state machine yet
+ *        (frame in flight or unprocessed). Read-only, used to gate low power.
+ */
+bool MCU_SPI_DRIVER_rxPending(void);
+
+/**
  * @brief Abort current SPI transfer and return to idle state.
  */
 void MCU_SPI_DRIVER_abort_transfer(void);

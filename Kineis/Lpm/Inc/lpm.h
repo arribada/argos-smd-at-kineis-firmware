@@ -195,13 +195,20 @@ void LPM_compensateTick(void);
 #if defined(USE_SPI_DRIVER)
 /** @brief True while the STOP-over-SPI grace window is active.
  *
- * Armed on every STOP wake (NSS-EXTI). While true the GUI idle loop must NOT
- * re-enter STOP, giving the host time to complete a retried multi-phase SPI
- * transaction (notably WRITE_LPM=0x00 to leave STOP) before the slave sleeps
- * again — without it STOP is unrecoverable over SPI. STANDBY/SHUTDOWN are
- * unaffected (they cold-boot, never run LPM_stop_exit).
+ * Armed on every STOP wake (NSS-EXTI) and at the end of every SPI transaction
+ * (LPM_spiStopGraceArm), so the host can poll the pipelined response and send
+ * its next command before the slave sleeps again.
  */
 bool LPM_spiStopGraceActive(void);
+
+/** @brief (Re)start the STOP-over-SPI grace window from now. */
+void LPM_spiStopGraceArm(void);
+
+/** @brief True when the GUI idle loop must not enter low power: host active
+ * (grace window), NSS low, received bytes not processed, or a command pending.
+ * STOP de-inits SPI1 and would lose the armed response / the incoming frame.
+ */
+bool LPM_spiStopBlocked(void);
 #endif
 
 #endif /* LPM_KSTK_H */

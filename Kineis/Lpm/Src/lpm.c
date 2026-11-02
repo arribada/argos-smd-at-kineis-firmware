@@ -34,6 +34,7 @@
 #if defined(USE_SPI_DRIVER)
 #include "spi.h"
 #include "mcu_spi_driver.h"
+#include "lpm_spi_gate.h"
 #endif
 #if defined(USE_UW_DOPPLER_APP)
 #include "adc.h"
@@ -125,13 +126,11 @@ struct LPM_retentionReg_t lpm_ctxt = {
 static enum MgrLpm_LPM_t lpm_forced_mode = LOW_POWER_MODE_NONE;
 
 #if defined(USE_SPI_DRIVER)
-/** STOP-over-SPI grace window deadline (HAL tick). After a STOP wake the slave
- * is kept awake until this tick so the host can finish a retried multi-phase
- * transaction (e.g. WRITE_LPM=0x00 to clear the STOP bitmap) before the idle
- * loop re-enters STOP. Without it the slave re-sleeps between transactions and
- * STOP is unrecoverable over SPI (NSS-only wake, no cold-boot, frame lost each
- * time). STANDBY/SHUTDOWN are unaffected: they cold-boot, never run stop_exit. */
-#define SPI_STOP_GRACE_MS 500u
+/** STOP-over-SPI grace window deadline (HAL tick). Armed on every STOP wake AND
+ * at the end of every SPI transaction: the slave stays out of STOP until the
+ * host has polled the pipelined response and sent its next command. STOP
+ * de-inits SPI1, so entering it in between destroyed the armed response and
+ * dropped the next frame. STANDBY/SHUTDOWN are unaffected: they cold-boot. */
 static volatile uint32_t spi_stop_grace_until_tick;
 #endif
 
@@ -422,13 +421,8 @@ static void LPM_stop_exit() {
 	HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
 	MX_SPI1_Init();
 	MCU_SPI_DRIVER_read();
-	/* Arm the STOP-over-SPI grace window so the idle loop won't re-enter STOP
-	 * before the host can complete its retried transaction (the frame that
-	 * triggered this NSS-EXTI wake was lost). 0 = disarmed sentinel: nudge
-	 * to 1 if now+grace lands exactly on the 49.7-day tick wrap. */
-	spi_stop_grace_until_tick = HAL_GetTick() + SPI_STOP_GRACE_MS;
-	if (spi_stop_grace_until_tick == 0u)
-		spi_stop_grace_until_tick = 1u;
+	/* Grace window: the host retries the frame this NSS-EXTI wake lost. */
+	LPM_spiStopGraceArm();
 #endif
 
 	HAL_UARTEx_DisableStopMode(&hlpuart1);
@@ -842,19 +836,22 @@ enum MgrLpm_LPM_t LPM_getForcedMode(void)
 }
 
 #if defined(USE_SPI_DRIVER)
+void LPM_spiStopGraceArm(void)
+{
+	spi_stop_grace_until_tick = LPM_spiGraceDeadline(HAL_GetTick(), LPM_SPI_STOP_GRACE_MS);
+}
+
 bool LPM_spiStopGraceActive(void)
 {
-	/* Wrap-safe tick compare with clear-on-expiry (fix 2026-07): a stale
-	 * deadline left armed re-engages 2^31 ms (24.8 days) after the last
-	 * STOP exit and then blocks STOP for ~24.8 days. Clearing on expiry
-	 * (0 = disarmed) removes the periodic re-trigger — same pattern as
-	 * the reed/SWS blank windows. */
-	if (spi_stop_grace_until_tick == 0u)
-		return false;
-	if ((int32_t)(spi_stop_grace_until_tick - HAL_GetTick()) > 0)
-		return true;
-	spi_stop_grace_until_tick = 0u;
-	return false;
+	return LPM_spiGraceActive(&spi_stop_grace_until_tick, HAL_GetTick());
+}
+
+bool LPM_spiStopBlocked(void)
+{
+	return LPM_spiStopGate(LPM_spiStopGraceActive(),
+			       HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15) == GPIO_PIN_RESET,
+			       MCU_SPI_DRIVER_rxPending(),
+			       spiState != SPICMD_IDLE);
 }
 #endif
 

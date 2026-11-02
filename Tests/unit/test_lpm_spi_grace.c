@@ -1,94 +1,104 @@
 /**
  * @file    test_lpm_spi_grace.c
- * @brief   Unit tests for the STOP-over-SPI grace window (wrap-safe tick logic)
+ * @brief   STOP-over-SPI gating (Kineis/Lpm/Inc/lpm_spi_gate.h, real code).
  *
- * Mirrors lpm.c LPM_spiStopGraceActive() + the arm in LPM_stop_exit():
- *   arm:    spi_stop_grace_until_tick = HAL_GetTick() + SPI_STOP_GRACE_MS;
- *   active: (int32_t)(spi_stop_grace_until_tick - HAL_GetTick()) > 0;
- *
- * The grace window keeps the GUI idle loop from re-entering STOP for
- * SPI_STOP_GRACE_MS after a STOP wake, so the host can complete a retried
- * multi-phase SPI transaction (e.g. WRITE_LPM=0x00) before the slave sleeps
- * again. Keep SPI_STOP_GRACE_MS below in sync with lpm.c.
+ * The grace window is armed on every STOP wake and at the end of every SPI
+ * transaction; while it runs, or while the host is mid-frame, the GUI idle
+ * loop must not enter STOP (it de-inits SPI1 and loses the pipelined response).
  */
 
 #include "test_framework.h"
+#include "lpm_spi_gate.h"
 
-#define SPI_STOP_GRACE_MS 500u
+static volatile uint32_t deadline;
 
-/* Mirror of the file-static deadline in lpm.c. */
-static uint32_t grace_until;
-
-static void grace_arm(uint32_t now)        { grace_until = now + SPI_STOP_GRACE_MS; }
-static bool    grace_active(uint32_t now)  { return (int32_t)(grace_until - now) > 0; }
+static void arm(uint32_t now)     { deadline = LPM_spiGraceDeadline(now, LPM_SPI_STOP_GRACE_MS); }
+static bool active(uint32_t now)  { return LPM_spiGraceActive(&deadline, now); }
 
 static void test_fresh_boot_inactive(void)
 {
-	/* No arm yet: deadline is 0. Must NOT report active on a fresh boot,
-	 * otherwise the idle loop would refuse to ever enter STOP. */
-	grace_until = 0;
-	ASSERT_FALSE(grace_active(0u));
-	ASSERT_FALSE(grace_active(1000u));
-	ASSERT_FALSE(grace_active(0x80000000u));
+	TEST_START("fresh boot: disarmed window never blocks");
+	deadline = 0u;
+	ASSERT_FALSE(active(0u));
+	ASSERT_FALSE(active(0x80000000u));
 	TEST_PASS();
 }
 
-static void test_active_right_after_arm(void)
+static void test_window_bounds(void)
 {
-	grace_arm(10000u);
-	ASSERT_TRUE(grace_active(10000u));        /* same tick as the wake */
-	ASSERT_TRUE(grace_active(10001u));
+	TEST_START("active from arm to deadline-1, inactive at the deadline");
+	arm(10000u);
+	ASSERT_TRUE(active(10000u));
+	ASSERT_TRUE(active(10000u + LPM_SPI_STOP_GRACE_MS - 1u));
+	ASSERT_FALSE(active(10000u + LPM_SPI_STOP_GRACE_MS));
 	TEST_PASS();
 }
 
-static void test_active_within_window(void)
+static void test_expiry_clears(void)
 {
-	grace_arm(10000u);
-	ASSERT_TRUE(grace_active(10000u + SPI_STOP_GRACE_MS - 1u)); /* last live tick */
-	TEST_PASS();
-}
-
-static void test_inactive_at_and_after_deadline(void)
-{
-	grace_arm(10000u);
-	ASSERT_FALSE(grace_active(10000u + SPI_STOP_GRACE_MS));      /* deadline reached */
-	ASSERT_FALSE(grace_active(10000u + SPI_STOP_GRACE_MS + 50u));
+	TEST_START("expired window is cleared, cannot re-engage 2^31 ms later");
+	arm(10000u);
+	ASSERT_FALSE(active(10000u + LPM_SPI_STOP_GRACE_MS));
+	ASSERT_EQ(0u, deadline);
+	ASSERT_FALSE(active(10000u + 0x80000000u));
 	TEST_PASS();
 }
 
 static void test_wrap_safe(void)
 {
-	/* Wake near the 32-bit tick wrap: deadline overflows past 0. The signed
-	 * difference must still resolve the ordering correctly. */
-	uint32_t base = 0xFFFFFFFFu - 100u;       /* +500 wraps to ~399 */
-	grace_arm(base);
-	ASSERT_TRUE(grace_active(base));          /* before deadline despite wrap */
-	ASSERT_TRUE(grace_active(base + 100u));   /* still before (now at wrap point) */
-	ASSERT_FALSE(grace_active(base + SPI_STOP_GRACE_MS));       /* at deadline */
-	ASSERT_FALSE(grace_active(base + SPI_STOP_GRACE_MS + 10u)); /* past deadline */
+	TEST_START("window spanning the 32-bit tick wrap");
+	uint32_t base = 0xFFFFFFFFu - 100u;
+	arm(base);
+	ASSERT_TRUE(active(base + 100u));
+	ASSERT_TRUE(active(base + LPM_SPI_STOP_GRACE_MS - 1u));
+	ASSERT_FALSE(active(base + LPM_SPI_STOP_GRACE_MS));
 	TEST_PASS();
 }
 
-static void test_rearm_extends_window(void)
+static void test_zero_deadline_sentinel(void)
 {
-	/* A second STOP wake mid-window must push the deadline out (each wake
-	 * grants a fresh full window). */
-	grace_arm(10000u);
-	grace_arm(10300u);                        /* re-armed 300 ticks later */
-	ASSERT_TRUE(grace_active(10700u));        /* still live off the 2nd arm */
-	ASSERT_FALSE(grace_active(10800u));       /* 10300+500 = 10800 deadline */
+	TEST_START("deadline landing on 0 is nudged to 1 (0 = disarmed)");
+	arm(0u - LPM_SPI_STOP_GRACE_MS);
+	ASSERT_EQ(1u, deadline);
+	ASSERT_TRUE(active(0u - 1u));
+	TEST_PASS();
+}
+
+static void test_host_session_never_stops(void)
+{
+	TEST_START("host session: command, poll at +30 ms, next command: no STOP between");
+	uint32_t t = 50000u;
+	arm(t);                                    /* command frame ends */
+	ASSERT_TRUE(LPM_spiStopGate(active(t + 30u), false, false, false));   /* response armed */
+	arm(t + 30u);                              /* poll transaction ends */
+	ASSERT_TRUE(LPM_spiStopGate(active(t + 250u), false, false, false));  /* next command gap */
+	arm(t + 250u);                             /* next command */
+	ASSERT_FALSE(LPM_spiStopGate(active(t + 250u + LPM_SPI_STOP_GRACE_MS), false, false, false));
+	TEST_PASS();
+}
+
+static void test_gate_conditions(void)
+{
+	TEST_START("each host-activity condition blocks STOP on its own");
+	ASSERT_FALSE(LPM_spiStopGate(false, false, false, false));
+	ASSERT_TRUE(LPM_spiStopGate(true, false, false, false));   /* grace window */
+	ASSERT_TRUE(LPM_spiStopGate(false, true, false, false));   /* NSS low: frame in flight */
+	ASSERT_TRUE(LPM_spiStopGate(false, false, true, false));   /* bytes not processed */
+	ASSERT_TRUE(LPM_spiStopGate(false, false, false, true));   /* command pending */
 	TEST_PASS();
 }
 
 int main(void)
 {
-	TEST_SUITE_START("STOP-over-SPI grace window");
-	RUN_TEST(test_fresh_boot_inactive);
-	RUN_TEST(test_active_right_after_arm);
-	RUN_TEST(test_active_within_window);
-	RUN_TEST(test_inactive_at_and_after_deadline);
-	RUN_TEST(test_wrap_safe);
-	RUN_TEST(test_rearm_extends_window);
-	TEST_SUITE_END();
+	printf("\n=== STOP-over-SPI gating ===\n");
+	test_fresh_boot_inactive();
+	test_window_bounds();
+	test_expiry_clears();
+	test_wrap_safe();
+	test_zero_deadline_sentinel();
+	test_host_session_never_stops();
+	test_gate_conditions();
+
+	printf("\nResults: %d/%d passed\n", tests_passed, tests_run);
 	return tests_failed ? 1 : 0;
 }
