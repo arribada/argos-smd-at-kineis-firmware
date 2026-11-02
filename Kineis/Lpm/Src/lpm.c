@@ -265,10 +265,18 @@ static void LPM_configWakeUpRtc(void)
 #endif
 }
 
+#if defined(USE_GUI_APP) && defined(USE_SPI_DRIVER) && LPM_SPI_SLEEP_KEEPS_TICK
+#define LPM_SLEEP_SUSPENDS_TICK 0
+#else
+#define LPM_SLEEP_SUSPENDS_TICK 1
+#endif
+
 /** @brief System callback invoked by MGR_LPM at SLEEP mode entering */
 static void LPM_sleep_enter() {
 //	MGR_LOG_DEBUG("==== SLEEP enter ====\r\n");
+#if LPM_SLEEP_SUSPENDS_TICK
 	HAL_SuspendTick();
+#endif
 	/** force renabling interrupt as wakeup from UART is needed */
 	__enable_fault_irq();
 	__enable_irq();
@@ -276,7 +284,9 @@ static void LPM_sleep_enter() {
 
 /** @brief System callback invoked by MGR_LPM at SLEEP mode exit */
 static void LPM_sleep_exit() {
+#if LPM_SLEEP_SUSPENDS_TICK
 	HAL_ResumeTick();
+#endif
 //	MGR_LOG_DEBUG("==== SLEEP exit ====\r\n");
 }
 
@@ -617,6 +627,9 @@ void LPM_SystemClockConfig(void)
 	__HAL_RCC_SPI1_CLK_SLEEP_ENABLE();
 	__HAL_RCC_DMA1_CLK_SLEEP_ENABLE();
 	__HAL_RCC_DMAMUX1_CLK_SLEEP_ENABLE();
+	/* The DMA buffers live in SRAM1 (.bss), whose interface clock is
+	 * otherwise gated in CSleep (RM0453 RCC_AHB3SMENR.SRAM1SMEN). */
+	__HAL_RCC_SRAM1_CLK_SLEEP_ENABLE();
 	__HAL_RCC_GPIOA_CLK_SLEEP_ENABLE();   /* NSS PA15, SCK PA1 */
 	__HAL_RCC_GPIOB_CLK_SLEEP_ENABLE();   /* MISO PB4, MOSI PB5 */
 #endif

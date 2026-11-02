@@ -17,6 +17,11 @@
  * response poll (30 ms + 10 x 20 ms) and the gap to their next command. */
 #define LPM_SPI_STOP_GRACE_MS 500u
 
+/** SLEEP keeps the 1 ms tick for the SPI slave: a frame shorter than the DMA
+ * half-transfer raises no IRQ, and the end-of-transaction detector runs on
+ * HAL_GetTick, so a suspended tick leaves the frame unprocessed. */
+#define LPM_SPI_SLEEP_KEEPS_TICK 1
+
 /** Deadline of a hold window starting now; 0 is the "disarmed" sentinel. */
 static inline uint32_t LPM_spiGraceDeadline(uint32_t now, uint32_t hold_ms)
 {
