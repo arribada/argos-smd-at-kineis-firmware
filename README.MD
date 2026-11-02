@@ -227,10 +227,16 @@ Note: Currently, the ID must be changed at build time. A command to modify it wi
 | `BOARD` | `SMD_PA`, `SMD_NOPA`, `SMD_STDALONE`, `SMD_OP` | `SMD_PA` | Hardware board variant |
 | `COMM` | `UART`, `SPI` | `UART` | Communication interface |
 | `MAC_PRFL` | `BASIC`, `BLIND` | `BASIC` | Kineis MAC profile |
-| `LPM` | `NONE`, `SLEEP`, `STOP`, `STANDBY`, `SHUTDOWN` | `NONE` | Deepest low power mode allowed |
+| `LPM` | `NONE`, `SLEEP`, `STOP`, `STANDBY`, `SHUTDOWN` | `SHUTDOWN` | Deepest low power mode allowed (boot default of the `AT+LPM` bitmap, `0x0F` for `SHUTDOWN`) |
 | `DEBUG` | `0`, `1` | `1` | Enable debug symbols and -Og optimization |
 | `VERBOSE` | `0`, `1` | `1` | Enable verbose debug log output |
 | `SMPS_BYPASS_TX` | `0`, `1` | `0` | Use LDO mode (bypass SMPS) during TX for TCXO stability |
+
+> **WARNING: RSPB v1 host board, build with `LPM=STOP`.** On RSPB v1 the wake-up pin PB3 (WKUP3) is not wired to the host, so nothing can wake the module from STANDBY or SHUTDOWN. With the default `LPM=SHUTDOWN` (boot bitmap `0x0F`) the module enters STANDBY about 50 ms after it becomes idle and no longer answers on SPI or UART; only an SWD probe can recover it. On RSPB v1:
+> - build every image with `LPM=STOP` (SWD image and DFU binary alike). The GitHub release binaries are built with `LPM=SHUTDOWN`: do not flash them on RSPB v1;
+> - never allow STANDBY (`0x04`) or SHUTDOWN (`0x08`) from the host (`AT+LPM`, SPI `WRITE_LPM`): use `0x00`, `0x01`, `0x02` or `0x03` only.
+>
+> In STOP the module still wakes on the SPI NSS falling edge (retry the first transaction) or on an incoming UART character.
 
 ### Build Options
 
@@ -282,6 +288,9 @@ Output files:
 Generate a binary file for Device Firmware Update via the bootloader:
 ```bash
 make dfu COMM=SPI -j20
+
+# RSPB v1 host board: STOP max, no wake-up pin for STANDBY/SHUTDOWN (see warning above)
+make clean && make dfu COMM=SPI LPM=STOP -j20
 ```
 
 Output: `build/argos-smd-at-kineis-firmware_dfu.bin`
