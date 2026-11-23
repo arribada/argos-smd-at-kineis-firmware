@@ -103,8 +103,14 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
 #if defined(USE_SPI_DRIVER) || defined(USE_UW_DOPPLER_APP)
     /* HSI 16 MHz: 115200-capable (SPI debug logs + UW_DOPPLER heartbeat/AT) */
     PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_HSI;
+#elif defined(LPM_NONE_ENABLED)
+    /* HSI 16 MHz at 9600: LSE gives only 3.4 clocks/bit (1.82 % RX tolerance,
+     * RM0453 table 255); HSI is always on when LPM=NONE, so no extra current. */
+    _Static_assert((256ULL * HSI_VALUE) / 9600U <= 0xFFFFFU,
+                   "LPUART BRR overflows at 9600 baud on HSI16");
+    PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_HSI;
 #else
-    /* LSE 32.768 kHz: low-power 9600 baud (STDLN / GUI) */
+    /* LSE 32.768 kHz: low-power 9600 baud (STDLN / GUI); keeps RX alive in STOP */
     PeriphClkInitStruct.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_LSE;
 #endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)

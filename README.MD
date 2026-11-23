@@ -31,6 +31,10 @@ To start, look at the [Arduino sample](https://github.com/arribada/argos-smd-tes
 
 AT command interface for host-controlled operation. The module responds to AT commands over UART (9600 baud) or SPI (115200 baud) and is compatible with the KimGUI tool from CLS.
 
+> **UART clock source.** By default the UART (LPUART1) runs at 9600 baud from the 32.768 kHz LSE crystal, so that it keeps receiving in STOP mode. That gives only 3.4 clock ticks per bit: the module's receiver tolerates 1.82 % total clock error (RM0453, table 255), and the bits it sends last 91 or 122 µs instead of 104 µs. A host whose UART runs from an RC oscillator (for example an nRF52 without its HF crystal) then gets framing errors and corrupted AT replies. This was seen on the LinkIt turtle tags in November 2026.
+>
+> Builds with `LPM=NONE` therefore clock the UART from HSI16 instead: 1667 ticks per bit, 4.42 % tolerance, HSI drift about ±1 % from 0 to 85 °C (DS13105). HSI already runs all the time with `LPM=NONE`, so this costs no extra current. The baud rate (9600 8N1) and the AT protocol are unchanged. Builds with any other `LPM` keep the LSE.
+
 ### Standalone Mode (`APP=STDLN`)
 
 Minimal mode that transmits a single satellite message at startup. Useful for quick tests and certification.
